@@ -8,6 +8,9 @@
     "start": "next start",
     "lint": "eslint"
   },
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",
     "@google/generative-ai": "^0.24.1",
