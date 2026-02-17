@@ -1,7 +1,6 @@
 
 "use client";
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import type { MermaidAPI } from 'mermaid';
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
 const customStyles = `
