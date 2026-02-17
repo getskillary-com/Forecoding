@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
 import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText } from "lucide-react";
 import { Message, EvaluationResponse, GenerationResponse, Project, Task, ProjectVersion, Attachment, FileNode } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
@@ -949,7 +949,7 @@ function WizardContent() {
 type TabButtonProps = {
     active: boolean;
     onClick: () => void;
-    icon: JSX.Element;
+    icon: ReactNode;
     label: string;
     disabled?: boolean;
 };
