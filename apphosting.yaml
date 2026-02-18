@@ -1,22 +1,6 @@
-# Settings for Backend (on Cloud Run).
-# See https://firebase.google.com/docs/app-hosting/configure#cloud-run
-runConfig:
-  minInstances: 0
-  # maxInstances: 100
-  # concurrency: 80
-  # cpu: 1
-  # memoryMiB: 512
-  vpcAccess:
-    egress: PRIVATE_RANGES_ONLY
-    networkInterfaces:
-      - network: default
-        subnetwork: default
-
-# Environment variables and secrets.
-# See https://firebase.google.com/docs/app-hosting/configure#user-defined-environment
 env:
   - variable: DATABASE_URL
-    value: "postgresql://edenxwang:Wyf123456.@10.24.32.4:5432/DB_NAME?sslmode=disable"
+    secret: DATABASE_URL
     availability:
       - RUNTIME
   - variable: NEXTAUTH_URL
@@ -24,19 +8,19 @@ env:
     availability:
       - RUNTIME
   - variable: NEXTAUTH_SECRET
-    value: "111"
+    secret: NEXTAUTH_SECRET
     availability:
       - RUNTIME
   - variable: GEMINI_API_KEY
-    value: "AIzaSyATcbgVzZNlP1HRkHa3Eohg665fDJrqxIc"
+    secret: GEMINI_API_KEY
     availability:
       - RUNTIME
   - variable: EMAIL_SERVER
-    value: "smtp://no-reply@yourdomain.com:ckkkgpadwequxupk@smtp.gmail.com:587"
+    secret: EMAIL_SERVER
     availability:
       - RUNTIME
   - variable: EMAIL_FROM
-    value: "Forecoding <no-reply@yourdomain.com>"
+    secret: EMAIL_FROM
     availability:
       - RUNTIME
   - variable: NEXTAUTH_DEV_BYPASS
