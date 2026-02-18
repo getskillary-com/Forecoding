@@ -12,6 +12,20 @@ export default function Home() {
       </div>
 
       <main className="z-10 max-w-4xl w-full text-center space-y-8">
+        <div className="flex justify-end gap-3">
+          <Link
+            href="/login?callbackUrl=/dashboard"
+            className="px-4 py-2 rounded-full text-sm font-semibold text-gray-700 dark:text-gray-200 bg-white/70 dark:bg-white/10 border border-white/30 hover:bg-white/90 dark:hover:bg-white/20 transition-colors"
+          >
+            Sign in
+          </Link>
+          <Link
+            href="/register"
+            className="px-4 py-2 rounded-full text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+          >
+            Create account
+          </Link>
+        </div>
         <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/50 dark:bg-white/10 backdrop-blur-md border border-white/20 shadow-sm mb-4 animate-in fade-in slide-in-from-top-5 duration-700">
           <Zap className="w-4 h-4 text-yellow-500" />
           <span className="text-sm font-medium">AI-Powered Tech Stack Architect</span>

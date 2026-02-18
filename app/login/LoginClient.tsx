@@ -52,7 +52,7 @@ export default function LoginClient() {
                 <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
                     {isVerify
                         ? "We sent you a magic link. Check your inbox to complete sign in."
-                        : "Enter your email and we\u0027ll send you a magic link."}
+                        : "Enter your email and we\u0027ll send you a magic link to sign in or create an account."}
                 </p>
 
                 {sent ? (
