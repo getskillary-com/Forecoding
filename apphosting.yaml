@@ -21,3 +21,21 @@ runConfig:
   # See https://firebase.google.com/docs/app-hosting/configure#secret-parameters
   # - variable: MY_SECRET
   #   secret: mySecretRef
+
+
+  runConfig:
+  vpcAccess:
+    egress: PRIVATE_RANGES_ONLY
+    networkInterfaces:
+      - network: default
+        subnetwork: default
+
+DATABASE_URL=postgresql://edenxwang:Wyf123456.@10.24.32.4:5432/DB_NAME?sslmode=disable
+NEXTAUTH_URL=https://forecoding.com
+NEXTAUTH_SECRET=111
+GEMINI_API_KEY=AIzaSyATcbgVzZNlP1HRkHa3Eohg665fDJrqxIc
+EMAIL_SERVER="smtp://no-reply@yourdomain.com:ckkkgpadwequxupk@smtp.gmail.com:587"
+EMAIL_FROM="Forecoding <no-reply@yourdomain.com>"
+NEXTAUTH_DEV_BYPASS=0
+NEXT_PUBLIC_DEV_AUTH_BYPASS=0
+
