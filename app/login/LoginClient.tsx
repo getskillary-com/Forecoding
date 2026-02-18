@@ -1,15 +1,19 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { Mail, Loader2, ArrowRight } from "lucide-react";
 
-export default function LoginClient() {
+type LoginMode = "login" | "register";
+
+export default function LoginClient({ initialMode }: { initialMode?: LoginMode }) {
     const searchParams = useSearchParams();
     const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
     const isVerify = searchParams.get("verify") === "1";
     const showDevLogin = process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "1";
+    const mode: LoginMode = initialMode ?? (searchParams.get("mode") === "register" ? "register" : "login");
 
     const [email, setEmail] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -44,11 +48,24 @@ export default function LoginClient() {
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex items-center justify-center p-6">
             <div className="w-full max-w-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl shadow-xl p-6">
+                <div className="flex items-center justify-between mb-4 text-sm">
+                    <Link
+                        href="/"
+                        className="text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+                    >
+                        ← Back to home
+                    </Link>
+                    <div className="text-gray-500 dark:text-gray-400">
+                        {mode === "register" ? "Create account" : "Sign in"}
+                    </div>
+                </div>
                 <div className="flex items-center gap-2 mb-2 text-blue-600 dark:text-blue-400">
                     <Mail className="w-5 h-5" />
-                    <span className="text-sm font-semibold">Email Sign In</span>
+                    <span className="text-sm font-semibold">Email {mode === "register" ? "Registration" : "Sign In"}</span>
                 </div>
-                <h1 className="text-2xl font-bold mb-2">Sign in to continue</h1>
+                <h1 className="text-2xl font-bold mb-2">
+                    {mode === "register" ? "Create your account" : "Sign in to continue"}
+                </h1>
                 <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
                     {isVerify
                         ? "We sent you a magic link. Check your inbox to complete sign in."
@@ -83,7 +100,7 @@ export default function LoginClient() {
                             className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-lg transition-all disabled:opacity-60"
                         >
                             {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
-                            {isSubmitting ? "Sending..." : "Send Magic Link"}
+                            {isSubmitting ? "Sending..." : mode === "register" ? "Create account" : "Send Magic Link"}
                         </button>
 
                         {showDevLogin && (
@@ -95,6 +112,24 @@ export default function LoginClient() {
                                 Dev Login (No Email)
                             </button>
                         )}
+
+                        <div className="text-center text-sm text-gray-500 dark:text-gray-400">
+                            {mode === "register" ? (
+                                <>
+                                    Already have an account?{" "}
+                                    <Link href="/login" className="text-blue-600 hover:underline">
+                                        Sign in
+                                    </Link>
+                                </>
+                            ) : (
+                                <>
+                                    New here?{" "}
+                                    <Link href="/register" className="text-blue-600 hover:underline">
+                                        Create an account
+                                    </Link>
+                                </>
+                            )}
+                        </div>
                     </form>
                 )}
             </div>
