@@ -1,0 +1,8 @@
+2026/02/22 05:33:53 This is the Cloud SQL Proxy v1. It is no longer receiving active feature development. For the latest features and improvements, migrate to the v2 version of the Cloud SQL Proxy. For details, see: https://github.com/GoogleCloudPlatform/cloud-sql-proxy/blob/main/migration-guide.md
+2026/02/22 05:33:57 Listening on 127.0.0.1:5435 for project-6d2bdc00-72ea-47a7-b30:southamerica-east1:forecoding-database
+2026/02/22 05:33:57 Ready for new connections
+2026/02/22 05:33:57 Generated RSA key in 35.8162ms
+2026/02/22 05:33:57 New connection for "project-6d2bdc00-72ea-47a7-b30:southamerica-east1:forecoding-database"
+2026/02/22 05:33:57 refreshing ephemeral certificate for instance project-6d2bdc00-72ea-47a7-b30:southamerica-east1:forecoding-database
+2026/02/22 05:34:01 Scheduling refresh of ephemeral certificate in 54m57s
+2026/02/22 05:34:02 Client closed local connection on 127.0.0.1:5435

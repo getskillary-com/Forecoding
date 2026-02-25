@@ -29,6 +29,7 @@ export interface GenerationResponse {
     projectTree: FileNode[]; // Structured tree
     toolStack: string; // Markdown table
     cursorPrompt: string; // Global prompt
+    startupPrompt?: string;
 }
 
 export interface Attachment {

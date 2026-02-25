@@ -7,8 +7,15 @@ export default async function DashboardLayout({
 }: {
     children: React.ReactNode;
 }) {
-    const session = await getServerSession(authOptions);
-    if (!session) {
+    let session = null;
+    try {
+        session = await getServerSession(authOptions);
+    } catch (error) {
+        console.error("[dashboard] Failed to load session:", error);
+    }
+    const userId = (session?.user as { id?: string } | undefined)?.id;
+
+    if (!session || !userId) {
         redirect("/login?callbackUrl=/dashboard");
     }
 

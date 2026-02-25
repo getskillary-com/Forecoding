@@ -4,7 +4,8 @@ import { FileNode } from "@/types";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 const genAI = new GoogleGenerativeAI(apiKey);
-const MODEL_NAME = "gemini-3-pro-preview";
+const CORE_MODEL = "gemini-3.1-pro-preview";
+const BACKUP_MODEL = "gemini-3-pro-preview";
 
 // Max size per chunk (e.g., 20KB characters ~ 5k tokens)
 const CHUNK_SIZE_LIMIT = 20000;
@@ -13,6 +14,26 @@ interface BatchChunk {
     id: number;
     files: { name: string; content: string }[];
     tokenEstimate: number;
+}
+
+function getErrorMessage(error: unknown) {
+    if (error instanceof Error) return error.message;
+    return String(error);
+}
+
+async function generateTextWithFallback(prompt: string): Promise<string> {
+    try {
+        const coreModel = genAI.getGenerativeModel({ model: CORE_MODEL });
+        const coreResult = await coreModel.generateContent(prompt);
+        return coreResult.response.text();
+    } catch (error) {
+        console.warn(
+            `[batch] CORE model failed (${getErrorMessage(error)}). Falling back to BACKUP: ${BACKUP_MODEL}`
+        );
+        const backupModel = genAI.getGenerativeModel({ model: BACKUP_MODEL });
+        const backupResult = await backupModel.generateContent(prompt);
+        return backupResult.response.text();
+    }
 }
 
 /**
@@ -61,8 +82,6 @@ export function createBatches(tree: FileNode[]): BatchChunk[] {
  * Analyze a single chunk
  */
 async function analyzeChunk(chunk: BatchChunk, goal: string): Promise<string> {
-    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
-
     // Construct prompt
     let fileContext = "";
     for (const file of chunk.files) {
@@ -84,8 +103,7 @@ async function analyzeChunk(chunk: BatchChunk, goal: string): Promise<string> {
     `;
 
     try {
-        const result = await model.generateContent(prompt);
-        return result.response.text();
+        return await generateTextWithFallback(prompt);
     } catch (e) {
         console.error(`Error processing chunk ${chunk.id}`, e);
         return `Error analyzing chunk ${chunk.id}`;
@@ -99,8 +117,6 @@ async function consolidateReports(reports: string[], goal: string): Promise<stri
     const validReports = reports.filter(r => !r.includes("No findings") && !r.includes("Error analyzing"));
 
     if (validReports.length === 0) return "No relevant findings discovered across the codebase.";
-
-    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
     const prompt = `
     You are a Lead Architect.
@@ -117,8 +133,7 @@ async function consolidateReports(reports: string[], goal: string): Promise<stri
     - Format as Markdown.
     `;
 
-    const result = await model.generateContent(prompt);
-    return result.response.text();
+    return await generateTextWithFallback(prompt);
 }
 
 /**

@@ -1,18 +1,19 @@
 "use client";
 
-import React, { useState } from 'react';
-import JSZip from 'jszip';
-import { Folder, FileCode, Download, ChevronRight, ChevronDown } from 'lucide-react';
-import { FileNode } from '@/types';
+import React, { useState } from "react";
+import JSZip from "jszip";
+import { Folder, FileCode, Download, ChevronRight, ChevronDown } from "lucide-react";
+import { FileNode } from "@/types";
 
 interface Props {
     content: FileNode[] | string;
-    globalPrompt?: string; // .cursorrules content
+    globalPrompt?: string;
+    projectName?: string;
 }
 
 function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
     const [isOpen, setIsOpen] = useState(true);
-    const isFolder = node.type === 'folder';
+    const isFolder = node.type === "folder";
 
     return (
         <div className="select-none">
@@ -48,68 +49,81 @@ function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
     );
 }
 
-export function FileTreeDisplay({ content, globalPrompt }: Props) {
+export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
     const [isZipping, setIsZipping] = useState(false);
     const AUTO_GENERATED_FILES = new Set(["package.json", "tsconfig.json", "next.config.ts"]);
+    const resolvedProjectName = projectName?.trim();
+    const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-blueprint")
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+        .replace(/\s+/g, " ")
+        .replace(/[. ]+$/g, "");
+    const zipFileName = `${zipFileNameBase || "founder-blueprint"}.zip`;
+
+    const shouldWriteRealContent = (path: string, fileName: string) => {
+        if (AUTO_GENERATED_FILES.has(fileName)) return true;
+        if (path === ".env.example") return true;
+        if (path.startsWith("docs/")) return true;
+        if (path.startsWith("config/integrations/") && /\.template\./.test(fileName)) return true;
+        return false;
+    };
 
     const handleDownload = async () => {
-        if (typeof content === 'string') return;
+        if (typeof content === "string") return;
         setIsZipping(true);
 
         try {
             const zip = new JSZip();
 
-            // 1. Add Global Context (.cursorrules)
             if (globalPrompt) {
                 zip.file(".cursorrules", globalPrompt);
             }
 
-            // Recursive function to build the zip
             const addToZip = (nodes: FileNode[], currentPath: string) => {
                 const folderFiles: FileNode[] = [];
                 const subFolders: FileNode[] = [];
 
-                // Separate files and folders
-                nodes.forEach(node => {
-                    if (node.type === 'file') folderFiles.push(node);
+                nodes.forEach((node) => {
+                    if (node.type === "file") folderFiles.push(node);
                     else subFolders.push(node);
                 });
 
-                // 2. Generate _AI_PROMPT.md for the current folder if there are files
                 if (folderFiles.length > 0) {
-                    let promptContent = `# 馃 AI Code Generation Tasks\n\n`;
-                    promptContent += `This file contains detailed prompts for generating the code in this directory: \`${currentPath || 'root'}\`\n\n`;
-                    promptContent += `**Usage:** Open this file in your AI IDE (Cursor/Windsurf) and ask the AI to "Implement the files listed below".\n\n`;
-                    promptContent += `---\n\n`;
+                    let promptContent = "# AI Code Generation Tasks\n\n";
+                    promptContent += `This file contains generation guidance for: \`${currentPath || "root"}\`\n\n`;
+                    promptContent += "**Usage:** Open this file in your editor and ask your coding assistant to implement the files listed below.\n\n";
+                    promptContent += "---\n\n";
 
-                    folderFiles.forEach(file => {
-                        promptContent += `## 馃搫 File: \`${file.name}\`\n`;
-                        promptContent += `**Description & Logic:**\n`;
-                        if (AUTO_GENERATED_FILES.has(file.name)) {
-                            promptContent += `Auto-generated baseline config file. Content is included in the zip.\n\n`;
+                    folderFiles.forEach((file) => {
+                        const relativePath = `${currentPath}${file.name}`;
+                        const includeRawContent = shouldWriteRealContent(relativePath, file.name);
+
+                        promptContent += `## File: \`${file.name}\`\n`;
+                        promptContent += "**Description & Logic:**\n";
+                        if (includeRawContent) {
+                            promptContent += "Generated content is included directly in the ZIP.\n\n";
                         } else {
                             promptContent += `${file.content || "No specific prompt provided."}\n\n`;
                         }
-                        promptContent += `---\n\n`;
+                        promptContent += "---\n\n";
 
-                        // 3. Create placeholder file (or write real content for baseline configs)
-                        if (AUTO_GENERATED_FILES.has(file.name) && file.content) {
-                            zip.file(`${currentPath}${file.name}`, file.content);
+                        if (includeRawContent && file.content) {
+                            zip.file(relativePath, file.content);
                         } else {
-                            zip.file(`${currentPath}${file.name}`, `// 馃殌 GENERATION PENDING\n// Open ${currentPath}_AI_PROMPT.md and ask AI to generate this file.\n\n// Content Hint:\n/*\n${file.content?.substring(0, 200)}...\n*/`);
+                            zip.file(
+                                relativePath,
+                                `// GENERATION PENDING\n// Open ${currentPath}_AI_PROMPT.md and ask AI to generate this file.\n\n// Content Hint:\n/*\n${file.content?.substring(0, 200) || ""}...\n*/`
+                            );
                         }
                     });
 
                     zip.file(`${currentPath}_AI_PROMPT.md`, promptContent);
                 }
 
-                // 4. Recurse into subfolders
-                subFolders.forEach(folder => {
-                    // Create folder explicitly to ensure empty folders exist
+                subFolders.forEach((folder) => {
                     if (!folder.children || folder.children.length === 0) {
                         zip.folder(`${currentPath}${folder.name}`);
                     } else {
-                        addToZip(folder.children!, `${currentPath}${folder.name}/`);
+                        addToZip(folder.children, `${currentPath}${folder.name}/`);
                     }
                 });
             };
@@ -120,7 +134,7 @@ export function FileTreeDisplay({ content, globalPrompt }: Props) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = "founder-blueprint.zip";
+            a.download = zipFileName;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -133,7 +147,7 @@ export function FileTreeDisplay({ content, globalPrompt }: Props) {
         }
     };
 
-    if (typeof content === 'string') {
+    if (typeof content === "string") {
         return <pre className="p-4 text-xs font-mono whitespace-pre-wrap">{content}</pre>;
     }
 
@@ -144,14 +158,16 @@ export function FileTreeDisplay({ content, globalPrompt }: Props) {
                     <Folder className="w-5 h-5 text-purple-500" />
                     Project Structure
                 </h3>
-                <button
-                    onClick={handleDownload}
-                    disabled={isZipping}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                >
-                    <Download className="w-4 h-4" />
-                    {isZipping ? "Zipping..." : "Download Blueprint"}
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleDownload}
+                        disabled={isZipping}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                        <Download className="w-4 h-4" />
+                        {isZipping ? "Zipping..." : "Download ZIP"}
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-inner">

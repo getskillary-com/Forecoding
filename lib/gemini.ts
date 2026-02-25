@@ -1,15 +1,81 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { CTO_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
+import type { Message } from "@/types";
+
+function normalizeProvider(value: string | undefined) {
+    const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+    if (raw === "claude" || raw === "anthropic") return "claude";
+    if (raw === "gemini" || raw === "google") return "gemini";
+    return "";
+}
+
+const AI_PROVIDER =
+    normalizeProvider(process.env.AI_PROVIDER) ||
+    (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY ? "claude" : "gemini");
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || "";
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-4-6";
+const CLAUDE_API_BASE_URL = (process.env.CLAUDE_API_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "");
+const CLAUDE_API_VERSION = process.env.CLAUDE_API_VERSION || "2023-06-01";
+const CLAUDE_MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || "8192");
+const CLAUDE_COOLDOWN_MS = Number(process.env.CLAUDE_COOLDOWN_MS || "120000");
 
 // Initialize Gemini Client
 const apiKey = process.env.GEMINI_API_KEY || "";
 const genAI = new GoogleGenerativeAI(apiKey);
 
 // Model Configuration
-// User explicitly requested gemini-3-pro-preview
-const CORE_MODEL = "gemini-3-pro-preview";
-const BACKUP_MODEL = "gemini-2.0-flash";
+// User explicitly requested gemini-3.1-pro-preview
+const CORE_MODEL = "gemini-3.1-pro-preview";
+const BACKUP_MODEL = "gemini-3-pro-preview";
+
+function isClaudeProvider() {
+    return AI_PROVIDER === "claude";
+}
+
+function hasGeminiKey() {
+    return Boolean(apiKey);
+}
+
+let claudeCooldownUntil = 0;
+
+function shouldSkipClaude() {
+    return Date.now() < claudeCooldownUntil;
+}
+
+function markClaudeFailure() {
+    claudeCooldownUntil = Date.now() + CLAUDE_COOLDOWN_MS;
+}
+
+const CLAUDE_RETRYABLE_ERROR_PATTERNS = [
+    /overloaded/i,
+    /rate limit/i,
+    /\b429\b/,
+    /\b503\b/,
+    /\b529\b/,
+    /temporarily unavailable/i,
+    /timed out/i,
+    /timeout/i,
+    /econnreset/i,
+    /socket hang up/i
+];
+
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(error: unknown) {
+    if (error instanceof Error) return error.message;
+    return String(error);
+}
+
+function isRetryableClaudeStreamError(error: unknown) {
+    const message = getErrorMessage(error);
+    return CLAUDE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+console.log(`[AI] Active provider: ${AI_PROVIDER}`);
 
 /**
  * Helper to call Gemini with fallback logic
@@ -35,8 +101,6 @@ async function withFallback<T>(
         return await operation(model);
     }
 }
-
-import { Message } from "@/types";
 
 function buildGeminiContents(messages: Message[]) {
     return messages.map(msg => {
@@ -68,48 +132,348 @@ function buildGeminiContents(messages: Message[]) {
     });
 }
 
+type ClaudeTextBlock = { type: "text"; text: string };
+type ClaudeImageBlock = {
+    type: "image";
+    source: {
+        type: "base64";
+        media_type: string;
+        data: string;
+    };
+};
+type ClaudeContentBlock = ClaudeTextBlock | ClaudeImageBlock;
+
+function buildClaudeContent(message: Message): ClaudeContentBlock[] {
+    const blocks: ClaudeContentBlock[] = [];
+
+    if (message.content?.trim()) {
+        blocks.push({ type: "text", text: message.content });
+    }
+
+    for (const attachment of message.attachments || []) {
+        if (attachment.type === "image" && attachment.mimeType?.startsWith("image/")) {
+            const base64Data = attachment.content.includes("base64,")
+                ? attachment.content.split("base64,")[1]
+                : attachment.content;
+            blocks.push({
+                type: "image",
+                source: {
+                    type: "base64",
+                    media_type: attachment.mimeType,
+                    data: base64Data
+                }
+            });
+            continue;
+        }
+
+        if (attachment.type === "text") {
+            blocks.push({
+                type: "text",
+                text: `\n\n[Attached File: ${attachment.name}]\n${attachment.content}`
+            });
+            continue;
+        }
+
+        blocks.push({
+            type: "text",
+            text: `\n\n[Attachment omitted in Claude mode: ${attachment.name} (${attachment.mimeType})]`
+        });
+    }
+
+    if (blocks.length === 0) {
+        blocks.push({ type: "text", text: "" });
+    }
+
+    return blocks;
+}
+
+function buildClaudeMessages(messages: Message[]) {
+    return messages.map((msg) => ({
+        role: msg.role === "assistant" ? "assistant" : "user",
+        content: buildClaudeContent(msg)
+    }));
+}
+
+function parseClaudeTextResponse(payload: unknown): string {
+    if (!payload || typeof payload !== "object") return "";
+    const content = (payload as { content?: Array<{ type?: string; text?: string }> }).content;
+    if (!Array.isArray(content)) return "";
+    return content
+        .filter((block) => block?.type === "text" && typeof block.text === "string")
+        .map((block) => block.text || "")
+        .join("");
+}
+
+async function generateTextWithClaude(
+    prompt: string,
+    options: { jsonMode?: boolean } = {}
+) {
+    if (!CLAUDE_API_KEY) {
+        throw new Error("CLAUDE_API_KEY (or ANTHROPIC_API_KEY) is missing.");
+    }
+
+    const finalPrompt = options.jsonMode
+        ? `${prompt}\n\nIMPORTANT: Return ONLY valid JSON. No markdown, no commentary.`
+        : prompt;
+
+    const response = await fetch(`${CLAUDE_API_BASE_URL}/v1/messages`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": CLAUDE_API_VERSION
+        },
+        body: JSON.stringify({
+            model: CLAUDE_MODEL,
+            max_tokens: Number.isFinite(CLAUDE_MAX_TOKENS) ? CLAUDE_MAX_TOKENS : 8192,
+            messages: [
+                {
+                    role: "user",
+                    content: [{ type: "text", text: finalPrompt }]
+                }
+            ]
+        })
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`[Claude] ${response.status}: ${errorBody}`);
+    }
+
+    const payload = await response.json();
+    const text = parseClaudeTextResponse(payload);
+    if (!text) {
+        throw new Error("[Claude] Empty response text.");
+    }
+    return text;
+}
+
+function parseClaudeSseChunk(rawEvent: string) {
+    const dataLines = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+
+    if (!dataLines.length) return { text: "", error: "" };
+
+    const rawData = dataLines.join("\n");
+    if (!rawData || rawData === "[DONE]") return { text: "", error: "" };
+
+    try {
+        const payload = JSON.parse(rawData) as {
+            type?: string;
+            delta?: { type?: string; text?: string };
+            error?: { message?: string };
+        };
+
+        if (payload.type === "content_block_delta" && payload.delta?.type === "text_delta") {
+            return { text: payload.delta.text || "", error: "" };
+        }
+
+        if (payload.type === "error") {
+            return { text: "", error: payload.error?.message || "Claude stream error." };
+        }
+    } catch {
+        return { text: "", error: "" };
+    }
+
+    return { text: "", error: "" };
+}
+
+async function* streamWithClaude(messages: Message[], systemInstructionText: string) {
+    if (!CLAUDE_API_KEY) {
+        throw new Error("CLAUDE_API_KEY (or ANTHROPIC_API_KEY) is missing.");
+    }
+
+    const response = await fetch(`${CLAUDE_API_BASE_URL}/v1/messages`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": CLAUDE_API_VERSION
+        },
+        body: JSON.stringify({
+            model: CLAUDE_MODEL,
+            max_tokens: Number.isFinite(CLAUDE_MAX_TOKENS) ? CLAUDE_MAX_TOKENS : 8192,
+            stream: true,
+            system: systemInstructionText,
+            messages: buildClaudeMessages(messages)
+        })
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`[Claude] ${response.status}: ${errorBody}`);
+    }
+
+    if (!response.body) {
+        throw new Error("[Claude] Empty streaming body.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const rawEvent of events) {
+            const parsed = parseClaudeSseChunk(rawEvent);
+            if (parsed.error) throw new Error(parsed.error);
+            if (parsed.text) yield parsed.text;
+        }
+    }
+
+    if (buffer.trim()) {
+        const parsed = parseClaudeSseChunk(buffer);
+        if (parsed.error) throw new Error(parsed.error);
+        if (parsed.text) yield parsed.text;
+    }
+}
+
+async function* streamWithGemini(messages: Message[], systemInstructionText: string) {
+    const contents = buildGeminiContents(messages);
+    const streamResult = await withFallback(async (model) => {
+        const chatModel = genAI.getGenerativeModel({
+            model: model.model,
+            systemInstruction: systemInstructionText
+        });
+
+        return await chatModel.generateContentStream({ contents });
+    });
+
+    for await (const chunk of streamResult.stream) {
+        const chunkText = chunk.text();
+        if (chunkText) yield chunkText;
+    }
+}
+
+async function generateModelText(prompt: string, isJsonMode: boolean = false) {
+    if (isClaudeProvider() && !shouldSkipClaude()) {
+        const maxClaudeAttempts = 2;
+        for (let attempt = 0; attempt < maxClaudeAttempts; attempt++) {
+            try {
+                return await generateTextWithClaude(prompt, { jsonMode: isJsonMode });
+            } catch (error) {
+                const retryable = isRetryableClaudeStreamError(error);
+                const isLastAttempt = attempt >= maxClaudeAttempts - 1;
+                const message = getErrorMessage(error);
+
+                if (retryable && !isLastAttempt) {
+                    const backoffMs = 350 * (attempt + 1);
+                    console.warn(
+                        `[AI] Claude request transient failure. Retrying in ${backoffMs}ms: ${message}`
+                    );
+                    await sleep(backoffMs);
+                    continue;
+                }
+
+                if (retryable) {
+                    markClaudeFailure();
+                }
+
+                if (retryable && hasGeminiKey()) {
+                    console.warn(`[AI] Claude request unavailable. Falling back to Gemini: ${message}`);
+                    break;
+                }
+
+                throw error;
+            }
+        }
+    }
+
+    const result = await withFallback(async (model) => {
+        return await model.generateContent(prompt);
+    }, isJsonMode);
+
+    return result.response.text();
+}
+
 /**
  * 1. Evaluate Input (Chat) - Streaming Version
  * Used for the real-time chat interface.
  */
-export async function* streamEvaluateInput(messages: Message[], context?: string) {
-    // Construct the history for Gemini
-    // We need to convert our Message[] to Gemini's Content[] format
-    const contents = buildGeminiContents(messages);
+type EvaluateRuntimeOptions = {
+    generationReady?: boolean;
+};
 
+export async function* streamEvaluateInput(
+    messages: Message[],
+    context?: string,
+    options?: EvaluateRuntimeOptions
+) {
     const maxContextChars = 12000;
     const safeContext = typeof context === "string" && context.trim()
         ? context.trim().slice(0, maxContextChars)
         : "";
-
     const structureBlock = safeContext
         ? `\n\n# Existing Project Structure (Context)\n${safeContext}\n\n# Guidance\n- Use the structure above as the current source of truth for existing features.\n- If the user asks about functionality, infer from file specs before asking new questions.`
         : "";
 
-    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
+    const coachModeBlock = options?.generationReady
+        ? `\n\n# Runtime Mode\nBlueprint already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`
+        : "";
+
+    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
-        // Gemini streaming
-        const streamResult = await withFallback(async (model) => {
-            // New way to init model with system instruction if supported, 
-            // but simpler to just use generateContentStream with the full history + system prompt?
-            // Actually, genAI.getGenerativeModel({ model, systemInstruction }) is the way.
+        let shouldUseGeminiStream = !isClaudeProvider() || shouldSkipClaude();
 
-            // Re-initializing model here with system instruction might be inefficient if we do it every time,
-            // but acceptable for now.
-            const chatModel = genAI.getGenerativeModel({
-                model: model.model,
-                systemInstruction: systemInstructionText
-            });
+        if (isClaudeProvider()) {
+            const maxClaudeAttempts = 2;
+            for (let attempt = 0; attempt < maxClaudeAttempts; attempt++) {
+                let emittedAnyChunk = false;
+                try {
+                    for await (const chunk of streamWithClaude(messages, systemInstructionText)) {
+                        if (!chunk) continue;
+                        emittedAnyChunk = true;
+                        yield chunk;
+                    }
+                    return;
+                } catch (error) {
+                    const retryable = isRetryableClaudeStreamError(error);
+                    const isLastAttempt = attempt >= maxClaudeAttempts - 1;
+                    const message = getErrorMessage(error);
 
-            return await chatModel.generateContentStream({ contents });
-        });
+                    if (!emittedAnyChunk && retryable && !isLastAttempt) {
+                        const backoffMs = 350 * (attempt + 1);
+                        console.warn(
+                            `[AI] Claude stream transient failure. Retrying in ${backoffMs}ms: ${message}`
+                        );
+                        await sleep(backoffMs);
+                        continue;
+                    }
 
-        for await (const chunk of streamResult.stream) {
-            const chunkText = chunk.text();
-            if (chunkText) yield chunkText;
+                    if (!emittedAnyChunk && retryable) {
+                        markClaudeFailure();
+                    }
+
+                    if (!emittedAnyChunk && retryable && hasGeminiKey()) {
+                        console.warn(`[AI] Claude stream unavailable. Falling back to Gemini: ${message}`);
+                        shouldUseGeminiStream = true;
+                        break;
+                    }
+
+                    if (!emittedAnyChunk && retryable) {
+                        yield "<question>AI provider timeout. Please try again in a moment.</question>";
+                        return;
+                    }
+
+                    throw error;
+                }
+            }
         }
 
+        if (shouldUseGeminiStream) {
+            for await (const chunk of streamWithGemini(messages, systemInstructionText)) {
+                if (chunk) yield chunk;
+            }
+        }
     } catch (error) {
         console.error("[AI] Stream Error:", error);
         throw error;
@@ -120,7 +484,7 @@ export async function* streamEvaluateInput(messages: Message[], context?: string
  * 2. Evaluate Input (Chat) - Static Version
  * Kept for compatibility.
  */
-export async function evaluateInput(history: string) {
+export async function evaluateInput() {
     return {
         // ... return mock or implement static call
         density_score: 0,
@@ -136,8 +500,24 @@ export async function evaluateInput(history: string) {
  * Used when the user clicks "Generate".
  * This expects a JSON response.
  */
-export async function generateProjectResources(history: string, diagram?: string, existingProjectTree?: any) {
+type GenerateProjectResourcesOptions = {
+    projectName?: string;
+};
+
+export async function generateProjectResources(
+    history: string,
+    diagram?: string,
+    existingProjectTree?: any,
+    options?: GenerateProjectResourcesOptions
+) {
+    const resolvedProjectName = (options?.projectName || "").trim();
+
     let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\nFinalized Requirement Consensus:\n${history}\n\nApproved System Architecture (Mermaid):\n${diagram || "Not provided"}`;
+
+    if (resolvedProjectName) {
+        prompt += `\n\n# Project Name\n${resolvedProjectName}`;
+    }
+
 
     if (existingProjectTree) {
         // Optimize the tree to prevent context overflow
@@ -155,26 +535,28 @@ export async function generateProjectResources(history: string, diagram?: string
     try {
         console.log("[AI] Generating Blueprint...");
 
-        const result = await withFallback(async (model) => {
-            return await model.generateContent(prompt);
-        }, true); // Enable JSON mode
-
-        const text = result.response.text();
+        const text = await generateModelText(prompt, true);
         console.log("[AI] Blueprint Raw Response:", text.substring(0, 200) + "...");
 
         let data;
         try {
             data = parseJsonResponse(text);
-        } catch (e) {
+        } catch {
             // Retry once with a stricter prompt to reduce JSON pollution
             console.warn("[AI] JSON parse failed. Retrying with strict JSON response...");
             const strictPrompt = `${prompt}\n\nIMPORTANT: Return ONLY valid JSON. No markdown, no commentary.`;
-            const retry = await withFallback(async (model) => {
-                return await model.generateContent(strictPrompt);
-            }, true);
-            const retryText = retry.response.text();
-            data = parseJsonResponse(retryText);
+            const retryText = await generateModelText(strictPrompt, true);
+            try {
+                data = parseJsonResponse(retryText);
+            } catch {
+                console.warn("[AI] Strict JSON parse failed. Attempting JSON repair pass...");
+                const repairedText = await generateModelText(buildJsonRepairPrompt(retryText), true);
+                data = parseJsonResponse(repairedText);
+            }
         }
+
+        data = normalizeGenerationData(data);
+        const generatedStartupPrompt = typeof data.startupPrompt === "string" ? data.startupPrompt.trim() : "";
 
         // --- Post-Processing (Consistency Check) ---
         data.toolStack = ensureDefaultToolStack(data.toolStack);
@@ -213,12 +595,20 @@ export async function generateProjectResources(history: string, diagram?: string
             cursorRulesContent += "\n\n## 3. System Architecture\n```mermaid\n" + diagram + "\n```";
         }
 
+
         // Overwrite the prompt with the enhanced version
         data.cursorPrompt = cursorRulesContent;
 
         // Ensure executable baseline config files exist
-        data.projectTree = ensureCoreConfigFiles(data.projectTree, data.toolStack, history);
-        data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack, history);
+        data.projectTree = ensureCoreConfigFiles(
+            data.projectTree,
+            data.toolStack,
+            history,
+            resolvedProjectName || "generated-project"
+        );
+        data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
+
+        data.startupPrompt = generatedStartupPrompt || data.cursorPrompt;
 
         return data;
 
@@ -292,6 +682,34 @@ function parseJsonResponse(text: string) {
     return JSON.parse(extracted);
 }
 
+function buildJsonRepairPrompt(rawResponse: string) {
+    const maxChars = 16000;
+    const clipped = (rawResponse || "").slice(0, maxChars);
+
+    return [
+        "You are a JSON sanitizer.",
+        "Convert the following content into ONE valid JSON object only.",
+        "No markdown, no code fences, no explanation.",
+        "Keep keys and values from source whenever possible.",
+        "If source is unusable, return a minimal valid object with this schema:",
+        '{ "projectTree": [], "toolStack": "", "cursorPrompt": "", "startupPrompt": "" }',
+        "",
+        "SOURCE:",
+        clipped || "[EMPTY]"
+    ].join("\n");
+}
+
+function normalizeGenerationData(input: any) {
+    const safe = typeof input === "object" && input !== null ? input : {};
+
+    if (!Array.isArray(safe.projectTree)) safe.projectTree = [];
+    if (typeof safe.toolStack !== "string") safe.toolStack = "";
+    if (typeof safe.cursorPrompt !== "string") safe.cursorPrompt = "";
+    if (typeof safe.startupPrompt !== "string") safe.startupPrompt = "";
+
+    return safe;
+}
+
 function extractFirstJsonObject(text: string) {
     let start = -1;
     let depth = 0;
@@ -346,7 +764,12 @@ function ensureDefaultToolStack(toolStack: string | undefined) {
     ].join("\n");
 }
 
-function ensureCoreConfigFiles(projectTree: any[], toolStack: string, history: string): any[] {
+function ensureCoreConfigFiles(
+    projectTree: any[],
+    toolStack: string,
+    history: string,
+    projectName: string
+): any[] {
     const tree = Array.isArray(projectTree) ? projectTree : [];
     const existingNames = new Set<string>();
 
@@ -372,7 +795,7 @@ function ensureCoreConfigFiles(projectTree: any[], toolStack: string, history: s
             content: generatePackageJson({
                 framework: usesNext ? "next" : "react",
                 usesPhaser,
-                projectName: "generated-project",
+                projectName,
                 toolStack
             })
         });
@@ -714,7 +1137,7 @@ function generatePrismaSeedSpec() {
 
 function upsertReadmeSetup(tree: any[], input: { usesPrisma: boolean; usesNextAuth: boolean }) {
     const lines: string[] = [];
-    lines.push("# Project Setup");
+    lines.push("# Getting Started");
     lines.push("");
     lines.push("## Install");
     lines.push("```bash");
@@ -751,7 +1174,7 @@ function upsertReadmeSetup(tree: any[], input: { usesPrisma: boolean; usesNextAu
     upsertFileByPath(tree, "README.md", lines.join("\n"));
 }
 
-function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string, history: string): any[] {
+function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
     const stack = (toolStack || "").toLowerCase();
     const usesZod = /\bzod\b/.test(stack);
     const usesNextAuth = /nextauth|next-auth/.test(stack);

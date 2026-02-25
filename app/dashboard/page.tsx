@@ -2,9 +2,27 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Plus, Folder, Clock, ChevronRight, ArrowRight, Trash2, Edit2, X, Check, MoreVertical } from "lucide-react";
+import { Plus, Folder, Clock, Trash2, Edit2, X } from "lucide-react";
 import { Project, ProjectVersion } from "@/types";
 import { useRouter } from "next/navigation";
+import { UserCenter } from "@/components/UserCenter";
+import { BrandLogo } from "@/components/BrandLogo";
+import {
+    prefetchWorkspaceRemote,
+    primeWorkspaceCache,
+    readProjectsFromLocalStorage,
+    writeProjectsToLocalStorage
+} from "@/lib/workspace-cache";
+
+function yieldToBrowser(): Promise<void> {
+    return new Promise((resolve) => {
+        if (typeof window === "undefined") {
+            resolve();
+            return;
+        }
+        requestAnimationFrame(() => resolve());
+    });
+}
 
 export default function DashboardPage() {
     const router = useRouter();
@@ -17,24 +35,70 @@ export default function DashboardPage() {
     const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
     const [formData, setFormData] = useState({ name: "", description: "" });
 
+    const syncWorkspaceRemote = async (nextProjects: Project[]) => {
+        try {
+            await fetch("/api/workspace", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ projects: nextProjects })
+            });
+        } catch (error) {
+            console.error("Failed to sync workspace", error);
+        }
+    };
+
     // Load Projects
     useEffect(() => {
-        if (typeof window !== 'undefined') {
-            const saved = localStorage.getItem("fl_projects_v2");
-            if (saved) {
-                try {
-                    setProjects(JSON.parse(saved));
-                } catch (e) {
-                    console.error("Failed to load projects", e);
+        if (typeof window === 'undefined') return;
+        let cancelled = false;
+
+        const loadRemoteWorkspace = async (localProjects: Project[]) => {
+            try {
+                const res = await fetch("/api/workspace", { cache: "no-store" });
+                if (!res.ok) return;
+
+                const data = (await res.json()) as { projects?: Project[] };
+                if (!Array.isArray(data.projects)) return;
+
+                if (data.projects.length > 0 || localProjects.length === 0) {
+                    if (cancelled) return;
+                    setProjects(data.projects);
+                    writeProjectsToLocalStorage(data.projects);
+                } else {
+                    void syncWorkspaceRemote(localProjects);
                 }
+            } catch (error) {
+                console.error("Failed to load remote workspace", error);
             }
-            setIsLoading(false);
-        }
+        };
+
+        const hydrate = async () => {
+            setIsLoading(true);
+            await yieldToBrowser();
+            const localProjects = readProjectsFromLocalStorage();
+            if (!cancelled && localProjects.length > 0) {
+                setProjects(localProjects);
+            }
+            await loadRemoteWorkspace(localProjects);
+            if (!cancelled) setIsLoading(false);
+        };
+
+        void hydrate();
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     const saveProjects = (newProjects: Project[]) => {
         setProjects(newProjects);
-        localStorage.setItem("fl_projects_v2", JSON.stringify(newProjects));
+        writeProjectsToLocalStorage(newProjects);
+        void syncWorkspaceRemote(newProjects);
+    };
+
+    const prefetchWizard = (projectId: string, versionId: string) => {
+        primeWorkspaceCache(projectId);
+        void prefetchWorkspaceRemote();
+        router.prefetch(`/wizard?projectId=${projectId}&versionId=${versionId}`);
     };
 
     // --- Modal Handlers ---
@@ -110,7 +174,12 @@ export default function DashboardPage() {
             // Edit Logic
             const updatedProjects = projects.map(p =>
                 p.id === currentProjectId
-                    ? { ...p, name: formData.name, description: formData.description, updatedAt: Date.now() }
+                    ? {
+                        ...p,
+                        name: formData.name,
+                        description: formData.description,
+                        updatedAt: Date.now()
+                    }
                     : p
             );
             saveProjects(updatedProjects);
@@ -128,23 +197,29 @@ export default function DashboardPage() {
         }
     };
 
-    if (isLoading) return <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">Loading...</div>;
+    if (isLoading) return <DashboardSkeleton />;
 
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">
             <div className="max-w-6xl mx-auto">
                 <header className="flex justify-between items-center mb-10">
-                    <div>
-                        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Your Projects</h1>
-                        <p className="text-gray-500 dark:text-gray-400 mt-1">Manage and evolve your ideas.</p>
+                    <div className="space-y-3">
+                        <BrandLogo />
+                        <div>
+                            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Your Projects</h1>
+                            <p className="text-gray-500 dark:text-gray-400 mt-1">Manage and evolve your ideas.</p>
+                        </div>
                     </div>
-                    <button
-                        onClick={openCreateModal}
-                        className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg transition-all transform hover:scale-105 active:scale-95"
-                    >
-                        <Plus className="w-5 h-5" />
-                        New Project
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={openCreateModal}
+                            className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg transition-all transform hover:scale-105 active:scale-95"
+                        >
+                            <Plus className="w-5 h-5" />
+                            New Project
+                        </button>
+                        <UserCenter signOutCallbackUrl="/" />
+                    </div>
                 </header>
 
                 {projects.length === 0 ? (
@@ -172,6 +247,9 @@ export default function DashboardPage() {
                                 <Link
                                     key={project.id}
                                     href={`/wizard?projectId=${project.id}&versionId=${latestVersion.id}`}
+                                    onMouseEnter={() => prefetchWizard(project.id, latestVersion.id)}
+                                    onFocus={() => prefetchWizard(project.id, latestVersion.id)}
+                                    onTouchStart={() => prefetchWizard(project.id, latestVersion.id)}
                                     className="group block bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 hover:border-blue-500/50 hover:shadow-xl transition-all duration-300 relative overflow-hidden"
                                 >
                                     {/* Action Buttons */}
@@ -226,7 +304,7 @@ export default function DashboardPage() {
             {/* Modal Overlay */}
             {isModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-gray-200 dark:border-gray-800 animate-in zoom-in-95 duration-200">
+                    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl p-6 border border-gray-200 dark:border-gray-800 animate-in zoom-in-95 duration-200 max-h-[88vh] overflow-y-auto">
                         <div className="flex justify-between items-center mb-6">
                             <h3 className="text-xl font-bold">{modalMode === 'create' ? 'Create New Project' : 'Edit Project Details'}</h3>
                             <button onClick={handleCloseModal} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
@@ -282,6 +360,36 @@ export default function DashboardPage() {
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+function DashboardSkeleton() {
+    return (
+        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">
+            <div className="max-w-6xl mx-auto">
+                <header className="flex justify-between items-center mb-10">
+                    <div className="space-y-3">
+                        <div className="h-8 w-32 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                        <div className="h-6 w-48 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                        <div className="h-4 w-64 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" />
+                    </div>
+                    <div className="h-10 w-32 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
+                </header>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {Array.from({ length: 6 }).map((_, idx) => (
+                        <div
+                            key={idx}
+                            className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 animate-pulse"
+                        >
+                            <div className="h-4 w-32 bg-gray-200 dark:bg-gray-800 rounded" />
+                            <div className="mt-3 h-3 w-48 bg-gray-100 dark:bg-gray-800 rounded" />
+                            <div className="mt-6 h-24 bg-gray-100 dark:bg-gray-800 rounded-xl" />
+                        </div>
+                    ))}
+                </div>
+            </div>
         </div>
     );
 }

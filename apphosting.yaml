@@ -31,6 +31,22 @@ env:
     value: "0"
     availability:
       - RUNTIME
+  - variable: STRIPE_SECRET_KEY
+    secret: STRIPE_SECRET_KEY
+    availability:
+      - RUNTIME
+  - variable: STRIPE_WEBHOOK_SECRET
+    secret: STRIPE_WEBHOOK_SECRET
+    availability:
+      - RUNTIME
+  - variable: STRIPE_UNIT_AMOUNT_CENTS
+    value: "990"
+    availability:
+      - RUNTIME
+  - variable: STRIPE_CURRENCY
+    value: "usd"
+    availability:
+      - RUNTIME
 
 
 

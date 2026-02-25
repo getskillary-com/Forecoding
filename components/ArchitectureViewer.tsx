@@ -95,24 +95,68 @@ function formatMermaidError(err: unknown) {
 }
 
 function sanitizeMermaidCode(input: string) {
-    const lines = input.split("\n");
+    const normalizedSource = input
+        .replace(/```mermaid\s*/gi, "")
+        .replace(/```/g, "")
+        .replace(/\r/g, "")
+        .replace(/（/g, "(")
+        .replace(/）/g, ")")
+        .trim();
+
+    const lines = normalizedSource.split("\n");
     let changed = false;
+    let hasGraphHeader = false;
+
+    const normalizeLabel = (raw: string) => {
+        const cleaned = raw
+            .replace(/\\n/g, "<br/>")
+            .replace(/[()]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/"/g, "'");
+        return cleaned;
+    };
 
     const sanitizedLines = lines.map((line) => {
+        if (/^\s*(graph|flowchart)\b/i.test(line)) {
+            hasGraphHeader = true;
+        }
+
+        // Repair malformed edge separators like: A -------- B
+        const fixedEdgeSeparator = line.replace(/(\b[A-Za-z][\w-]*\b)\s*-{3,}\s*(\b[A-Za-z][\w-]*\b)/g, "$1 --> $2");
+        if (fixedEdgeSeparator !== line) changed = true;
+        line = fixedEdgeSeparator;
+
+        // Repair missing connectors between adjacent node declarations: A[...] B[...]
+        const fixedAdjacentNodes = line.replace(/\]\s+([A-Za-z][\w-]*\s*\[)/g, "] --> $1");
+        if (fixedAdjacentNodes !== line) changed = true;
+        line = fixedAdjacentNodes;
+
         const match = line.match(/^(\s*)subgraph\s+(.+?)\s*\[(.+)\]\s*$/);
-        if (!match) return line;
+        if (match) {
+            const indent = match[1] || "";
+            const idPart = match[2].trim();
+            const label = normalizeLabel(match[3].trim());
+            if (label !== match[3].trim()) changed = true;
+            return `${indent}subgraph ${idPart}["${label}"]`;
+        }
 
-        const indent = match[1] || "";
-        const idPart = match[2].trim();
-        let label = match[3].trim();
+        // Normalize labels in node declarations, so parser is less fragile with punctuation/newlines.
+        const normalizedNodes = line.replace(/([A-Za-z][\w-]*)\[(.+?)\]/g, (_, nodeId: string, rawLabel: string) => {
+            const label = normalizeLabel(rawLabel);
+            if (label !== rawLabel) changed = true;
+            return `${nodeId}["${label}"]`;
+        });
+        if (normalizedNodes !== line) changed = true;
+        line = normalizedNodes;
 
-        // Mermaid is sensitive to parentheses in subgraph labels; normalize them away.
-        const cleaned = label.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
-        if (cleaned !== label) changed = true;
-        label = cleaned.replace(/"/g, "'");
-
-        return `${indent}subgraph ${idPart}["${label}"]`;
+        return line;
     });
+
+    if (!hasGraphHeader) {
+        changed = true;
+        sanitizedLines.unshift("graph TD");
+    }
 
     return {
         changed,
@@ -123,6 +167,7 @@ function sanitizeMermaidCode(input: string) {
 export default function ArchitectureViewer({ code }: { code: string }) {
     const [svg, setSvg] = useState('');
     const [error, setError] = useState<string | null>(null);
+    const [warning, setWarning] = useState<string | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -130,12 +175,14 @@ export default function ArchitectureViewer({ code }: { code: string }) {
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
     const mermaidRef = useRef<typeof import('mermaid').default | null>(null);
     const initializedRef = useRef(false);
+    const hasRenderedRef = useRef(false);
 
     useEffect(() => {
         let cancelled = false;
 
         const initAndRender = async () => {
             if (!code || typeof document === 'undefined') return;
+            let autoCorrected = false;
 
             // Dynamically import mermaid (avoids SSR issues)
             if (!mermaidRef.current) {
@@ -194,12 +241,27 @@ export default function ArchitectureViewer({ code }: { code: string }) {
                     try {
                         await mermaidInstance.parse(sanitized.code);
                         renderCode = sanitized.code;
+                        autoCorrected = true;
                     } catch (sanitizedError) {
-                        if (!cancelled) setError(formatMermaidError(sanitizedError));
+                        if (cancelled) return;
+                        const message = formatMermaidError(sanitizedError);
+                        if (hasRenderedRef.current) {
+                            setWarning(`Using last valid diagram: ${message}`);
+                            return;
+                        }
+                        setError(message);
+                        setWarning(null);
                         return;
                     }
                 } else {
-                    if (!cancelled) setError(formatMermaidError(parseError));
+                    if (cancelled) return;
+                    const message = formatMermaidError(parseError);
+                    if (hasRenderedRef.current) {
+                        setWarning(`Using last valid diagram: ${message}`);
+                        return;
+                    }
+                    setError(message);
+                    setWarning(null);
                     return;
                 }
             }
@@ -221,10 +283,18 @@ export default function ArchitectureViewer({ code }: { code: string }) {
 
                 setSvg(styledSvg);
                 setError(null);
+                setWarning(autoCorrected ? "Diagram had syntax issues and was auto-corrected." : null);
+                hasRenderedRef.current = true;
             } catch (renderError) {
                 if (cancelled) return;
                 console.debug("Mermaid render error:", renderError);
-                setError(formatMermaidError(renderError));
+                const message = formatMermaidError(renderError);
+                if (hasRenderedRef.current) {
+                    setWarning(`Using last valid diagram: ${message}`);
+                    return;
+                }
+                setError(message);
+                setWarning(null);
             } finally {
                 if (document.body.contains(tempElement)) {
                     document.body.removeChild(tempElement);
@@ -303,13 +373,7 @@ export default function ArchitectureViewer({ code }: { code: string }) {
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
             >
-                {error ? (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 pointer-events-none">
-                        <svg className="w-12 h-12 mb-2 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                        <p className="font-semibold mb-1">Rendering Error</p>
-                        <p className="text-xs opacity-80 max-w-xs text-center">{error}</p>
-                    </div>
-                ) : svg ? (
+                {svg ? (
                     <div
                         className="absolute top-1/2 left-1/2 origin-center transition-transform duration-75 ease-out mermaid-container"
                         style={{
@@ -317,6 +381,12 @@ export default function ArchitectureViewer({ code }: { code: string }) {
                         }}
                         dangerouslySetInnerHTML={{ __html: svg }}
                     />
+                ) : error ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 pointer-events-none">
+                        <svg className="w-12 h-12 mb-2 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <p className="font-semibold mb-1">Rendering Error</p>
+                        <p className="text-xs opacity-80 max-w-xs text-center">{error}</p>
+                    </div>
                 ) : (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 pointer-events-none">
                         <div className="relative">
@@ -327,6 +397,12 @@ export default function ArchitectureViewer({ code }: { code: string }) {
                         </div>
                         <p className="text-sm font-medium tracking-wide">Waiting for architecture...</p>
                         <p className="text-xs text-slate-600 mt-1">Start describing your idea</p>
+                    </div>
+                )}
+
+                {svg && warning && (
+                    <div className="absolute top-3 left-3 right-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 backdrop-blur-sm">
+                        {warning}
                     </div>
                 )}
             </div>

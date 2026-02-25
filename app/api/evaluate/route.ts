@@ -1,10 +1,10 @@
 
 import { NextResponse } from "next/server";
-import { evaluateInput, streamEvaluateInput } from "@/lib/gemini";
+import { streamEvaluateInput } from "@/lib/gemini";
 
 export async function POST(req: Request) {
     try {
-        const { messages, context } = await req.json();
+        const { messages, context, generationReady } = await req.json();
         const contextText = typeof context === "string" ? context : undefined;
         if (!messages) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
@@ -13,13 +13,14 @@ export async function POST(req: Request) {
         const stream = new ReadableStream({
             async start(controller) {
                 try {
-                    for await (const chunk of streamEvaluateInput(messages, contextText)) {
+                    for await (const chunk of streamEvaluateInput(messages, contextText, {
+                        generationReady: generationReady === true
+                    })) {
                         controller.enqueue(new TextEncoder().encode(chunk));
                     }
                     controller.close();
                 } catch (e) {
                     console.error("Streaming error:", e);
-                    const msg = e instanceof Error ? e.message : String(e);
                     controller.enqueue(new TextEncoder().encode(`<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment.</question>`));
                     controller.close();
                 }

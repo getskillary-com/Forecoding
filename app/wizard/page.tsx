@@ -2,17 +2,35 @@
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
 import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText } from "lucide-react";
-import { Message, EvaluationResponse, GenerationResponse, Project, Task, ProjectVersion, Attachment, FileNode } from "@/types";
+import {
+    Message,
+    EvaluationResponse,
+    GenerationResponse,
+    Project,
+    Task,
+    ProjectVersion,
+    Attachment,
+    FileNode
+} from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
 import { DensityProgress } from "@/components/DensityProgress";
 import { FileTreeDisplay } from "@/components/FileTreeDisplay";
 import { ToolStackTable } from "@/components/ToolStackTable";
 import ArchitectureViewer from "@/components/ArchitectureViewer";
 import { VersionSidebar } from "@/components/VersionSidebar";
+import { UserCenter } from "@/components/UserCenter";
+import { BrandLogo } from "@/components/BrandLogo";
 import ReactMarkdown from 'react-markdown';
 import { useSearchParams, useRouter } from "next/navigation";
+import {
+    getCachedProjectSnapshot,
+    readProjectsFromLocalStorage,
+    writeProjectsToLocalStorage
+} from "@/lib/workspace-cache";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
+const MESSAGE_WINDOW_SIZE = 60;
+const MESSAGE_WINDOW_STEP = 40;
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -63,96 +81,163 @@ function buildProjectStructureContext(tree?: FileNode[]): string | null {
     return result || null;
 }
 
+function yieldToBrowser(): Promise<void> {
+    return new Promise((resolve) => {
+        if (typeof window === "undefined") {
+            resolve();
+            return;
+        }
+        requestAnimationFrame(() => resolve());
+    });
+}
 
 function WizardContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
+    const cachedSnapshot = getCachedProjectSnapshot(projectId);
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
     const MAIN_MIN = 420;
 
     // --- State ---
-    const [project, setProject] = useState<Project | null>(null);
-    const [currentVersion, setCurrentVersion] = useState<ProjectVersion | null>(null);
+    const [project, setProject] = useState<Project | null>(cachedSnapshot?.project ?? null);
+    const [currentVersion, setCurrentVersion] = useState<ProjectVersion | null>(cachedSnapshot?.version ?? null);
     const [isHydrating, setIsHydrating] = useState(false);
     const [loadedVersionId, setLoadedVersionId] = useState<string | null>(null);
     const [hasUserEdited, setHasUserEdited] = useState(false);
 
-    const [messages, setMessages] = useState<Message[]>([]);
+    const [messages, setMessages] = useState<Message[]>(cachedSnapshot?.data.messages ?? []);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+    const [messageWindow, setMessageWindow] = useState(MESSAGE_WINDOW_SIZE);
 
     // Core Domain State
-    const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
-    const [generation, setGeneration] = useState<GenerationResponse | null>(null);
-    const [tasks, setTasks] = useState<Task[]>([]);
+    const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(cachedSnapshot?.data.evaluation ?? null);
+    const [generation, setGeneration] = useState<GenerationResponse | null>(cachedSnapshot?.data.generation ?? null);
+    const [tasks, setTasks] = useState<Task[]>(cachedSnapshot?.data.tasks ?? []);
 
     // UI State
     const [isGenerating, setIsGenerating] = useState(false);
     const [generateError, setGenerateError] = useState<string | null>(null);
     const [sidebarWidth, setSidebarWidth] = useState(420);
     const isResizingRef = useRef(false);
+    const generateInFlightRef = useRef(false);
 
     // Chat Attachments
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const [currentDiagram, setCurrentDiagram] = useState("graph TD\nStart[Waiting for input...]");
+    const [currentDiagram, setCurrentDiagram] = useState(
+        cachedSnapshot?.data.currentDiagram || "graph TD\nStart[Waiting for input...]"
+    );
 
-    const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>('architecture');
+    const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
+        cachedSnapshot?.data.generation ? 'files' : 'architecture'
+    );
     const [isCopied, setIsCopied] = useState(false);
 
     // Batch Review State
     const [isReviewing, setIsReviewing] = useState(false);
     const [reviewProgress, setReviewProgress] = useState<string>("");
     const [reviewReport, setReviewReport] = useState<string | null>(null);
-
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const startupPromptText = generation?.startupPrompt || generation?.cursorPrompt || "";
+    const startupPromptTitle = "Startup Prompt";
+    const baseMessageIndex = Math.max(0, messages.length - messageWindow);
+    const visibleMessages = messages.slice(baseMessageIndex);
+    const hiddenMessageCount = baseMessageIndex;
+
+    const syncWorkspaceRemote = async (projects: Project[]) => {
+        try {
+            await fetch("/api/workspace", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ projects })
+            });
+        } catch (error) {
+            console.error("Failed to sync workspace", error);
+        }
+    };
+
 
     // --- Effects ---
 
     // 1. Load Project & Version Data
     useEffect(() => {
-        if (typeof window !== 'undefined' && projectId) {
+        if (typeof window === "undefined" || !projectId) return;
+
+        let cancelled = false;
+
+        const hydrateFromProject = (foundProject: Project) => {
+            if (cancelled) return;
+
+            setProject(foundProject);
+
+            const latestVersion = foundProject.versions[foundProject.versions.length - 1];
+            if (!latestVersion) return;
+
+            setCurrentVersion(latestVersion);
+            setLoadedVersionId(latestVersion.id);
+
+            const data = latestVersion.data;
+            setMessages(data.messages);
+            setMessageWindow(MESSAGE_WINDOW_SIZE);
+            setEvaluation(data.evaluation);
+            setGeneration(data.generation);
+            setCurrentDiagram(data.currentDiagram);
+            setTasks(data.tasks);
+
+            if (data.generation) setActiveTab("files");
+
+            if (versionId && versionId !== latestVersion.id) {
+                router.replace(`/wizard?projectId=${projectId}&versionId=${latestVersion.id}`);
+            }
+        };
+
+        const hydrate = async () => {
             setIsHydrating(true);
             setLoadedVersionId(null);
             setHasUserEdited(false);
-            const saved = localStorage.getItem("fl_projects_v2");
-            if (saved) {
-                try {
-                    const projects: Project[] = JSON.parse(saved);
-                    const foundProject = projects.find(p => p.id === projectId);
-                    if (foundProject) {
-                        setProject(foundProject);
-                        const latestVersion = foundProject.versions[foundProject.versions.length - 1];
-                        if (latestVersion) {
-                            setCurrentVersion(latestVersion);
-                            setLoadedVersionId(latestVersion.id);
-                            // Hydrate State
-                            const data = latestVersion.data;
-                            setMessages(data.messages);
-                            setEvaluation(data.evaluation);
-                            setGeneration(data.generation);
-                            setCurrentDiagram(data.currentDiagram);
-                            setTasks(data.tasks);
+            await yieldToBrowser();
 
-                            // Auto-set tab
-                            if (data.generation) setActiveTab('files');
+            const localProjects = readProjectsFromLocalStorage();
+            const localProject = localProjects.find((p) => p.id === projectId);
+            if (localProject) {
+                hydrateFromProject(localProject);
+            }
 
-                            if (versionId && versionId !== latestVersion.id) {
-                                router.replace(`/wizard?projectId=${projectId}&versionId=${latestVersion.id}`);
+            try {
+                const res = await fetch("/api/workspace", { cache: "no-store" });
+                if (res.ok) {
+                    const data = (await res.json()) as { projects?: Project[] };
+                    if (Array.isArray(data.projects)) {
+                        if (data.projects.length > 0 || localProjects.length === 0) {
+                            writeProjectsToLocalStorage(data.projects);
+                            const remoteProject = data.projects.find((p) => p.id === projectId);
+                            if (remoteProject) {
+                                hydrateFromProject(remoteProject);
                             }
+                        } else {
+                            void syncWorkspaceRemote(localProjects);
                         }
                     }
-                } catch (e) {
-                    console.error("Failed to load project", e);
+                }
+            } catch (error) {
+                console.error("Failed to load remote workspace", error);
+            } finally {
+                if (!cancelled) {
+                    setIsHydrating(false);
                 }
             }
-            // Allow state to settle before enabling autosave
-            setTimeout(() => setIsHydrating(false), 0);
-        }
+        };
+
+        void hydrate();
+
+        return () => {
+            cancelled = true;
+        };
     }, [projectId, versionId, router]);
 
     // 1b. Load persisted sidebar width
@@ -242,16 +327,21 @@ function WizardContent() {
         };
 
         // Persist
-        const saved = localStorage.getItem("fl_projects_v2");
-        if (saved) {
-            try {
-                const projects: Project[] = JSON.parse(saved);
-                const newProjects = projects.map(p => p.id === project.id ? updatedProject : p);
-                localStorage.setItem("fl_projects_v2", JSON.stringify(newProjects));
-            } catch (e) {
-                console.error("Failed to persist project", e);
-            }
-        }
+        const projects = readProjectsFromLocalStorage();
+
+        const exists = projects.some((p) => p.id === project.id);
+        const newProjects = exists
+            ? projects.map((p) => (p.id === project.id ? updatedProject : p))
+            : [updatedProject, ...projects];
+
+        writeProjectsToLocalStorage(newProjects);
+        const syncTimer = window.setTimeout(() => {
+            void syncWorkspaceRemote(newProjects);
+        }, 400);
+
+        return () => {
+            window.clearTimeout(syncTimer);
+        };
 
         // Update local state references to avoid stale closures if needed, 
         // but we rely on the effect dependencies to trigger updates.
@@ -260,13 +350,24 @@ function WizardContent() {
         // However, infinite loop risk if we include project in deps.
         // So we only update localStorage here.
 
-    }, [messages, evaluation, generation, currentDiagram, tasks, project, currentVersion, projectId, isHydrating, loadedVersionId, hasUserEdited]);
+    }, [
+        messages,
+        evaluation,
+        generation,
+        currentDiagram,
+        tasks,
+        project,
+        currentVersion,
+        projectId,
+        isHydrating,
+        loadedVersionId,
+        hasUserEdited
+    ]);
 
     // 4. Scroll to bottom
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
-
 
     // --- Handlers ---
 
@@ -346,6 +447,15 @@ function WizardContent() {
         }
     };
 
+    const updateAssistantPlaceholder = (text: string) => {
+        setMessages(prev => {
+            if (prev.length === 0) return prev;
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: text };
+            return updated;
+        });
+    };
+
     const handleSend = async (overrideInput?: string) => {
         const textToSend = overrideInput || input;
 
@@ -365,30 +475,31 @@ function WizardContent() {
         const newMessages = [...messages, newUserMessage];
         const assistantPlaceholder: Message = { role: "assistant", content: "" };
         setMessages([...newMessages, assistantPlaceholder]);
+        setMessageWindow(MESSAGE_WINDOW_SIZE);
         setInput("");
         setPendingAttachments([]);
         setIsLoading(true);
 
         try {
-            // Include project structure context for the chat model.
-
-            // Call API with full structured messages
+            await yieldToBrowser();
             const structureContext = buildProjectStructureContext(generation?.projectTree);
 
             const res = await fetch("/api/evaluate", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ messages: newMessages, context: structureContext }),
+                body: JSON.stringify({
+                    messages: newMessages,
+                    context: structureContext,
+                    generationReady: Boolean(generation)
+                }),
             });
-
-
 
             if (!res.ok || !res.body) throw new Error("Failed to evaluate");
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
-            let currentEval: EvaluationResponse = {
+            const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
                 current_diagram: currentDiagram,
@@ -406,7 +517,7 @@ function WizardContent() {
                 // --- Stream Parsing (Identical logic) ---
                 const diagramMatch = buffer.match(/<diagram>([\s\S]*?)<\/diagram>/);
                 if (diagramMatch && diagramMatch[1]) {
-                    let rawContent = diagramMatch[1].trim();
+                    const rawContent = diagramMatch[1].trim();
                     let code = rawContent;
 
                     // Try to extract mermaid code block if explicitly present
@@ -429,11 +540,7 @@ function WizardContent() {
                     const q = questionMatch[1].trim();
                     if (q) {
                         currentEval.next_step.question = q;
-                        setMessages(prev => {
-                            const updated = [...prev];
-                            updated[updated.length - 1].content = q;
-                            return updated;
-                        });
+                        updateAssistantPlaceholder(q);
                     }
                 }
 
@@ -490,11 +597,14 @@ function WizardContent() {
     };
 
     // --- Generation Handler ---
-    const handleGenerate = async () => {
+    const generateBlueprint = async () => {
+        if (generateInFlightRef.current) return;
+        generateInFlightRef.current = true;
         setIsGenerating(true);
         setGenerateError(null);
         setHasUserEdited(true);
         try {
+            await yieldToBrowser();
             const historyText = messages.map(m => `${m.role}: ${m.content}`).join("\n") +
                 `\n\nFinal Analysis: ${JSON.stringify(evaluation?.analysis)}`;
 
@@ -504,13 +614,25 @@ function WizardContent() {
                 body: JSON.stringify({
                     summary: historyText,
                     diagram: currentDiagram,
+                    projectName: project?.name,
                     // If this version has a generation already (or base version had one), we can pass it?
                     // Actually, for v2, `generation` state was initialized from base. That is our "existingProjectTree".
                     currentProjectTree: generation?.projectTree
                 }),
             });
 
-            if (!res.ok) throw new Error("Failed to generate");
+            if (!res.ok) {
+                let errorMessage = "Failed to generate";
+                try {
+                    const payload = await res.json() as { error?: string; details?: string };
+                    if (payload.error) {
+                        errorMessage = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
+                    }
+                } catch {
+                    // ignore parse error and keep fallback message
+                }
+                throw new Error(errorMessage);
+            }
             const data: GenerationResponse = await res.json();
             setGeneration(data);
 
@@ -525,10 +647,19 @@ function WizardContent() {
 
         } catch (error) {
             console.error(error);
-            setGenerateError("Blueprint generation failed.");
+            setGenerateError(error instanceof Error ? error.message : "Blueprint generation failed.");
         } finally {
             setIsGenerating(false);
+            generateInFlightRef.current = false;
         }
+    };
+
+    const handleGenerate = async () => {
+        if (!project?.id) return;
+        if (isGenerating) return;
+
+        setGenerateError(null);
+        await generateBlueprint();
     };
 
     // --- Deep Review Handler ---
@@ -586,12 +717,13 @@ function WizardContent() {
         }
     };
 
-    if (!project || !currentVersion) return <div className="flex h-screen items-center justify-center">Loading Workspace...</div>;
+    if (!project || !currentVersion) return <WizardSkeleton />;
 
     return (
-        <div className="flex h-screen w-full bg-gray-50 dark:bg-black overflow-hidden font-sans text-gray-900 dark:text-gray-100">
-            {/* Project Sidebar + Chat (Left) */}
-            <VersionSidebar project={project} width={sidebarWidth}>
+        <>
+            <div className="flex h-screen w-full bg-gray-50 dark:bg-black overflow-hidden font-sans text-gray-900 dark:text-gray-100">
+                {/* Project Sidebar + Chat (Left) */}
+                <VersionSidebar project={project} width={sidebarWidth}>
                 <div className="flex flex-col h-full min-h-0">
                     <div className="flex-1 min-h-0">
                         <div className="h-full flex flex-col bg-white dark:bg-gray-900/50 shadow-sm z-10 relative" onPaste={handlePaste}>
@@ -605,9 +737,25 @@ function WizardContent() {
 
                             {/* Chat Area */}
                             <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-hide">
-                                {messages.map((msg, idx) => (
-                                    <ChatBubble key={idx} message={msg} onOptionClick={handleOptionClick} />
-                                ))}
+                                {hiddenMessageCount > 0 && (
+                                    <div className="flex justify-center">
+                                        <button
+                                            onClick={() => {
+                                                setMessageWindow((prev) => Math.min(messages.length, prev + MESSAGE_WINDOW_STEP));
+                                            }}
+                                            className="px-3 py-1.5 text-xs rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                        >
+                                            Show {Math.min(MESSAGE_WINDOW_STEP, hiddenMessageCount)} earlier messages ({hiddenMessageCount} hidden)
+                                        </button>
+                                    </div>
+                                )}
+
+                                {visibleMessages.map((msg, idx) => {
+                                    const messageIndex = baseMessageIndex + idx;
+                                    return (
+                                        <ChatBubble key={messageIndex} message={msg} onOptionClick={handleOptionClick} />
+                                    );
+                                })}
 
                                 {isLoading && (
                                     <div className="flex justify-start animate-pulse">
@@ -639,7 +787,9 @@ function WizardContent() {
                                                     disabled={isGenerating}
                                                     className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95"
                                                 >
-                                                    {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles className="w-5 h-5" />}
+                                                    {isGenerating
+                                                        ? <Loader2 className="animate-spin" />
+                                                        : <Sparkles className="w-5 h-5" />}
                                                     {isGenerating ? "Architecting Solution..." : "Generate Blueprint"}
                                                 </button>
                                                 {generateError && (
@@ -746,6 +896,16 @@ function WizardContent() {
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="flex-1 min-w-0 flex flex-col h-full bg-gray-100 dark:bg-gray-950 p-4 md:p-6 overflow-hidden relative">
+                <div className="mb-3 flex items-center justify-between flex-shrink-0">
+                    <BrandLogo
+                        showText={false}
+                        iconClassName="w-[clamp(20px,2vw,28px)] h-[clamp(20px,2vw,28px)]"
+                    />
+                    <div className="flex items-center gap-2">
+                        <UserCenter signOutCallbackUrl="/" />
+                    </div>
+                </div>
+
                 {/* Tabs */}
                 <div className="flex space-x-1 mb-4 border-b border-gray-200 dark:border-gray-800 pb-1 overflow-x-auto flex-shrink-0">
                     <TabButton
@@ -844,7 +1004,7 @@ function WizardContent() {
                                 <div className="flex flex-col h-full bg-blue-50/30 dark:bg-blue-900/5 min-h-0">
                                     <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center bg-blue-50 dark:bg-blue-900/20 shrink-0">
                                         <h4 className="font-bold text-sm text-blue-800 dark:text-blue-200 flex items-center gap-2">
-                                            <Sparkles className="w-4 h-4" /> Startup Prompt
+                                            <Sparkles className="w-4 h-4" /> {startupPromptTitle}
                                         </h4>
                                         <div className="flex gap-2">
                                             <button
@@ -858,7 +1018,7 @@ function WizardContent() {
                                             </button>
                                             <button
                                                 onClick={() => {
-                                                    navigator.clipboard.writeText(generation.cursorPrompt);
+                                                    navigator.clipboard.writeText(startupPromptText);
                                                     setIsCopied(true);
                                                     setTimeout(() => setIsCopied(false), 2000);
                                                 }}
@@ -880,7 +1040,7 @@ function WizardContent() {
                                     </div>
                                     <div className="flex-1 p-4 overflow-y-auto min-h-0">
                                         <pre className="text-xs font-mono bg-white dark:bg-gray-900 p-4 rounded-xl border border-blue-100 dark:border-blue-900/30 whitespace-pre-wrap text-gray-600 dark:text-gray-300 h-full overflow-y-auto">
-                                            {generation.cursorPrompt}
+                                            {startupPromptText}
                                         </pre>
                                     </div>
                                 </div>
@@ -893,7 +1053,7 @@ function WizardContent() {
                                         </h4>
                                     </div>
                                     <div className="flex-1 p-4 overflow-y-auto min-h-0">
-                                        <FileTreeDisplay content={generation.projectTree} globalPrompt={generation.cursorPrompt} />
+                                        <FileTreeDisplay content={generation.projectTree} globalPrompt={generation.cursorPrompt} projectName={project?.name} />
                                     </div>
                                 </div>
                             </div>
@@ -910,6 +1070,7 @@ function WizardContent() {
                             <ToolStackTable content={generation.toolStack} />
                         </div>
                     )}
+
                 </div>
 
                 {isReviewing && (
@@ -941,8 +1102,9 @@ function WizardContent() {
                         </div>
                     </div>
                 )}
-            </main>
-        </div>
+                </main>
+            </div>
+        </>
     );
 }
 
@@ -966,6 +1128,47 @@ function TabButton({ active, onClick, icon, label, disabled }: TabButtonProps) {
             {icon}
             <span>{label}</span>
         </button>
+    );
+}
+
+function WizardSkeleton() {
+    return (
+        <div className="flex h-screen w-full bg-gray-50 dark:bg-black overflow-hidden font-sans text-gray-900 dark:text-gray-100">
+            <div className="w-[420px] min-w-[320px] max-w-[720px] h-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/50 flex flex-col">
+                <div className="p-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/50">
+                    <div className="h-4 w-40 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                </div>
+                <div className="flex-1 p-4 space-y-4 overflow-hidden">
+                    <div className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                    <div className="h-16 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                    <div className="h-24 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                    <div className="h-14 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                </div>
+                <div className="p-4 border-t border-gray-200 dark:border-gray-800">
+                    <div className="h-12 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                </div>
+            </div>
+
+            <div className="flex-1 min-w-0 h-full bg-gray-100 dark:bg-gray-950 p-4 md:p-6 overflow-hidden">
+                <div className="mb-3 flex items-center justify-between">
+                    <div className="h-6 w-6 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                    <div className="h-8 w-20 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                </div>
+                <div className="mb-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/60 p-3">
+                    <div className="h-4 w-36 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                    <div className="mt-2 h-3 w-48 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" />
+                </div>
+                <div className="mb-4 flex gap-2">
+                    <div className="h-8 w-28 bg-gray-200 dark:bg-gray-800 rounded-lg animate-pulse" />
+                    <div className="h-8 w-24 bg-gray-200 dark:bg-gray-800 rounded-lg animate-pulse" />
+                    <div className="h-8 w-24 bg-gray-200 dark:bg-gray-800 rounded-lg animate-pulse" />
+                </div>
+                <div className="flex-1 min-h-0 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm p-6">
+                    <div className="h-4 w-40 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+                    <div className="mt-4 h-56 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                </div>
+            </div>
+        </div>
     );
 }
 

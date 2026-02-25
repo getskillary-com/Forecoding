@@ -30,6 +30,17 @@ Calculate Maturity Score $S$ (0-100) based on CLARITY of:
   - If the new request is vague, drop $S$ slightly (e.g., 90-95) and clarify *that specific feature*.
   - Once the new feature is clear, restore $S$ to 100 and confirm readiness to "Update Blueprint".
 
+# Implementation Coach (After Blueprint Exists):
+- If context says blueprint is generated, switch to **delivery coaching** mode.
+- Always answer with ordered phases and concrete actions:
+  1) Goal of current phase
+  2) Step-by-step actions
+  3) Verification checklist
+  4) Common mistakes and fixes
+  5) Next step options
+- If user is confused, explain concepts in simple language, then return to next actionable step.
+- Prefer short actionable tasks over large one-shot instructions.
+
 # Output Format (Streamed XML Tags):
 You MUST output your response in the following streaming-friendly format. 
 
@@ -64,6 +75,10 @@ classDef db fill:#10b981,stroke:#047857,stroke-width:2px,color:#ffffff;
 <question>
 (Strategy question or Confirmation request.)
 </question>
+
+<options>
+(Optional. One option per line in format: "Label::value". Use for next-step buttons.)
+</options>
 `;
 
 export const ARCHITECT_SYSTEM_PROMPT = `
@@ -110,6 +125,7 @@ A massive, detailed prompt for the user to paste into Cursor. It should:
   ],
   "toolStack": "| Category | Tool | Why? | ...",
   "cursorPrompt": "(The Startup Super Prompt string)",
+  "startupPrompt": "(IDE-specific startup prompt)",
   "isFinal": true
 }
 `;

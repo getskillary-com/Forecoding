@@ -8,7 +8,9 @@ export default async function WizardLayout({
     children: React.ReactNode;
 }) {
     const session = await getServerSession(authOptions);
-    if (!session) {
+    const userId = (session?.user as { id?: string } | undefined)?.id;
+
+    if (!session || !userId) {
         redirect("/login?callbackUrl=/dashboard");
     }
 

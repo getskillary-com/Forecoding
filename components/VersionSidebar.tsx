@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Project } from "@/types";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { BrandLogo } from "@/components/BrandLogo";
 
 interface VersionSidebarProps {
     project: Project;
@@ -26,6 +27,10 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                 <Link href="/dashboard" className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors">
                     <ArrowLeft className="w-4 h-4 text-gray-500" />
                 </Link>
+                <BrandLogo
+                    showText={false}
+                    iconClassName="w-[clamp(18px,1.8vw,24px)] h-[clamp(18px,1.8vw,24px)]"
+                />
                 <div className="flex-1 min-w-0">
                     <h2 className="font-bold text-sm text-gray-900 dark:text-gray-100 truncate">{project.name}</h2>
                     <p className="text-xs text-gray-500 truncate">Project Workspace</p>
