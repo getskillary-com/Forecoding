@@ -131,12 +131,12 @@ function parseOptionsBlock(raw: string) {
         .filter(Boolean)
         .map((line) => line.replace(/^[-*]\s*/, ""))
         .map((line) => line.replace(/^["']|["']$/g, ""))
-        .filter((line) => line.includes("::"))
         .map((line) => {
             const [rawLabel, ...rest] = line.split("::");
             const label = (rawLabel || "").trim();
-            const value = rest.join("::").trim();
-            if (!label || !value) return null;
+            const valueRaw = rest.join("::").trim();
+            const value = valueRaw || label;
+            if (!label) return null;
             return { label, value };
         })
         .filter((item): item is { label: string; value: string } => Boolean(item));
@@ -958,7 +958,10 @@ function WizardContent() {
         }
     };
 
-    const handleOptionClick = (value: string) => handleSend(value);
+    const handleOptionClick = (value: string) => {
+        setInput(value);
+        void handleSend(value);
+    };
 
     const handleResizeStart = (e: React.PointerEvent) => {
         e.preventDefault();
