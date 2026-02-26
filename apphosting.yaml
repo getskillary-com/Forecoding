@@ -40,7 +40,7 @@ env:
     availability:
       - RUNTIME
   - variable: STRIPE_UNIT_AMOUNT_CENTS
-    value: "990"
+    value: "499"
     availability:
       - RUNTIME
   - variable: STRIPE_CURRENCY
