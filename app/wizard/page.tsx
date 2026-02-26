@@ -120,10 +120,13 @@ function WizardContent() {
 
     // UI State
     const [isGenerating, setIsGenerating] = useState(false);
+    const [isCheckingOut, setIsCheckingOut] = useState(false);
     const [generateError, setGenerateError] = useState<string | null>(null);
     const [sidebarWidth, setSidebarWidth] = useState(420);
     const isResizingRef = useRef(false);
     const generateInFlightRef = useRef(false);
+    const evaluateAbortRef = useRef<AbortController | null>(null);
+    const evalRequestIdRef = useRef(0);
 
     // Chat Attachments
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
@@ -148,6 +151,7 @@ function WizardContent() {
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
     const visibleMessages = messages.slice(baseMessageIndex);
     const hiddenMessageCount = baseMessageIndex;
+    const hasPaid = currentVersion?.data.paymentStatus === "paid";
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -239,6 +243,34 @@ function WizardContent() {
             cancelled = true;
         };
     }, [projectId, versionId, router]);
+
+    // 1e. Handle payment redirect flags
+    useEffect(() => {
+        if (!projectId) return;
+        const payment = searchParams.get("payment");
+        if (!payment) return;
+        if (!currentVersion) return;
+
+        if (payment === "success") {
+            if (currentVersion.data.paymentStatus !== "paid") {
+                setHasUserEdited(true);
+                setCurrentVersion({
+                    ...currentVersion,
+                    data: {
+                        ...currentVersion.data,
+                        paymentStatus: "paid"
+                    }
+                });
+            }
+        } else if (payment === "cancelled") {
+            setGenerateError("Payment cancelled.");
+        }
+
+        const params = new URLSearchParams();
+        params.set("projectId", projectId);
+        params.set("versionId", currentVersion.id);
+        router.replace(`/wizard?${params.toString()}`);
+    }, [searchParams, currentVersion, projectId, router]);
 
     // 1b. Load persisted sidebar width
     useEffect(() => {
@@ -451,18 +483,37 @@ function WizardContent() {
         setMessages(prev => {
             if (prev.length === 0) return prev;
             const updated = [...prev];
-            updated[updated.length - 1] = { ...updated[updated.length - 1], content: text };
+            const last = updated[updated.length - 1];
+            if (last.role !== "assistant") return prev;
+            updated[updated.length - 1] = { ...last, content: text };
             return updated;
         });
+    };
+
+    const cancelEvaluation = (message?: string) => {
+        if (evaluateAbortRef.current) {
+            evaluateAbortRef.current.abort();
+            evaluateAbortRef.current = null;
+        }
+        evalRequestIdRef.current += 1;
+        setIsLoading(false);
+        if (message) updateAssistantPlaceholder(message);
     };
 
     const handleSend = async (overrideInput?: string) => {
         const textToSend = overrideInput || input;
 
         // Allow sending if text OR attachments exist
-        if ((!textToSend.trim() && pendingAttachments.length === 0) || isLoading) return;
+        if (!textToSend.trim() && pendingAttachments.length === 0) return;
+
+        if (isLoading) {
+            cancelEvaluation("Response cancelled.");
+        }
 
         const attachmentsToSend = [...pendingAttachments];
+
+        const requestId = evalRequestIdRef.current + 1;
+        evalRequestIdRef.current = requestId;
 
         // Optimistic UI Update
         setHasUserEdited(true);
@@ -483,6 +534,8 @@ function WizardContent() {
         try {
             await yieldToBrowser();
             const structureContext = buildProjectStructureContext(generation?.projectTree);
+            const controller = new AbortController();
+            evaluateAbortRef.current = controller;
 
             const res = await fetch("/api/evaluate", {
                 method: "POST",
@@ -492,6 +545,7 @@ function WizardContent() {
                     context: structureContext,
                     generationReady: Boolean(generation)
                 }),
+                signal: controller.signal
             });
 
             if (!res.ok || !res.body) throw new Error("Failed to evaluate");
@@ -580,10 +634,19 @@ function WizardContent() {
             }
 
         } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") {
+                // Swallow abort errors
+                return;
+            }
             console.error(error);
             setMessages(prev => [...prev.slice(0, -1), { role: "assistant", content: "Error: " + String(error) }]);
         } finally {
-            setIsLoading(false);
+            if (evalRequestIdRef.current === requestId) {
+                setIsLoading(false);
+            }
+            if (evaluateAbortRef.current) {
+                evaluateAbortRef.current = null;
+            }
         }
     };
 
@@ -654,11 +717,60 @@ function WizardContent() {
         }
     };
 
+    const startCheckout = async () => {
+        if (!projectId || !currentVersion) {
+            setGenerateError("Missing project context for checkout.");
+            return;
+        }
+        if (isCheckingOut) return;
+        setIsCheckingOut(true);
+
+        try {
+            const baseParams = new URLSearchParams();
+            baseParams.set("projectId", projectId);
+            baseParams.set("versionId", currentVersion.id);
+            const successPath = `/wizard?${baseParams.toString()}&payment=success`;
+            const cancelPath = `/wizard?${baseParams.toString()}&payment=cancelled`;
+
+            const res = await fetch("/api/payments/stripe/checkout", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    projectId,
+                    projectName: project?.name || "Project Credit",
+                    successPath,
+                    cancelPath
+                })
+            });
+
+            if (res.status === 401) {
+                router.push("/login");
+                return;
+            }
+
+            const data = (await res.json()) as { checkoutUrl?: string; error?: string };
+            if (!res.ok || !data.checkoutUrl) {
+                throw new Error(data.error || "Unable to start Stripe checkout.");
+            }
+
+            window.location.assign(data.checkoutUrl);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to start checkout.";
+            setGenerateError(message);
+        } finally {
+            setIsCheckingOut(false);
+        }
+    };
+
     const handleGenerate = async () => {
         if (!project?.id) return;
-        if (isGenerating) return;
+        if (isGenerating || isCheckingOut) return;
 
         setGenerateError(null);
+        if (!hasPaid) {
+            await startCheckout();
+            return;
+        }
         await generateBlueprint();
     };
 
@@ -782,22 +894,30 @@ function WizardContent() {
                                             </>
                                         ) : (
                                             <>
-                                                <button
-                                                    onClick={handleGenerate}
-                                                    disabled={isGenerating}
-                                                    className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95"
-                                                >
-                                                    {isGenerating
-                                                        ? <Loader2 className="animate-spin" />
-                                                        : <Sparkles className="w-5 h-5" />}
-                                                    {isGenerating ? "Architecting Solution..." : "Generate Blueprint"}
-                                                </button>
-                                                {generateError && (
-                                                    <div className="text-xs text-red-500 text-center">{generateError}</div>
-                                                )}
-                                                <p className="text-xs text-center text-gray-500">Ready to build or update blueprint</p>
-                                            </>
-                                        )}
+                                            <button
+                                                onClick={handleGenerate}
+                                                disabled={isGenerating || isCheckingOut}
+                                                className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95"
+                                            >
+                                                {isGenerating || isCheckingOut
+                                                    ? <Loader2 className="animate-spin" />
+                                                    : <Sparkles className="w-5 h-5" />}
+                                                {isCheckingOut
+                                                    ? "Redirecting to Payment..."
+                                                    : isGenerating
+                                                        ? "Architecting Solution..."
+                                                        : hasPaid
+                                                            ? "Generate Blueprint"
+                                                            : "Proceed to Payment"}
+                                            </button>
+                                            {generateError && (
+                                                <div className="text-xs text-red-500 text-center">{generateError}</div>
+                                            )}
+                                            <p className="text-xs text-center text-gray-500">
+                                                {hasPaid ? "Ready to build or update blueprint" : "Payment required before generation"}
+                                            </p>
+                                        </>
+                                    )}
                                     </div>
                                 ) : (
                                     <div className="flex flex-col gap-2">
@@ -864,14 +984,14 @@ function WizardContent() {
                                                 }}
                                                 onPaste={handlePaste}
                                                 placeholder={`Describe requirements for ${project.name}...`}
-                                                disabled={isLoading || isGenerating}
+                                                disabled={isGenerating}
                                                 rows={1}
                                                 className="flex-1 p-2 bg-transparent border-none focus:ring-0 focus:outline-none resize-none overflow-hidden min-h-[40px] max-h-[150px]"
                                             />
 
                                             <button
                                                 onClick={() => handleSend()}
-                                                disabled={(!input.trim() && pendingAttachments.length === 0) || isLoading || isGenerating}
+                                                disabled={(!input.trim() && pendingAttachments.length === 0) || isGenerating}
                                                 className="p-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 text-white rounded-lg transition-colors mb-1 shadow-sm"
                                             >
                                                 {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}

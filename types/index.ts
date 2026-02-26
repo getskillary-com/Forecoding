@@ -62,6 +62,7 @@ export interface ProjectVersionData {
     generation: GenerationResponse | null;
     currentDiagram: string;
     tasks: Task[];
+    paymentStatus?: "paid" | "unpaid";
 }
 
 // Represents a specific snapshot/iteration of a project
