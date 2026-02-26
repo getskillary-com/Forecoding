@@ -41,8 +41,8 @@ export function getStripeCurrency() {
 }
 
 export function getStripeUnitAmountCents() {
-    const value = Number(process.env.STRIPE_UNIT_AMOUNT_CENTS || "990");
-    if (!Number.isFinite(value)) return 990;
+    const value = Number(process.env.STRIPE_UNIT_AMOUNT_CENTS || "166");
+    if (!Number.isFinite(value)) return 166;
     return Math.max(1, Math.round(value));
 }
 

@@ -264,6 +264,79 @@ function buildEvaluateRequestBody(
     });
 }
 
+function compactProjectTreeForPricing(nodes?: FileNode[]): FileNode[] {
+    if (!nodes?.length) return [];
+
+    return nodes.map((node) => {
+        if (node.type === "folder") {
+            return {
+                name: node.name,
+                type: "folder",
+                children: compactProjectTreeForPricing(node.children)
+            };
+        }
+
+        return {
+            name: node.name,
+            type: "file"
+        };
+    });
+}
+
+function buildPricingProjectSnapshot(
+    project: Project | null,
+    currentVersion: ProjectVersion | null,
+    messages: Message[],
+    evaluation: EvaluationResponse | null,
+    generation: GenerationResponse | null,
+    currentDiagram: string,
+    tasks: Task[]
+): Project | null {
+    if (!project || !currentVersion) return null;
+
+    const compactMessages: Message[] = messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+        options: message.options,
+        attachments: message.attachments?.map((attachment) => ({
+            ...attachment,
+            // Pricing only needs attachment count, not payload bytes.
+            content: ""
+        }))
+    }));
+
+    const compactGeneration: GenerationResponse | null = generation
+        ? {
+            ...generation,
+            projectTree: compactProjectTreeForPricing(generation.projectTree)
+        }
+        : null;
+
+    const snapshotVersion: ProjectVersion = {
+        ...currentVersion,
+        data: {
+            ...currentVersion.data,
+            messages: compactMessages,
+            evaluation,
+            generation: compactGeneration,
+            currentDiagram,
+            tasks,
+            paymentStatus: currentVersion.data.paymentStatus
+        }
+    };
+
+    const versionExists = project.versions.some((version) => version.id === snapshotVersion.id);
+    const versions = versionExists
+        ? project.versions.map((version) => (version.id === snapshotVersion.id ? snapshotVersion : version))
+        : [...project.versions, snapshotVersion];
+
+    return {
+        ...project,
+        updatedAt: Date.now(),
+        versions
+    };
+}
+
 function WizardContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -472,7 +545,18 @@ function WizardContent() {
                 const res = await fetch("/api/payments/stripe/quote", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ projectId }),
+                    body: JSON.stringify({
+                        projectId,
+                        projectSnapshot: buildPricingProjectSnapshot(
+                            project,
+                            currentVersion,
+                            messages,
+                            evaluation,
+                            generation,
+                            currentDiagram,
+                            tasks
+                        )
+                    }),
                     signal: controller.signal
                 });
 
@@ -505,10 +589,13 @@ function WizardContent() {
     }, [
         projectId,
         hasPaid,
-        evaluation?.is_ready,
-        messages.length,
-        currentVersion?.id,
-        generation?.projectTree?.length
+        project,
+        currentVersion,
+        messages,
+        evaluation,
+        generation,
+        currentDiagram,
+        tasks
     ]);
 
     // 1b. Load persisted sidebar width
@@ -587,7 +674,8 @@ function WizardContent() {
                 evaluation,
                 generation,
                 currentDiagram,
-                tasks
+                tasks,
+                paymentStatus: currentVersion.data.paymentStatus
             }
         };
 
@@ -901,7 +989,19 @@ function WizardContent() {
                 }
 
                 const densityMatch = buffer.match(/<density>\s*(\d+)\s*<\/density>/);
-                if (densityMatch) currentEval.density_score = parseInt(densityMatch[1]);
+                if (densityMatch) {
+                    currentEval.density_score = parseInt(densityMatch[1]);
+                    if (currentEval.density_score >= 100) {
+                        setMessages(prev => {
+                            if (evalRequestIdRef.current !== requestId) return prev;
+                            const updated = [...prev];
+                            const current = updated[assistantIndex];
+                            if (!current || current.role !== "assistant") return prev;
+                            updated[assistantIndex] = { ...current, options: [] };
+                            return updated;
+                        });
+                    }
+                }
 
                 const readyMatch = buffer.match(/<is_ready>\s*(true|false)\s*<\/is_ready>/);
                 if (readyMatch) currentEval.is_ready = readyMatch[1] === 'true';
@@ -919,7 +1019,9 @@ function WizardContent() {
                 // Options
                 const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/);
                 if (optionsMatch) {
-                    const options = parseOptionsBlock(optionsMatch[1]);
+                    const options = currentEval.density_score >= 100
+                        ? []
+                        : parseOptionsBlock(optionsMatch[1]);
                     setMessages(prev => {
                         if (evalRequestIdRef.current !== requestId) return prev;
                         const updated = [...prev];
@@ -1055,7 +1157,16 @@ function WizardContent() {
                     projectId,
                     projectName: project?.name || "Project Credit",
                     successPath,
-                    cancelPath
+                    cancelPath,
+                    projectSnapshot: buildPricingProjectSnapshot(
+                        project,
+                        currentVersion,
+                        messages,
+                        evaluation,
+                        generation,
+                        currentDiagram,
+                        tasks
+                    )
                 })
             });
 

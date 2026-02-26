@@ -21,6 +21,7 @@ type CheckoutRequestBody = {
     projectName?: string;
     successPath?: string;
     cancelPath?: string;
+    projectSnapshot?: unknown;
 };
 
 function resolveBaseUrl(req: Request) {
@@ -56,6 +57,14 @@ function parseProjects(raw: unknown): Project[] {
     });
 }
 
+function parseProjectSnapshot(raw: unknown, projectId: string): Project | null {
+    if (!raw || typeof raw !== "object") return null;
+    const candidate = raw as Project;
+    if (typeof candidate.id !== "string" || candidate.id !== projectId) return null;
+    if (!Array.isArray(candidate.versions)) return null;
+    return candidate;
+}
+
 async function loadProjectForUser(userId: string, projectId: string) {
     const workspace = await withPrismaRetry(() =>
         prisma.workspaceState.findUnique({
@@ -86,7 +95,9 @@ export async function POST(req: Request) {
 
         const body = (await req.json()) as CheckoutRequestBody;
         const projectId = sanitizeText(body.projectId, "project-credit");
-        const project = await loadProjectForUser(user.id, projectId);
+        const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
+        const projectFromWorkspace = await loadProjectForUser(user.id, projectId);
+        const project = projectFromSnapshot || projectFromWorkspace;
         const projectName = sanitizeText(project?.name || body.projectName, "Project Credit");
         const currency = getStripeCurrency();
         const quote = quoteProjectCreditPrice(project, {

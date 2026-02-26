@@ -15,6 +15,7 @@ export const runtime = "nodejs";
 
 type QuoteRequestBody = {
     projectId?: string;
+    projectSnapshot?: unknown;
 };
 
 function sanitizeText(value: string | undefined) {
@@ -29,6 +30,14 @@ function parseProjects(raw: unknown): Project[] {
         const id = (item as { id?: unknown }).id;
         return typeof id === "string" && id.length > 0;
     });
+}
+
+function parseProjectSnapshot(raw: unknown, projectId: string): Project | null {
+    if (!raw || typeof raw !== "object") return null;
+    const candidate = raw as Project;
+    if (typeof candidate.id !== "string" || candidate.id !== projectId) return null;
+    if (!Array.isArray(candidate.versions)) return null;
+    return candidate;
 }
 
 async function loadProjectForUser(userId: string, projectId: string) {
@@ -57,7 +66,9 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Missing projectId." }, { status: 400 });
         }
 
-        const project = await loadProjectForUser(user.id, projectId);
+        const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
+        const projectFromWorkspace = await loadProjectForUser(user.id, projectId);
+        const project = projectFromSnapshot || projectFromWorkspace;
         const currency = getStripeCurrency();
         const quote = quoteProjectCreditPrice(project, {
             baseAmountCents: getStripeUnitAmountCents(),
