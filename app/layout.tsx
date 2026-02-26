@@ -10,16 +10,16 @@ export const metadata: Metadata = {
   manifest: "/site.webmanifest",
   icons: {
     icon: [
-      { url: "/favicon-v2.ico", type: "image/x-icon" },
-      { url: "/favicon-v2-16x16.png", sizes: "16x16", type: "image/png" },
-      { url: "/favicon-v2-32x32.png", sizes: "32x32", type: "image/png" },
-      { url: "/favicon-v2-48x48.png", sizes: "48x48", type: "image/png" },
+      { url: "/favicon.ico", type: "image/x-icon" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-48x48.png", sizes: "48x48", type: "image/png" },
       { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
       { url: "/icon-512.png", sizes: "512x512", type: "image/png" }
     ],
-    shortcut: "/favicon-v2.ico",
+    shortcut: "/favicon.ico",
     apple: [
-      { url: "/apple-touch-icon-v2.png", sizes: "180x180", type: "image/png" }
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }
     ]
   }
 };
