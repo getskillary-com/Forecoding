@@ -7,37 +7,10 @@ import {
     Workflow,
     Layers3,
     ShieldCheck,
-    CheckCircle2,
-    Briefcase,
-    Bot,
-    ShoppingCart,
-    PlaySquare
+    CheckCircle2
 } from "lucide-react";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
-
-const scenarioCards = [
-    {
-        icon: PlaySquare,
-        title: "Content / Video Platform",
-        detail: "For upload flow, playback, creator roles, moderation, and analytics."
-    },
-    {
-        icon: ShoppingCart,
-        title: "E-commerce or Marketplace",
-        detail: "For catalog, checkout, inventory, order lifecycle, and admin tools."
-    },
-    {
-        icon: Bot,
-        title: "AI Product or Agent Workflow",
-        detail: "For prompt orchestration, tools, data boundaries, and evaluation loops."
-    },
-    {
-        icon: Briefcase,
-        title: "Internal Ops Tool",
-        detail: "For approvals, role-based access, dashboards, and audit process."
-    }
-];
 
 export default function Home() {
     return (
@@ -56,22 +29,23 @@ export default function Home() {
                 <section className="pt-10">
                     <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/50 dark:bg-white/10 backdrop-blur-md border border-white/20 shadow-sm mb-4">
                         <Zap className="w-4 h-4 text-yellow-500" />
-                        <span className="text-sm font-medium">AI Product Architect for solo builders and small teams</span>
+                        <span className="text-sm font-medium">Pre-build thinking accelerator for AI IDE development</span>
                     </div>
 
                     <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight bg-gradient-to-br from-gray-900 via-blue-800 to-cyan-900 dark:from-white dark:via-blue-200 dark:to-cyan-200 bg-clip-text text-transparent">
-                        Explain your idea.
+                        Not final code.
                         <br className="hidden md:block" />
-                        Get a build-ready blueprint.
+                        A clear blueprint for AI IDE.
                     </h1>
 
                     <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto leading-relaxed mt-4">
-                        Forecoding turns rough requirements into a structured PRD, architecture diagram,
-                        implementation tasks, and low-token coding instructions you can execute immediately.
+                        Forecoding does not ship finished projects. It compresses the hardest part before coding:
+                        requirement thinking. You get PRD, architecture, task breakdown, and execution prompts
+                        to start faster in your AI IDE.
                     </p>
 
                     <div className="flex flex-wrap justify-center gap-2 mt-5 text-xs">
-                        {["SaaS MVP", "Internal Tool", "AI Workflow", "Marketplace", "Content Platform"].map((tag) => (
+                        {["Cursor", "Windsurf", "Cline", "VS Code + AI"].map((tag) => (
                             <span
                                 key={tag}
                                 className="px-3 py-1.5 rounded-full bg-white/70 dark:bg-white/10 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300"
@@ -105,57 +79,29 @@ export default function Home() {
                         <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center mb-4">
                             <Rocket className="w-6 h-6 text-blue-600 dark:text-blue-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">PRD + Scope</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Converts vague ideas into concrete requirements and boundaries.</p>
+                        <h3 className="text-lg font-bold mb-2">Requirement Compression</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Turns messy ideas into concrete scope before any coding begins.</p>
                     </div>
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-cyan-500/50 transition-colors">
                         <div className="w-12 h-12 bg-cyan-100 dark:bg-cyan-900/30 rounded-lg flex items-center justify-center mb-4">
                             <Workflow className="w-6 h-6 text-cyan-600 dark:text-cyan-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">Architecture + Flows</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Builds a living diagram and key system decisions before coding.</p>
+                        <h3 className="text-lg font-bold mb-2">Architecture Decisions</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Locks key system flow and tradeoffs so AI coding has the right direction.</p>
                     </div>
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-green-500/50 transition-colors">
                         <div className="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center mb-4">
                             <Layers3 className="w-6 h-6 text-green-600 dark:text-green-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">Task Breakdown</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Splits implementation into execution-ready tasks for your team.</p>
+                        <h3 className="text-lg font-bold mb-2">Implementation Plan</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Breaks blueprint into concrete tasks your AI IDE can execute step by step.</p>
                     </div>
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-amber-500/50 transition-colors">
                         <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-lg flex items-center justify-center mb-4">
                             <ShieldCheck className="w-6 h-6 text-amber-600 dark:text-amber-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">Low-Token Build Prompt</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Outputs patch-style coding instructions optimized for AI coding tools.</p>
-                    </div>
-                </section>
-
-                <section className="mt-14 text-left">
-                    <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 text-center">Typical Use Scenarios</h2>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-2 mb-6">
-                        Best for projects where requirements span multiple modules and roles.
-                    </p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {scenarioCards.map((item) => {
-                            const Icon = item.icon;
-                            return (
-                                <div
-                                    key={item.title}
-                                    className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40 p-5"
-                                >
-                                    <div className="flex items-start gap-3">
-                                        <div className="mt-0.5 h-9 w-9 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-                                            <Icon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                                        </div>
-                                        <div>
-                                            <h3 className="font-semibold">{item.title}</h3>
-                                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{item.detail}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })}
+                        <h3 className="text-lg font-bold mb-2">AI IDE Execution Prompt</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Outputs patch-style prompts optimized for AI IDE coding workflow.</p>
                     </div>
                 </section>
 
@@ -167,24 +113,24 @@ export default function Home() {
                                 <CheckCircle2 className="w-4 h-4" />
                                 Step 1
                             </div>
-                            <h3 className="font-semibold mt-2">Describe your product idea</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Share goals, users, and constraints in natural language.</p>
+                            <h3 className="font-semibold mt-2">Describe requirements in plain language</h3>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Provide goals, user flow, constraints, and expected behavior.</p>
                         </div>
                         <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40 p-5">
                             <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
                                 <CheckCircle2 className="w-4 h-4" />
                                 Step 2
                             </div>
-                            <h3 className="font-semibold mt-2">Refine with guided questions</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">The chat narrows scope until implementation is clear enough.</p>
+                            <h3 className="font-semibold mt-2">Refine until scope is implementation-ready</h3>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">The chat resolves missing details and removes ambiguity.</p>
                         </div>
                         <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40 p-5">
                             <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
                                 <CheckCircle2 className="w-4 h-4" />
                                 Step 3
                             </div>
-                            <h3 className="font-semibold mt-2">Generate and execute blueprint</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Apply PRD, architecture, and tasks directly in your build workflow.</p>
+                            <h3 className="font-semibold mt-2">Send blueprint to your AI IDE</h3>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Use generated prompts to implement in Cursor/Windsurf/Cline.</p>
                         </div>
                     </div>
                 </section>
@@ -192,9 +138,9 @@ export default function Home() {
                 <section className="rounded-2xl border border-blue-200/60 dark:border-blue-800/40 bg-blue-50/70 dark:bg-blue-900/10 p-6 mt-12">
                     <div className="flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="text-left">
-                            <h3 className="text-lg font-bold">Need fast product validation before coding?</h3>
+                            <h3 className="text-lg font-bold">Value = less thinking time before AI coding</h3>
                             <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                                Start one project, clarify requirements in chat, then generate your implementation blueprint.
+                                Forecoding is a pre-coding layer. It improves planning quality and reduces rework in AI IDE execution.
                             </p>
                         </div>
                         <Link
