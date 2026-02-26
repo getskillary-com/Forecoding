@@ -14,9 +14,31 @@ import {
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
 import { DensityProgress } from "@/components/DensityProgress";
-import { FileTreeDisplay } from "@/components/FileTreeDisplay";
-import { ToolStackTable } from "@/components/ToolStackTable";
-import ArchitectureViewer from "@/components/ArchitectureViewer";
+import dynamic from "next/dynamic";
+const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
+    ssr: false,
+    loading: () => (
+        <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
+            Loading architecture diagram...
+        </div>
+    )
+});
+const FileTreeDisplay = dynamic(() => import("@/components/FileTreeDisplay").then((m) => m.FileTreeDisplay), {
+    ssr: false,
+    loading: () => (
+        <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
+            Loading file tree...
+        </div>
+    )
+});
+const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then((m) => m.ToolStackTable), {
+    ssr: false,
+    loading: () => (
+        <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
+            Loading tech stack...
+        </div>
+    )
+});
 import { VersionSidebar } from "@/components/VersionSidebar";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -213,16 +235,25 @@ function WizardContent() {
             }
 
             try {
-                const res = await fetch("/api/workspace", { cache: "no-store" });
+                const url = projectId
+                    ? `/api/workspace?projectId=${encodeURIComponent(projectId)}`
+                    : "/api/workspace";
+                const res = await fetch(url, { cache: "no-store" });
                 if (res.ok) {
                     const data = (await res.json()) as { projects?: Project[] };
                     if (Array.isArray(data.projects)) {
                         if (data.projects.length > 0 || localProjects.length === 0) {
-                            writeProjectsToLocalStorage(data.projects);
-                            const remoteProject = data.projects.find((p) => p.id === projectId);
-                            if (remoteProject) {
-                                hydrateFromProject(remoteProject);
+                            if (projectId) {
+                                const existing = readProjectsFromLocalStorage();
+                                const merged = data.projects.length > 0
+                                    ? existing.filter((p) => p.id !== projectId).concat(data.projects)
+                                    : existing;
+                                writeProjectsToLocalStorage(merged);
+                            } else {
+                                writeProjectsToLocalStorage(data.projects);
                             }
+                            const remoteProject = data.projects.find((p) => p.id === projectId);
+                            if (remoteProject) hydrateFromProject(remoteProject);
                         } else {
                             void syncWorkspaceRemote(localProjects);
                         }

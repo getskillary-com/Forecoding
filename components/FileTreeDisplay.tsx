@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState } from "react";
-import JSZip from "jszip";
 import { Folder, FileCode, Download, ChevronRight, ChevronDown } from "lucide-react";
 import { FileNode } from "@/types";
 
@@ -72,7 +71,8 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
         setIsZipping(true);
 
         try {
-            const zip = new JSZip();
+        const { default: JSZip } = await import("jszip");
+        const zip = new JSZip();
 
             if (globalPrompt) {
                 zip.file(".cursorrules", globalPrompt);

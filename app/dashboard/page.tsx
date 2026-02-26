@@ -89,6 +89,16 @@ export default function DashboardPage() {
         };
     }, []);
 
+    // Prefetch top projects to reduce wizard load latency
+    useEffect(() => {
+        if (!projects.length) return;
+        projects.slice(0, 3).forEach((project) => {
+            const latestVersion = project.versions[project.versions.length - 1];
+            if (!latestVersion) return;
+            router.prefetch(`/wizard?projectId=${project.id}&versionId=${latestVersion.id}`);
+        });
+    }, [projects, router]);
+
     const saveProjects = (newProjects: Project[]) => {
         setProjects(newProjects);
         writeProjectsToLocalStorage(newProjects);

@@ -16,7 +16,7 @@ async function requireUserId() {
     return userId ?? null;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
     try {
         const userId = await requireUserId();
         if (!userId) {
@@ -30,8 +30,13 @@ export async function GET() {
             })
         );
 
+        const url = new URL(req.url);
+        const projectId = url.searchParams.get("projectId");
+        const parsed = parseProjects(workspace?.data);
+        const projects = projectId ? parsed.filter((p) => p.id === projectId) : parsed;
+
         return NextResponse.json({
-            projects: parseProjects(workspace?.data),
+            projects,
             updatedAt: workspace?.updatedAt ?? null
         });
     } catch {
