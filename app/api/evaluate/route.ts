@@ -1,11 +1,16 @@
 
 import { NextResponse } from "next/server";
 import { streamEvaluateInput } from "@/lib/gemini";
+import type { Message, Attachment } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
 const EVALUATE_STREAM_HEARTBEAT_MS = 15_000;
-const EVALUATE_MODEL_IDLE_TIMEOUT_MS = 45_000;
-const EVALUATE_TOTAL_TIMEOUT_MS = 120_000;
+const EVALUATE_MODEL_IDLE_TIMEOUT_MS = 70_000;
+const EVALUATE_TOTAL_TIMEOUT_MS = 180_000;
+const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
+const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
+const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
+const EVALUATE_RETRY_TEXT_ATTACHMENT_CHARS = 2_000;
 
 export const runtime = "nodejs";
 
@@ -31,6 +36,84 @@ function getErrorDetails(error: unknown) {
 
 function isErrorWithMessage(error: unknown, message: string) {
     return error instanceof Error && error.message === message;
+}
+
+function clipText(text: string, maxChars: number) {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}\n... [truncated]`;
+}
+
+function compactAttachment(attachment: Attachment): Attachment {
+    if (attachment.type === "text") {
+        return {
+            ...attachment,
+            content: clipText(attachment.content || "", EVALUATE_RETRY_TEXT_ATTACHMENT_CHARS)
+        };
+    }
+
+    return {
+        type: "text",
+        mimeType: "text/plain",
+        name: attachment.name,
+        content: `[Attachment omitted in retry: ${attachment.name} (${attachment.mimeType})]`
+    };
+}
+
+function buildRetryMessages(rawMessages: unknown): Message[] {
+    if (!Array.isArray(rawMessages)) return [];
+
+    const normalized: Message[] = rawMessages
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+            const candidate = item as Message;
+            const role = candidate.role === "assistant" ? "assistant" : "user";
+            const content = clipText(
+                typeof candidate.content === "string" ? candidate.content : "",
+                EVALUATE_RETRY_CONTENT_CHARS
+            );
+
+            const attachments = Array.isArray(candidate.attachments)
+                ? candidate.attachments.map((att) => compactAttachment(att))
+                : undefined;
+
+            return {
+                role,
+                content,
+                attachments
+            } as Message;
+        });
+
+    return normalized.slice(-EVALUATE_RETRY_HISTORY_MESSAGES);
+}
+
+async function* streamWithTimeGuards(
+    messages: Message[],
+    contextText: string | undefined,
+    generationReady: boolean
+) {
+    const startedAt = Date.now();
+    const iterator = streamEvaluateInput(messages, contextText, {
+        generationReady
+    })[Symbol.asyncIterator]();
+
+    while (true) {
+        if (Date.now() - startedAt > EVALUATE_TOTAL_TIMEOUT_MS) {
+            throw new Error("EVALUATE_TOTAL_TIMEOUT");
+        }
+
+        const next = await withTimeout(
+            iterator.next(),
+            EVALUATE_MODEL_IDLE_TIMEOUT_MS,
+            "EVALUATE_MODEL_IDLE_TIMEOUT"
+        );
+
+        if (next.done) {
+            break;
+        }
+
+        const chunk = typeof next.value === "string" ? next.value : String(next.value ?? "");
+        yield chunk;
+    }
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -82,7 +165,6 @@ export async function POST(req: Request) {
                 const encoder = new TextEncoder();
                 let closed = false;
                 let emittedMeaningfulChunk = false;
-                const startedAt = Date.now();
 
                 const safeEnqueue = (chunk: string) => {
                     if (closed) return;
@@ -101,40 +183,42 @@ export async function POST(req: Request) {
                 }, EVALUATE_STREAM_HEARTBEAT_MS);
 
                 try {
-                    const iterator = streamEvaluateInput(messages, contextText, {
-                        generationReady: generationReady === true
-                    })[Symbol.asyncIterator]();
-
-                    while (true) {
-                        if (Date.now() - startedAt > EVALUATE_TOTAL_TIMEOUT_MS) {
-                            safeEnqueue("<question>AI response timed out. Please retry with a shorter prompt.</question>");
-                            emittedMeaningfulChunk = true;
-                            if (typeof iterator.return === "function") {
-                                await iterator.return();
-                            }
-                            break;
-                        }
-
-                        const next = await withTimeout(
-                            iterator.next(),
-                            EVALUATE_MODEL_IDLE_TIMEOUT_MS,
-                            "EVALUATE_MODEL_IDLE_TIMEOUT"
-                        );
-
-                        if (next.done) {
-                            break;
-                        }
-
-                        const chunk = typeof next.value === "string" ? next.value : String(next.value ?? "");
+                    for await (const chunk of streamWithTimeGuards(
+                        messages as Message[],
+                        contextText,
+                        generationReady === true
+                    )) {
                         if (chunk.trim().length > 0) {
                             emittedMeaningfulChunk = true;
                         }
                         safeEnqueue(chunk);
                     }
                 } catch (e) {
-                    if (isErrorWithMessage(e, "EVALUATE_MODEL_IDLE_TIMEOUT")) {
-                        safeEnqueue("<question>AI response timed out. Please retry with a shorter prompt.</question>");
-                        emittedMeaningfulChunk = true;
+                    if (
+                        !emittedMeaningfulChunk &&
+                        (isErrorWithMessage(e, "EVALUATE_MODEL_IDLE_TIMEOUT") ||
+                            isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT"))
+                    ) {
+                        try {
+                            const retryMessages = buildRetryMessages(messages);
+                            const retryContext = contextText
+                                ? clipText(contextText, EVALUATE_RETRY_CONTEXT_CHARS)
+                                : undefined;
+
+                            for await (const retryChunk of streamWithTimeGuards(
+                                retryMessages,
+                                retryContext,
+                                generationReady === true
+                            )) {
+                                if (retryChunk.trim().length > 0) {
+                                    emittedMeaningfulChunk = true;
+                                }
+                                safeEnqueue(retryChunk);
+                            }
+                        } catch {
+                            safeEnqueue("<question>AI response timed out. Please retry with a shorter prompt.</question>");
+                            emittedMeaningfulChunk = true;
+                        }
                     } else {
                         console.error("Streaming error:", e);
                         safeEnqueue("<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment.</question>");
