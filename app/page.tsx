@@ -2,7 +2,6 @@ import Link from "next/link";
 import { ArrowRight, Zap, Code2, Rocket } from "lucide-react";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
-import { StripeCheckoutButton } from "@/components/StripeCheckoutButton";
 
 export default function Home() {
     return (
@@ -31,9 +30,6 @@ export default function Home() {
                 <p className="text-xl text-gray-600 dark:text-gray-300 max-w-2xl mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-5 duration-1000 delay-200">
                     Generate a PRD, architecture diagram, build checklist, and low-token patch-style instructions in minutes.
                 </p>
-                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50/80 dark:bg-blue-900/20 border border-blue-200/60 dark:border-blue-700/40 text-blue-700 dark:text-blue-300 text-sm font-semibold">
-                    One-time purchase - $9.9 per project - No subscription
-                </div>
 
                 <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mt-8 animate-in fade-in slide-in-from-bottom-5 duration-1000 delay-300">
                     <Link
@@ -52,11 +48,6 @@ export default function Home() {
                         View Sample Project
                     </Link>
                 </div>
-
-                <StripeCheckoutButton
-                    label="Buy 1 Project Credit"
-                    className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold shadow-lg transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
-                />
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-16 text-left animate-in fade-in slide-in-from-bottom-10 duration-1000 delay-500">
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-blue-500/50 transition-colors">
