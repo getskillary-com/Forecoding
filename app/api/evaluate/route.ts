@@ -3,6 +3,9 @@ import { NextResponse } from "next/server";
 import { streamEvaluateInput } from "@/lib/gemini";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
+const EVALUATE_STREAM_HEARTBEAT_MS = 15_000;
+
+export const runtime = "nodejs";
 
 type EvaluateRequestBody = {
     messages?: unknown;
@@ -54,17 +57,40 @@ export async function POST(req: Request) {
 
         const stream = new ReadableStream({
             async start(controller) {
+                const encoder = new TextEncoder();
+                let closed = false;
+
+                const safeEnqueue = (chunk: string) => {
+                    if (closed) return;
+                    try {
+                        controller.enqueue(encoder.encode(chunk));
+                    } catch {
+                        closed = true;
+                    }
+                };
+
+                // Send an early byte to reduce upstream gateway idle timeouts.
+                safeEnqueue(" ");
+
+                const heartbeat = setInterval(() => {
+                    safeEnqueue(" ");
+                }, EVALUATE_STREAM_HEARTBEAT_MS);
+
                 try {
                     for await (const chunk of streamEvaluateInput(messages, contextText, {
                         generationReady: generationReady === true
                     })) {
-                        controller.enqueue(new TextEncoder().encode(chunk));
+                        safeEnqueue(chunk);
                     }
-                    controller.close();
                 } catch (e) {
                     console.error("Streaming error:", e);
-                    controller.enqueue(new TextEncoder().encode(`<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment.</question>`));
-                    controller.close();
+                    safeEnqueue("<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment.</question>");
+                } finally {
+                    clearInterval(heartbeat);
+                    if (!closed) {
+                        closed = true;
+                        controller.close();
+                    }
                 }
             }
         });

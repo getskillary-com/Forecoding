@@ -59,6 +59,11 @@ const EVALUATE_MAX_TEXT_ATTACHMENT_CHARS = 20000;
 const EVALUATE_MAX_BINARY_ATTACHMENT_CHARS = 750000;
 const EVALUATE_MAX_RECENT_BINARY_ATTACHMENTS = 2;
 const EVALUATE_MAX_REQUEST_CHARS = 1200000;
+const EVALUATE_COMPACT_HISTORY_MESSAGES = 10;
+const EVALUATE_COMPACT_MESSAGE_CONTENT_CHARS = 2400;
+const EVALUATE_COMPACT_TEXT_ATTACHMENT_CHARS = 6000;
+const EVALUATE_COMPACT_CONTEXT_CHARS = 4000;
+const EVALUATE_RETRYABLE_STATUS = new Set([429, 502, 503, 504, 524]);
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -146,6 +151,15 @@ type CheckoutQuote = {
     factors?: string[];
 };
 
+type EvaluateMessageBuildOptions = {
+    historySize?: number;
+    maxMessageContentChars?: number;
+    maxTextAttachmentChars?: number;
+    maxBinaryAttachmentChars?: number;
+    maxRecentBinaryAttachments?: number;
+    allowBinaryAttachments?: boolean;
+};
+
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return text.slice(0, maxChars) + "\n... [truncated]";
@@ -160,15 +174,22 @@ function buildAttachmentPlaceholder(attachment: Attachment, reason: string): Att
     };
 }
 
-function buildEvaluateMessages(messages: Message[]) {
-    const history = messages.slice(-EVALUATE_MAX_HISTORY_MESSAGES);
+function buildEvaluateMessages(messages: Message[], options: EvaluateMessageBuildOptions = {}) {
+    const historySize = options.historySize ?? EVALUATE_MAX_HISTORY_MESSAGES;
+    const maxMessageContentChars = options.maxMessageContentChars ?? EVALUATE_MAX_MESSAGE_CONTENT_CHARS;
+    const maxTextAttachmentChars = options.maxTextAttachmentChars ?? EVALUATE_MAX_TEXT_ATTACHMENT_CHARS;
+    const maxBinaryAttachmentChars = options.maxBinaryAttachmentChars ?? EVALUATE_MAX_BINARY_ATTACHMENT_CHARS;
+    const maxRecentBinaryAttachments = options.maxRecentBinaryAttachments ?? EVALUATE_MAX_RECENT_BINARY_ATTACHMENTS;
+    const allowBinaryAttachments = options.allowBinaryAttachments ?? true;
+
+    const history = messages.slice(-historySize);
     const lastUserOffset = [...history].reverse().findIndex((m) => m.role === "user");
     const lastUserIndex = lastUserOffset >= 0 ? history.length - 1 - lastUserOffset : -1;
 
     return history.map((message, index) => {
         const nextMessage: Message = {
             ...message,
-            content: clipText(message.content || "", EVALUATE_MAX_MESSAGE_CONTENT_CHARS)
+            content: clipText(message.content || "", maxMessageContentChars)
         };
 
         if (!message.attachments?.length) {
@@ -182,15 +203,19 @@ function buildEvaluateMessages(messages: Message[]) {
             if (attachment.type === "text") {
                 return {
                     ...attachment,
-                    content: clipText(attachment.content, EVALUATE_MAX_TEXT_ATTACHMENT_CHARS)
+                    content: clipText(attachment.content, maxTextAttachmentChars)
                 };
+            }
+
+            if (!allowBinaryAttachments) {
+                return buildAttachmentPlaceholder(attachment, "disabled for compact retry");
             }
 
             if (!canKeepBinary) {
                 return buildAttachmentPlaceholder(attachment, "kept only in the latest user turn");
             }
 
-            if (keptBinaryCount >= EVALUATE_MAX_RECENT_BINARY_ATTACHMENTS) {
+            if (keptBinaryCount >= maxRecentBinaryAttachments) {
                 return buildAttachmentPlaceholder(attachment, "too many binary attachments in one turn");
             }
 
@@ -198,7 +223,7 @@ function buildEvaluateMessages(messages: Message[]) {
                 ? attachment.content.split("base64,")[1]
                 : attachment.content;
 
-            if (!rawBinary || rawBinary.length > EVALUATE_MAX_BINARY_ATTACHMENT_CHARS) {
+            if (!rawBinary || rawBinary.length > maxBinaryAttachmentChars) {
                 return buildAttachmentPlaceholder(attachment, "file too large");
             }
 
@@ -207,6 +232,35 @@ function buildEvaluateMessages(messages: Message[]) {
         });
 
         return nextMessage;
+    });
+}
+
+function buildEvaluateRequestBody(
+    messages: Message[],
+    structureContext: string | null,
+    generationReady: boolean,
+    compactMode: boolean
+) {
+    const compactOptions: EvaluateMessageBuildOptions = compactMode
+        ? {
+            historySize: EVALUATE_COMPACT_HISTORY_MESSAGES,
+            maxMessageContentChars: EVALUATE_COMPACT_MESSAGE_CONTENT_CHARS,
+            maxTextAttachmentChars: EVALUATE_COMPACT_TEXT_ATTACHMENT_CHARS,
+            maxBinaryAttachmentChars: 0,
+            maxRecentBinaryAttachments: 0,
+            allowBinaryAttachments: false
+        }
+        : {};
+
+    const evaluateMessages = buildEvaluateMessages(messages, compactOptions);
+    const context = compactMode && structureContext
+        ? clipText(structureContext, EVALUATE_COMPACT_CONTEXT_CHARS)
+        : structureContext;
+
+    return JSON.stringify({
+        messages: evaluateMessages,
+        context,
+        generationReady
     });
 }
 
@@ -728,23 +782,38 @@ function WizardContent() {
             const controller = new AbortController();
             evaluateAbortRef.current = controller;
 
-            const evaluateMessages = buildEvaluateMessages(newMessages);
-            const requestBody = JSON.stringify({
-                messages: evaluateMessages,
-                context: structureContext,
-                generationReady: Boolean(generation)
-            });
+            const requestBody = buildEvaluateRequestBody(
+                newMessages,
+                structureContext,
+                Boolean(generation),
+                false
+            );
 
             if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
                 throw new Error("Evaluate request is too large. Please shorten the conversation or remove large attachments.");
             }
 
-            const res = await fetch("/api/evaluate", {
+            const runEvaluateRequest = async (body: string) => fetch("/api/evaluate", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: requestBody,
+                body,
                 signal: controller.signal
             });
+
+            let res = await runEvaluateRequest(requestBody);
+
+            if (!res.ok && EVALUATE_RETRYABLE_STATUS.has(res.status)) {
+                const compactRequestBody = buildEvaluateRequestBody(
+                    newMessages,
+                    structureContext,
+                    Boolean(generation),
+                    true
+                );
+
+                if (compactRequestBody.length <= EVALUATE_MAX_REQUEST_CHARS) {
+                    res = await runEvaluateRequest(compactRequestBody);
+                }
+            }
 
             if (!res.ok) {
                 let detail = `${res.status} ${res.statusText}`;
@@ -762,6 +831,10 @@ function WizardContent() {
                     }
                 } catch {
                     // Use default detail above.
+                }
+
+                if (res.status === 524) {
+                    detail = `${detail}. Gateway timeout from CDN/origin (524). Please retry.`;
                 }
 
                 throw new Error(`Failed to evaluate (${res.status}): ${detail}`);
