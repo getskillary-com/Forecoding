@@ -2,11 +2,53 @@
 import { NextResponse } from "next/server";
 import { streamEvaluateInput } from "@/lib/gemini";
 
+const MAX_EVALUATE_BODY_CHARS = 1_200_000;
+
+type EvaluateRequestBody = {
+    messages?: unknown;
+    context?: unknown;
+    generationReady?: unknown;
+};
+
+class RequestPayloadError extends Error {
+    status: number;
+
+    constructor(message: string, status: number) {
+        super(message);
+        this.status = status;
+    }
+}
+
+function getErrorDetails(error: unknown) {
+    if (error instanceof Error) return error.message;
+    return String(error);
+}
+
+async function parseEvaluateRequest(req: Request): Promise<EvaluateRequestBody> {
+    const raw = await req.text();
+    if (!raw || !raw.trim()) {
+        throw new RequestPayloadError("Request body is empty.", 400);
+    }
+
+    if (raw.length > MAX_EVALUATE_BODY_CHARS) {
+        throw new RequestPayloadError(
+            `Request body too large (${raw.length} chars).`,
+            413
+        );
+    }
+
+    try {
+        return JSON.parse(raw) as EvaluateRequestBody;
+    } catch (error) {
+        throw new RequestPayloadError(`Invalid JSON body: ${getErrorDetails(error)}`, 400);
+    }
+}
+
 export async function POST(req: Request) {
     try {
-        const { messages, context, generationReady } = await req.json();
+        const { messages, context, generationReady } = await parseEvaluateRequest(req);
         const contextText = typeof context === "string" ? context : undefined;
-        if (!messages) {
+        if (!Array.isArray(messages) || messages.length === 0) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
 
@@ -35,9 +77,10 @@ export async function POST(req: Request) {
 
     } catch (error) {
         console.error("Evaluation error:", error);
+        const status = error instanceof RequestPayloadError ? error.status : 500;
         return NextResponse.json({
-            error: "Failed to evaluate input",
-            details: error instanceof Error ? error.message : String(error)
-        }, { status: 500 });
+            error: status === 413 ? "Evaluate request payload is too large" : "Failed to evaluate input",
+            details: getErrorDetails(error)
+        }, { status });
     }
 }

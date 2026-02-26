@@ -53,6 +53,12 @@ const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
 const MESSAGE_WINDOW_SIZE = 60;
 const MESSAGE_WINDOW_STEP = 40;
+const EVALUATE_MAX_HISTORY_MESSAGES = 24;
+const EVALUATE_MAX_MESSAGE_CONTENT_CHARS = 8000;
+const EVALUATE_MAX_TEXT_ATTACHMENT_CHARS = 20000;
+const EVALUATE_MAX_BINARY_ATTACHMENT_CHARS = 750000;
+const EVALUATE_MAX_RECENT_BINARY_ATTACHMENTS = 2;
+const EVALUATE_MAX_REQUEST_CHARS = 1200000;
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -129,6 +135,70 @@ function parseOptionsBlock(raw: string) {
             return { label, value };
         })
         .filter((item): item is { label: string; value: string } => Boolean(item));
+}
+
+function clipText(text: string, maxChars: number) {
+    if (text.length <= maxChars) return text;
+    return text.slice(0, maxChars) + "\n... [truncated]";
+}
+
+function buildAttachmentPlaceholder(attachment: Attachment, reason: string): Attachment {
+    return {
+        type: "text",
+        mimeType: "text/plain",
+        name: attachment.name,
+        content: `[Attachment omitted: ${reason}. File: ${attachment.name} (${attachment.mimeType})]`
+    };
+}
+
+function buildEvaluateMessages(messages: Message[]) {
+    const history = messages.slice(-EVALUATE_MAX_HISTORY_MESSAGES);
+    const lastUserOffset = [...history].reverse().findIndex((m) => m.role === "user");
+    const lastUserIndex = lastUserOffset >= 0 ? history.length - 1 - lastUserOffset : -1;
+
+    return history.map((message, index) => {
+        const nextMessage: Message = {
+            ...message,
+            content: clipText(message.content || "", EVALUATE_MAX_MESSAGE_CONTENT_CHARS)
+        };
+
+        if (!message.attachments?.length) {
+            return nextMessage;
+        }
+
+        const canKeepBinary = index === lastUserIndex;
+        let keptBinaryCount = 0;
+
+        nextMessage.attachments = message.attachments.map((attachment) => {
+            if (attachment.type === "text") {
+                return {
+                    ...attachment,
+                    content: clipText(attachment.content, EVALUATE_MAX_TEXT_ATTACHMENT_CHARS)
+                };
+            }
+
+            if (!canKeepBinary) {
+                return buildAttachmentPlaceholder(attachment, "kept only in the latest user turn");
+            }
+
+            if (keptBinaryCount >= EVALUATE_MAX_RECENT_BINARY_ATTACHMENTS) {
+                return buildAttachmentPlaceholder(attachment, "too many binary attachments in one turn");
+            }
+
+            const rawBinary = attachment.content.includes("base64,")
+                ? attachment.content.split("base64,")[1]
+                : attachment.content;
+
+            if (!rawBinary || rawBinary.length > EVALUATE_MAX_BINARY_ATTACHMENT_CHARS) {
+                return buildAttachmentPlaceholder(attachment, "file too large");
+            }
+
+            keptBinaryCount += 1;
+            return attachment;
+        });
+
+        return nextMessage;
+    });
 }
 
 function WizardContent() {
@@ -592,18 +662,48 @@ function WizardContent() {
             const controller = new AbortController();
             evaluateAbortRef.current = controller;
 
+            const evaluateMessages = buildEvaluateMessages(newMessages);
+            const requestBody = JSON.stringify({
+                messages: evaluateMessages,
+                context: structureContext,
+                generationReady: Boolean(generation)
+            });
+
+            if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
+                throw new Error("Evaluate request is too large. Please shorten the conversation or remove large attachments.");
+            }
+
             const res = await fetch("/api/evaluate", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    messages: newMessages,
-                    context: structureContext,
-                    generationReady: Boolean(generation)
-                }),
+                body: requestBody,
                 signal: controller.signal
             });
 
-            if (!res.ok || !res.body) throw new Error("Failed to evaluate");
+            if (!res.ok) {
+                let detail = `${res.status} ${res.statusText}`;
+                const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+                try {
+                    if (contentType.includes("application/json")) {
+                        const payload = await res.json() as { error?: string; details?: string };
+                        if (payload.error) {
+                            detail = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
+                        }
+                    } else {
+                        const text = (await res.text()).trim();
+                        if (text) detail = clipText(text, 300);
+                    }
+                } catch {
+                    // Use default detail above.
+                }
+
+                throw new Error(`Failed to evaluate (${res.status}): ${detail}`);
+            }
+
+            if (!res.body) {
+                throw new Error("Failed to evaluate: empty response body");
+            }
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
@@ -700,12 +800,13 @@ function WizardContent() {
                 return;
             }
             console.error(error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
             setMessages(prev => {
                 if (evalRequestIdRef.current !== requestId) return prev;
                 const updated = [...prev];
                 const current = updated[assistantIndex];
                 if (!current || current.role !== "assistant") return prev;
-                updated[assistantIndex] = { ...current, content: "Error: " + String(error), options: [] };
+                updated[assistantIndex] = { ...current, content: `Error: ${errorMessage}`, options: [] };
                 return updated;
             });
         } finally {
