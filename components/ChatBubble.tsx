@@ -49,8 +49,20 @@ export function ChatBubble({ message, onOptionClick }: Props) {
                             onClick={() => onOptionClick?.(opt.value)}
                             className="text-left p-3 text-sm bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-900 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors shadow-sm text-blue-700 dark:text-blue-300 font-medium"
                         >
-                            <span className="font-bold mr-2">{opt.label.split(')')[0]})</span>
-                            {opt.label.split(')').slice(1).join(')').trim() || opt.label}
+                            {(() => {
+                                const normalizedLabel = opt.label.trim();
+                                const match = normalizedLabel.match(/^([A-Za-z]|\d+)[.)]\s+(.+)$/);
+                                if (!match) return normalizedLabel;
+
+                                const prefix = `${match[1]})`;
+                                const body = match[2].trim();
+                                return (
+                                    <>
+                                        <span className="font-bold mr-2">{prefix}</span>
+                                        {body}
+                                    </>
+                                );
+                            })()}
                         </button>
                     ))}
                 </div>

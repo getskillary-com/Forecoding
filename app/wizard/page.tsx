@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText } from "lucide-react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
 import {
     Message,
     EvaluationResponse,
@@ -111,6 +111,24 @@ function yieldToBrowser(): Promise<void> {
         }
         requestAnimationFrame(() => resolve());
     });
+}
+
+function parseOptionsBlock(raw: string) {
+    return raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/^[-*]\s*/, ""))
+        .map((line) => line.replace(/^["']|["']$/g, ""))
+        .filter((line) => line.includes("::"))
+        .map((line) => {
+            const [rawLabel, ...rest] = line.split("::");
+            const label = (rawLabel || "").trim();
+            const value = rest.join("::").trim();
+            if (!label || !value) return null;
+            return { label, value };
+        })
+        .filter((item): item is { label: string; value: string } => Boolean(item));
 }
 
 function WizardContent() {
@@ -534,11 +552,16 @@ function WizardContent() {
     const handleSend = async (overrideInput?: string) => {
         const textToSend = overrideInput || input;
 
+        if (isLoading && !textToSend.trim() && pendingAttachments.length === 0) {
+            cancelEvaluation("Response cancelled.");
+            return;
+        }
+
         // Allow sending if text OR attachments exist
         if (!textToSend.trim() && pendingAttachments.length === 0) return;
 
         if (isLoading) {
-            cancelEvaluation("Response cancelled.");
+            cancelEvaluation();
         }
 
         const attachmentsToSend = [...pendingAttachments];
@@ -556,6 +579,7 @@ function WizardContent() {
 
         const newMessages = [...messages, newUserMessage];
         const assistantPlaceholder: Message = { role: "assistant", content: "" };
+        const assistantIndex = newMessages.length;
         setMessages([...newMessages, assistantPlaceholder]);
         setMessageWindow(MESSAGE_WINDOW_SIZE);
         setInput("");
@@ -595,6 +619,7 @@ function WizardContent() {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (evalRequestIdRef.current !== requestId) break;
 
                 const chunk = decoder.decode(value, { stream: true });
                 buffer += chunk;
@@ -625,7 +650,14 @@ function WizardContent() {
                     const q = questionMatch[1].trim();
                     if (q) {
                         currentEval.next_step.question = q;
-                        updateAssistantPlaceholder(q);
+                        setMessages(prev => {
+                            if (evalRequestIdRef.current !== requestId) return prev;
+                            const updated = [...prev];
+                            const current = updated[assistantIndex];
+                            if (!current || current.role !== "assistant") return prev;
+                            updated[assistantIndex] = { ...current, content: q };
+                            return updated;
+                        });
                     }
                 }
 
@@ -648,15 +680,13 @@ function WizardContent() {
                 // Options
                 const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/);
                 if (optionsMatch) {
-                    const options = optionsMatch[1].split('\n')
-                        .filter(l => l.includes('::'))
-                        .map(l => {
-                            const [label, val] = l.split('::');
-                            return { label: label.trim(), value: val.trim() };
-                        });
+                    const options = parseOptionsBlock(optionsMatch[1]);
                     setMessages(prev => {
+                        if (evalRequestIdRef.current !== requestId) return prev;
                         const updated = [...prev];
-                        updated[updated.length - 1].options = options;
+                        const current = updated[assistantIndex];
+                        if (!current || current.role !== "assistant") return prev;
+                        updated[assistantIndex] = { ...current, options };
                         return updated;
                     });
                 }
@@ -670,7 +700,14 @@ function WizardContent() {
                 return;
             }
             console.error(error);
-            setMessages(prev => [...prev.slice(0, -1), { role: "assistant", content: "Error: " + String(error) }]);
+            setMessages(prev => {
+                if (evalRequestIdRef.current !== requestId) return prev;
+                const updated = [...prev];
+                const current = updated[assistantIndex];
+                if (!current || current.role !== "assistant") return prev;
+                updated[assistantIndex] = { ...current, content: "Error: " + String(error), options: [] };
+                return updated;
+            });
         } finally {
             if (evalRequestIdRef.current === requestId) {
                 setIsLoading(false);
@@ -1022,12 +1059,17 @@ function WizardContent() {
 
                                             <button
                                                 onClick={() => handleSend()}
-                                                disabled={(!input.trim() && pendingAttachments.length === 0) || isGenerating}
+                                                disabled={isGenerating || (!isLoading && !input.trim() && pendingAttachments.length === 0)}
                                                 className="p-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 text-white rounded-lg transition-colors mb-1 shadow-sm"
                                             >
-                                                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                                                {isLoading ? <Square className="w-5 h-5" /> : <Send className="w-5 h-5" />}
                                             </button>
                                         </div>
+                                        {isLoading && (
+                                            <p className="text-[11px] text-gray-500 dark:text-gray-400 px-1">
+                                                AI is responding. Press the square button to stop and ask a new question.
+                                            </p>
+                                        )}
                                     </div>
                                 )}
                             </div>
