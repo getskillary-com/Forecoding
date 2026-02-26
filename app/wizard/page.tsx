@@ -137,6 +137,15 @@ function parseOptionsBlock(raw: string) {
         .filter((item): item is { label: string; value: string } => Boolean(item));
 }
 
+type CheckoutQuote = {
+    unitAmountCents: number;
+    currency: string;
+    displayAmount: string;
+    complexityScore: number;
+    complexityTier: "simple" | "standard" | "advanced" | "professional" | "enterprise";
+    factors?: string[];
+};
+
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return text.slice(0, maxChars) + "\n... [truncated]";
@@ -231,6 +240,8 @@ function WizardContent() {
     // UI State
     const [isGenerating, setIsGenerating] = useState(false);
     const [isCheckingOut, setIsCheckingOut] = useState(false);
+    const [isQuoteLoading, setIsQuoteLoading] = useState(false);
+    const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
     const [generateError, setGenerateError] = useState<string | null>(null);
     const [sidebarWidth, setSidebarWidth] = useState(420);
     const isResizingRef = useRef(false);
@@ -390,6 +401,61 @@ function WizardContent() {
         params.set("versionId", currentVersion.id);
         router.replace(`/wizard?${params.toString()}`);
     }, [searchParams, currentVersion, projectId, router]);
+
+    // 1f. Fetch complexity-based quote for unpaid projects
+    useEffect(() => {
+        if (!projectId || !evaluation?.is_ready || hasPaid) {
+            setCheckoutQuote(null);
+            setIsQuoteLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        const controller = new AbortController();
+        const timer = window.setTimeout(async () => {
+            setIsQuoteLoading(true);
+            try {
+                const res = await fetch("/api/payments/stripe/quote", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ projectId }),
+                    signal: controller.signal
+                });
+
+                if (res.status === 401) {
+                    if (!cancelled) setCheckoutQuote(null);
+                    return;
+                }
+
+                const payload = (await res.json()) as { quote?: CheckoutQuote; error?: string };
+                if (!res.ok || !payload.quote) {
+                    throw new Error(payload.error || "Failed to load checkout quote.");
+                }
+
+                if (!cancelled) {
+                    setCheckoutQuote(payload.quote);
+                }
+            } catch (error) {
+                if (error instanceof DOMException && error.name === "AbortError") return;
+                if (!cancelled) setCheckoutQuote(null);
+            } finally {
+                if (!cancelled) setIsQuoteLoading(false);
+            }
+        }, 350);
+
+        return () => {
+            cancelled = true;
+            controller.abort();
+            window.clearTimeout(timer);
+        };
+    }, [
+        projectId,
+        hasPaid,
+        evaluation?.is_ready,
+        messages.length,
+        currentVersion?.id,
+        generation?.projectTree?.length
+    ]);
 
     // 1b. Load persisted sidebar width
     useEffect(() => {
@@ -1077,13 +1143,23 @@ function WizardContent() {
                                                         ? "Architecting Solution..."
                                                         : hasPaid
                                                             ? "Generate Blueprint"
-                                                            : "Proceed to Payment"}
+                                                            : checkoutQuote?.displayAmount
+                                                                ? `Proceed to Payment (${checkoutQuote.displayAmount})`
+                                                                : isQuoteLoading
+                                                                    ? "Proceed to Payment (Calculating...)"
+                                                                    : "Proceed to Payment"}
                                             </button>
                                             {generateError && (
                                                 <div className="text-xs text-red-500 text-center">{generateError}</div>
                                             )}
                                             <p className="text-xs text-center text-gray-500">
-                                                {hasPaid ? "Ready to build or update blueprint" : "Payment required before generation"}
+                                                {hasPaid
+                                                    ? "Ready to build or update blueprint"
+                                                    : checkoutQuote
+                                                        ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
+                                                        : isQuoteLoading
+                                                            ? "Calculating complexity-based price..."
+                                                            : "Payment required before generation"}
                                             </p>
                                         </>
                                     )}

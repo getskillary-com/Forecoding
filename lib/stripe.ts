@@ -46,6 +46,18 @@ export function getStripeUnitAmountCents() {
     return Math.max(1, Math.round(value));
 }
 
+export function getStripeMaxUnitAmountCents() {
+    const base = getStripeUnitAmountCents();
+    const configured = Number(process.env.STRIPE_MAX_UNIT_AMOUNT_CENTS || "");
+    if (!Number.isFinite(configured)) return base * 8;
+    return Math.max(base, Math.round(configured));
+}
+
+export function isStripeDynamicPricingEnabled() {
+    const raw = (process.env.STRIPE_DYNAMIC_PRICING_ENABLED || "1").trim().toLowerCase();
+    return !["0", "false", "off", "no"].includes(raw);
+}
+
 export async function createStripeCheckoutSession(
     input: StripeCheckoutSessionInput
 ): Promise<StripeCheckoutSessionResponse> {
