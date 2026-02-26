@@ -81,6 +81,21 @@ export default function Home() {
                         <p className="text-sm text-gray-500 dark:text-gray-400">Use minimal context and precise edits to cut AI assistant token usage.</p>
                     </div>
                 </div>
+
+                <div className="pt-6 text-sm text-gray-500 dark:text-gray-400 flex flex-wrap justify-center gap-4">
+                    <Link href="/privacy" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                        Privacy
+                    </Link>
+                    <Link href="/terms" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                        Terms
+                    </Link>
+                    <Link href="/refund" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                        Refund
+                    </Link>
+                    <Link href="/cookie" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                        Cookie
+                    </Link>
+                </div>
             </main>
         </div>
     );
