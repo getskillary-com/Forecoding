@@ -29,19 +29,19 @@ export default function Home() {
                 <section className="pt-10">
                     <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/50 dark:bg-white/10 backdrop-blur-md border border-white/20 shadow-sm mb-4">
                         <Zap className="w-4 h-4 text-yellow-500" />
-                        <span className="text-sm font-medium">Pre-build thinking accelerator for AI IDE development</span>
+                        <span className="text-sm font-medium">Core function: convert rough ideas into AI IDE-ready blueprints</span>
                     </div>
 
                     <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight bg-gradient-to-br from-gray-900 via-blue-800 to-cyan-900 dark:from-white dark:via-blue-200 dark:to-cyan-200 bg-clip-text text-transparent">
-                        Not final code.
+                        From vague requirements
                         <br className="hidden md:block" />
-                        A clear blueprint for AI IDE.
+                        to executable AI IDE blueprint.
                     </h1>
 
                     <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto leading-relaxed mt-4">
-                        Forecoding does not ship finished projects. It compresses the hardest part before coding:
-                        requirement thinking. You get PRD, architecture, task breakdown, and execution prompts
-                        to start faster in your AI IDE.
+                        Forecoding gives you structured outputs before coding: PRD, architecture, task order,
+                        and patch-style execution prompts for Cursor, Windsurf, Cline, or VS Code AI.
+                        The value is faster planning and less rework before implementation starts.
                     </p>
 
                     <div className="flex flex-wrap justify-center gap-2 mt-5 text-xs">
@@ -79,29 +79,29 @@ export default function Home() {
                         <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center mb-4">
                             <Rocket className="w-6 h-6 text-blue-600 dark:text-blue-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">Requirement Compression</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Turns messy ideas into concrete scope before any coding begins.</p>
+                        <h3 className="text-lg font-bold mb-2">Pain: Scope keeps changing</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Forecoding runs structured clarification to lock requirements before build.</p>
                     </div>
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-cyan-500/50 transition-colors">
                         <div className="w-12 h-12 bg-cyan-100 dark:bg-cyan-900/30 rounded-lg flex items-center justify-center mb-4">
                             <Workflow className="w-6 h-6 text-cyan-600 dark:text-cyan-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">Architecture Decisions</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Locks key system flow and tradeoffs so AI coding has the right direction.</p>
+                        <h3 className="text-lg font-bold mb-2">Pain: AI output drifts</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Architecture and constraints align AI IDE generations to one direction.</p>
                     </div>
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-green-500/50 transition-colors">
                         <div className="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center mb-4">
                             <Layers3 className="w-6 h-6 text-green-600 dark:text-green-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">Implementation Plan</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Breaks blueprint into concrete tasks your AI IDE can execute step by step.</p>
+                        <h3 className="text-lg font-bold mb-2">Pain: No build order</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Task decomposition gives your AI IDE a concrete, sequential execution plan.</p>
                     </div>
                     <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-amber-500/50 transition-colors">
                         <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-lg flex items-center justify-center mb-4">
                             <ShieldCheck className="w-6 h-6 text-amber-600 dark:text-amber-400" />
                         </div>
-                        <h3 className="text-lg font-bold mb-2">AI IDE Execution Prompt</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Outputs patch-style prompts optimized for AI IDE coding workflow.</p>
+                        <h3 className="text-lg font-bold mb-2">Pain: Prompt waste</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Patch-style prompts reduce token waste and cut trial-and-error cycles.</p>
                     </div>
                 </section>
 
@@ -129,8 +129,8 @@ export default function Home() {
                                 <CheckCircle2 className="w-4 h-4" />
                                 Step 3
                             </div>
-                            <h3 className="font-semibold mt-2">Send blueprint to your AI IDE</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Use generated prompts to implement in Cursor/Windsurf/Cline.</p>
+                            <h3 className="font-semibold mt-2">Open the unzipped blueprint folder in your AI IDE</h3>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Unzip the blueprint package, then continue implementation in Cursor/Windsurf/Cline.</p>
                         </div>
                     </div>
                 </section>
@@ -138,9 +138,9 @@ export default function Home() {
                 <section className="rounded-2xl border border-blue-200/60 dark:border-blue-800/40 bg-blue-50/70 dark:bg-blue-900/10 p-6 mt-12">
                     <div className="flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="text-left">
-                            <h3 className="text-lg font-bold">Value = less thinking time before AI coding</h3>
+                            <h3 className="text-lg font-bold">Main value: less planning time, less build rework</h3>
                             <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                                Forecoding is a pre-coding layer. It improves planning quality and reduces rework in AI IDE execution.
+                                You are not buying final code output. You are buying faster, clearer starts in your AI IDE workflow.
                             </p>
                         </div>
                         <Link
