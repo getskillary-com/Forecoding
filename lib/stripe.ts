@@ -33,7 +33,7 @@ export function getStripeWebhookSecret() {
 }
 
 export function getStripePriceId() {
-    return (process.env.STRIPE_PRICE_ID || "").trim();
+    return "";
 }
 
 export function getStripeCurrency() {

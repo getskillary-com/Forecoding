@@ -56,10 +56,7 @@ Add Stripe env vars:
 STRIPE_SECRET_KEY=sk_test_xxx
 STRIPE_WEBHOOK_SECRET=whsec_xxx
 
-# Optional. If set, Checkout uses your existing Stripe Price.
-STRIPE_PRICE_ID=price_xxx
-
-# Used only when STRIPE_PRICE_ID is not set.
+# Used when no Stripe Price is configured.
 STRIPE_UNIT_AMOUNT_CENTS=990
 STRIPE_CURRENCY=usd
 ```
