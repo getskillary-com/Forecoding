@@ -72,6 +72,31 @@ Local webhook forwarding:
 stripe listen --forward-to localhost:3000/api/webhooks/stripe
 ```
 
+## Public Demo Workspace
+
+This project supports a public, read-only demo workspace at:
+
+- `/demo`
+
+The demo data is loaded from:
+
+- `public/demo/workspace.json`
+
+Export a real workspace from your account into this file:
+
+```bash
+# 1) list project ids under your account
+npm run demo:export -- --email you@example.com --list
+
+# 2) export one project as public demo data
+npm run demo:export -- --email you@example.com --project-id <PROJECT_ID>
+```
+
+Optional flags:
+
+- `--output <path>` custom output JSON path
+- `--no-redact` disable automatic masking of sensitive content
+
 ## Local Secret Tool (Clickable)
 
 You can launch the local Firebase App Hosting secrets helper by double-clicking:

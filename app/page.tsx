@@ -65,11 +65,11 @@ export default function Home() {
                             <div className="absolute inset-0 rounded-xl bg-white/20 blur opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                         </Link>
                         <Link
-                            href="/dashboard"
+                            href="/demo"
                             className="flex items-center gap-2 px-8 py-4 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl font-semibold border border-gray-200 dark:border-gray-700 transition-colors"
                         >
                             <Code2 className="w-5 h-5" />
-                            Open Workspace
+                            View Full Demo Workspace
                         </Link>
                     </div>
                 </section>

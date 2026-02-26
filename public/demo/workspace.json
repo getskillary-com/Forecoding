@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "exportedAt": "1970-01-01T00:00:00.000Z",
+  "project": {
+    "id": "demo-project-placeholder",
+    "name": "Demo Workspace Placeholder",
+    "description": "Run npm run demo:export to publish a real demo workspace from your account.",
+    "createdAt": 0,
+    "updatedAt": 0,
+    "versions": [
+      {
+        "id": "demo-version-placeholder",
+        "projectId": "demo-project-placeholder",
+        "versionNumber": 1,
+        "name": "Placeholder",
+        "createdAt": 0,
+        "status": "active",
+        "data": {
+          "messages": [
+            {
+              "role": "assistant",
+              "content": "No demo has been exported yet. Run `npm run demo:export -- --email your@email.com --project-id <PROJECT_ID>` to publish one."
+            }
+          ],
+          "evaluation": null,
+          "generation": null,
+          "currentDiagram": "graph TD\\nStart[Export Demo Workspace] --> End[Open /demo]",
+          "tasks": []
+        }
+      }
+    ]
+  }
+}
