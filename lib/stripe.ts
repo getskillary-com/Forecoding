@@ -52,6 +52,7 @@ export async function createStripeCheckoutSession(
     const lineItemQuantity = Math.max(1, input.lineItem.quantity ?? 1);
     const body = new URLSearchParams();
     body.set("mode", "payment");
+    body.set("locale", "en");
     body.set("success_url", input.successUrl);
     body.set("cancel_url", input.cancelUrl);
     body.set("line_items[0][quantity]", String(lineItemQuantity));
