@@ -958,9 +958,14 @@ function WizardContent() {
         }
     };
 
-    const handleOptionClick = (value: string) => {
-        setInput(value);
-        void handleSend(value);
+    const handleOptionClick = (option: { label: string; value: string }) => {
+        const optionLabel = option.label.trim();
+        const optionValue = option.value.trim();
+        const textToSend = optionLabel || optionValue;
+        if (!textToSend) return;
+
+        setInput(textToSend);
+        void handleSend(textToSend);
     };
 
     const handleResizeStart = (e: React.PointerEvent) => {
