@@ -1,8 +1,8 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Project } from "@/types";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Copy, Check } from "lucide-react";
 import Link from "next/link";
 import { BrandLogo } from "@/components/BrandLogo";
 
@@ -13,6 +13,18 @@ interface VersionSidebarProps {
 }
 
 export function VersionSidebar({ project, children, width }: VersionSidebarProps) {
+    const [isCopied, setIsCopied] = useState(false);
+
+    const handleCopyProjectId = async () => {
+        try {
+            await navigator.clipboard.writeText(project.id);
+            setIsCopied(true);
+            window.setTimeout(() => setIsCopied(false), 1500);
+        } catch (error) {
+            console.error("Failed to copy project id", error);
+        }
+    };
+
     return (
         <aside
             className="flex flex-col border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 h-full flex-shrink-0"
@@ -34,6 +46,20 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                 <div className="flex-1 min-w-0">
                     <h2 className="font-bold text-sm text-gray-900 dark:text-gray-100 truncate">{project.name}</h2>
                     <p className="text-xs text-gray-500 truncate">Project Workspace</p>
+                    <div className="mt-1 flex items-center gap-1.5">
+                        <code className="min-w-0 truncate text-[11px] text-gray-600 dark:text-gray-300" title={project.id}>
+                            {project.id}
+                        </code>
+                        <button
+                            type="button"
+                            onClick={handleCopyProjectId}
+                            className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors text-gray-500 dark:text-gray-300"
+                            title="Copy project ID"
+                            aria-label="Copy project ID"
+                        >
+                            {isCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                    </div>
                 </div>
             </div>
 

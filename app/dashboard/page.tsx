@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Plus, Folder, Clock, Trash2, Edit2, X } from "lucide-react";
+import { Plus, Folder, Clock, Trash2, Edit2, X, Copy, Check } from "lucide-react";
 import { Project, ProjectVersion } from "@/types";
 import { useRouter } from "next/navigation";
 import { UserCenter } from "@/components/UserCenter";
@@ -34,6 +34,7 @@ export default function DashboardPage() {
     const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
     const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
     const [formData, setFormData] = useState({ name: "", description: "" });
+    const [copiedProjectId, setCopiedProjectId] = useState<string | null>(null);
 
     const syncWorkspaceRemote = async (nextProjects: Project[]) => {
         try {
@@ -207,6 +208,21 @@ export default function DashboardPage() {
         }
     };
 
+    const handleCopyProjectId = async (projectId: string, e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+            await navigator.clipboard.writeText(projectId);
+            setCopiedProjectId(projectId);
+            window.setTimeout(() => {
+                setCopiedProjectId((prev) => (prev === projectId ? null : prev));
+            }, 1500);
+        } catch (error) {
+            console.error("Failed to copy project id", error);
+        }
+    };
+
     if (isLoading) return <DashboardSkeleton />;
 
     return (
@@ -296,6 +312,26 @@ export default function DashboardPage() {
                                                 {project.description}
                                             </p>
                                         )}
+
+                                        <div className="mb-4">
+                                            <div className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/70 px-2 py-1.5">
+                                                <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">ID</span>
+                                                <code
+                                                    className="flex-1 min-w-0 truncate text-[11px] text-gray-700 dark:text-gray-300"
+                                                    title={project.id}
+                                                >
+                                                    {project.id}
+                                                </code>
+                                                <button
+                                                    onClick={(e) => handleCopyProjectId(project.id, e)}
+                                                    className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-500 dark:text-gray-300"
+                                                    title="Copy project ID"
+                                                    aria-label="Copy project ID"
+                                                >
+                                                    {copiedProjectId === project.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                                </button>
+                                            </div>
+                                        </div>
 
                                         <div className="mt-auto flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-4">
                                             <div className="flex items-center gap-1.5">
