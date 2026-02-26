@@ -42,7 +42,6 @@ const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then(
 import { VersionSidebar } from "@/components/VersionSidebar";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
-import ReactMarkdown from 'react-markdown';
 import { useSearchParams, useRouter } from "next/navigation";
 import {
     getCachedProjectSnapshot,
@@ -140,6 +139,25 @@ function parseOptionsBlock(raw: string) {
             return { label, value };
         })
         .filter((item): item is { label: string; value: string } => Boolean(item));
+}
+
+function sanitizeStartupPromptText(prompt: string) {
+    if (!prompt) return "";
+
+    const normalized = prompt.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const lines = normalized.split("\n");
+    if (lines.length > 0) {
+        lines[0] = lines[0]
+            .replace(/^\s*(?:#{1,6}\s*)?(hello|hi|hey)\s+cursor!?[,\s:!-]*/i, "")
+            .trim();
+        if (!lines[0]) {
+            lines.shift();
+        }
+    }
+
+    return lines.join("\n").trim();
 }
 
 type CheckoutQuote = {
@@ -389,12 +407,10 @@ function WizardContent() {
     );
     const [isCopied, setIsCopied] = useState(false);
 
-    // Batch Review State
-    const [isReviewing, setIsReviewing] = useState(false);
-    const [reviewProgress, setReviewProgress] = useState<string>("");
-    const [reviewReport, setReviewReport] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
-    const startupPromptText = generation?.startupPrompt || generation?.cursorPrompt || "";
+    const startupPromptText = sanitizeStartupPromptText(
+        generation?.startupPrompt || generation?.cursorPrompt || ""
+    );
     const startupPromptTitle = "Startup Prompt";
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
     const visibleMessages = messages.slice(baseMessageIndex);
@@ -1201,61 +1217,6 @@ function WizardContent() {
         await generateBlueprint();
     };
 
-    // --- Deep Review Handler ---
-    const handleDeepReview = async () => {
-        if (!generation?.projectTree) return;
-
-        setIsReviewing(true);
-        setReviewProgress("Initializing Deep Scan...");
-        setReviewReport(null);
-
-        try {
-            const response = await fetch("/api/batch-analyze", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    projectTree: generation.projectTree,
-                    goal: "Comprehensive Codebase Review. Identify potential bugs, security issues, performance bottlenecks, and architectural inconsistencies."
-                })
-            });
-
-            if (!response.body) throw new Error("No response body");
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split("\n\n");
-                buffer = lines.pop() || "";
-
-                for (const line of lines) {
-                    if (line.startsWith("event: progress")) {
-                        const data = JSON.parse(line.replace("event: progress\ndata: ", ""));
-                        setReviewProgress(data);
-                    } else if (line.startsWith("event: report")) {
-                        const data = JSON.parse(line.replace("event: report\ndata: ", ""));
-                        setReviewReport(data);
-                        setIsReviewing(false);
-                    } else if (line.startsWith("event: error")) {
-                        const err = JSON.parse(line.replace("event: error\ndata: ", ""));
-                        console.error(err);
-                        setReviewProgress("Error: " + err);
-                        setIsReviewing(false);
-                    }
-                }
-            }
-        } catch (e) {
-            console.error(e);
-            setReviewProgress("Failed to run deep review.");
-            setIsReviewing(false);
-        }
-    };
-
     if (!project || !currentVersion) return <WizardSkeleton />;
 
     return (
@@ -1570,15 +1531,6 @@ function WizardContent() {
                                         </h4>
                                         <div className="flex gap-2">
                                             <button
-                                                onClick={handleDeepReview}
-                                                disabled={isReviewing}
-                                                className="text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-3 py-1.5 rounded-lg transition-colors font-medium border border-indigo-200 dark:border-indigo-800 flex items-center gap-1"
-                                                title="Run a comprehensive analysis of the entire codebase"
-                                            >
-                                                {isReviewing ? <Loader2 className="w-3 h-3 animate-spin" /> : <BrainCircuit className="w-3 h-3" />}
-                                                Deep Review
-                                            </button>
-                                            <button
                                                 onClick={() => {
                                                     navigator.clipboard.writeText(startupPromptText);
                                                     setIsCopied(true);
@@ -1634,36 +1586,6 @@ function WizardContent() {
                     )}
 
                 </div>
-
-                {isReviewing && (
-                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-20">
-                        <div className="bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-md text-center border border-gray-200 dark:border-gray-800 shadow-lg">
-                            <Loader2 className="w-6 h-6 animate-spin mx-auto text-indigo-500" />
-                            <div className="mt-3 text-sm text-gray-600 dark:text-gray-300">{reviewProgress || "Running deep review..."}</div>
-                        </div>
-                    </div>
-                )}
-
-                {reviewReport && (
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-30">
-                        <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-3xl max-h-[80vh] flex flex-col border border-gray-200 dark:border-gray-800 shadow-xl overflow-hidden">
-                            <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-                                <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Deep Review Report</h4>
-                                <button
-                                    onClick={() => setReviewReport(null)}
-                                    className="text-xs px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-                                >
-                                    Close
-                                </button>
-                            </div>
-                            <div className="p-4 overflow-y-auto">
-                                <article className="prose prose-sm dark:prose-invert">
-                                    <ReactMarkdown>{reviewReport || ""}</ReactMarkdown>
-                                </article>
-                            </div>
-                        </div>
-                    </div>
-                )}
                 </main>
             </div>
         </>

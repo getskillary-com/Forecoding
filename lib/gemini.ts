@@ -560,7 +560,9 @@ export async function generateProjectResources(
         }
 
         data = normalizeGenerationData(data);
-        const generatedStartupPrompt = typeof data.startupPrompt === "string" ? data.startupPrompt.trim() : "";
+        const generatedStartupPrompt = sanitizeStartupPromptText(
+            typeof data.startupPrompt === "string" ? data.startupPrompt : ""
+        );
 
         // --- Post-Processing (Consistency Check) ---
         data.toolStack = ensureDefaultToolStack(data.toolStack);
@@ -612,7 +614,7 @@ export async function generateProjectResources(
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
-        data.startupPrompt = generatedStartupPrompt || data.cursorPrompt;
+        data.startupPrompt = generatedStartupPrompt || sanitizeStartupPromptText(data.cursorPrompt);
 
         return data;
 
@@ -712,6 +714,25 @@ function normalizeGenerationData(input: any) {
     if (typeof safe.startupPrompt !== "string") safe.startupPrompt = "";
 
     return safe;
+}
+
+function sanitizeStartupPromptText(prompt: string) {
+    if (!prompt) return "";
+
+    const normalized = prompt.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const lines = normalized.split("\n");
+    if (lines.length > 0) {
+        lines[0] = lines[0]
+            .replace(/^\s*(?:#{1,6}\s*)?(hello|hi|hey)\s+cursor!?[,\s:!-]*/i, "")
+            .trim();
+        if (!lines[0]) {
+            lines.shift();
+        }
+    }
+
+    return lines.join("\n").trim();
 }
 
 function extractFirstJsonObject(text: string) {

@@ -95,8 +95,8 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
 1. **Project Tree**: A nested structure where \`content\` is NOT code, but a **SPECIFICATION**.
    - *Example*: \`app/page.tsx\` -> "# Home Page Spec\n\n## UI Requirements\n- Hero section with gradient h1.\n- CTA button linking to /login..."
 2. **Tech Stack**: The chosen technologies.
-3. **Cursor Rules**: The \`.cursorrules\` file content.
-4. **Startup Prompt**: The "Trigger" prompt for the user to paste into Cursor.
+3. **IDE Rules**: The \`.cursorrules\`-compatible rules content.
+4. **Startup Prompt**: The trigger prompt for the user to paste into any AI IDE assistant.
 
 # Specific Content Requirements:
 
@@ -109,10 +109,12 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - **Exports**: What should be exported?
 
 ## 2. Startup Prompt (The Trigger)
-A massive, detailed prompt for the user to paste into Cursor. It should:
+A massive, detailed prompt for the user to paste into an AI IDE assistant. It should:
 - Reference the generated \`.cursorrules\`.
 - Reference the \`project_structure.md\` (which you will generate in the tree).
 - Define the **Step-by-Step Execution Plan** (Phase 1: Setup, Phase 2: DB, Phase 3: Auth...).
+- Start directly with executable instructions. Do NOT start with greetings like "Hello Cursor!".
+- Keep the wording IDE-agnostic. Do not assume a specific tool unless explicitly requested.
 
 # Output Format (JSON):
 {

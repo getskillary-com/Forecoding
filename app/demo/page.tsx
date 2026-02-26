@@ -52,6 +52,25 @@ function formatExportTime(value: string | undefined) {
     return time.toLocaleString();
 }
 
+function sanitizeStartupPromptText(prompt: string) {
+    if (!prompt) return "";
+
+    const normalized = prompt.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const lines = normalized.split("\n");
+    if (lines.length > 0) {
+        lines[0] = lines[0]
+            .replace(/^\s*(?:#{1,6}\s*)?(hello|hi|hey)\s+cursor!?[,\s:!-]*/i, "")
+            .trim();
+        if (!lines[0]) {
+            lines.shift();
+        }
+    }
+
+    return lines.join("\n").trim();
+}
+
 function DemoTabButton({
     active,
     label,
@@ -167,7 +186,9 @@ export default function DemoPage() {
     const messages = projectData.messages || [];
     const tasks = projectData.tasks || [];
     const architectureCode = projectData.currentDiagram || "graph TD\nStart[No Architecture]";
-    const startupPrompt = generation?.startupPrompt || generation?.cursorPrompt || "No startup prompt available.";
+    const startupPrompt = sanitizeStartupPromptText(
+        generation?.startupPrompt || generation?.cursorPrompt || ""
+    ) || "No startup prompt available.";
 
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-black text-gray-900 dark:text-gray-100 p-4 md:p-6">
