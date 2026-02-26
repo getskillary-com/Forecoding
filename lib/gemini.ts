@@ -30,6 +30,10 @@ const genAI = new GoogleGenerativeAI(apiKey);
 const CORE_MODEL = "gemini-3.1-pro-preview";
 const BACKUP_MODEL = "gemini-3-pro-preview";
 
+export function getActiveAiProvider() {
+    return AI_PROVIDER || "gemini";
+}
+
 function isClaudeProvider() {
     return AI_PROVIDER === "claude";
 }

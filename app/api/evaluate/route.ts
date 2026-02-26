@@ -1,6 +1,6 @@
 
 import { NextResponse } from "next/server";
-import { streamEvaluateInput } from "@/lib/gemini";
+import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
 import type { Message, Attachment } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
@@ -153,18 +153,26 @@ async function parseEvaluateRequest(req: Request): Promise<EvaluateRequestBody> 
 }
 
 export async function POST(req: Request) {
+    const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).slice(0, 12);
+    const requestStartedAt = Date.now();
     try {
         const { messages, context, generationReady } = await parseEvaluateRequest(req);
         const contextText = typeof context === "string" ? context : undefined;
         if (!Array.isArray(messages) || messages.length === 0) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
+        const provider = getActiveAiProvider();
+        console.log(
+            `[evaluate][${requestId}] start provider=${provider} messages=${messages.length} contextChars=${contextText?.length || 0} generationReady=${generationReady === true}`
+        );
 
         const stream = new ReadableStream({
             async start(controller) {
                 const encoder = new TextEncoder();
                 let closed = false;
                 let emittedMeaningfulChunk = false;
+                let firstChunkLogged = false;
+                const streamStartedAt = Date.now();
 
                 const safeEnqueue = (chunk: string) => {
                     if (closed) return;
@@ -190,15 +198,27 @@ export async function POST(req: Request) {
                     )) {
                         if (chunk.trim().length > 0) {
                             emittedMeaningfulChunk = true;
+                            if (!firstChunkLogged) {
+                                firstChunkLogged = true;
+                                console.log(
+                                    `[evaluate][${requestId}] firstChunkMs=${Date.now() - streamStartedAt}`
+                                );
+                            }
                         }
                         safeEnqueue(chunk);
                     }
+                    console.log(
+                        `[evaluate][${requestId}] completed streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
+                    );
                 } catch (e) {
                     if (
                         !emittedMeaningfulChunk &&
                         (isErrorWithMessage(e, "EVALUATE_MODEL_IDLE_TIMEOUT") ||
                             isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT"))
                     ) {
+                        console.warn(
+                            `[evaluate][${requestId}] primaryTimeout type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt}; retrying compact payload`
+                        );
                         try {
                             const retryMessages = buildRetryMessages(messages);
                             const retryContext = contextText
@@ -212,21 +232,36 @@ export async function POST(req: Request) {
                             )) {
                                 if (retryChunk.trim().length > 0) {
                                     emittedMeaningfulChunk = true;
+                                    if (!firstChunkLogged) {
+                                        firstChunkLogged = true;
+                                        console.log(
+                                            `[evaluate][${requestId}] firstChunkMs=${Date.now() - streamStartedAt} source=compactRetry`
+                                        );
+                                    }
                                 }
                                 safeEnqueue(retryChunk);
                             }
+                            console.log(
+                                `[evaluate][${requestId}] completedAfterRetry streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
+                            );
                         } catch {
+                            console.error(
+                                `[evaluate][${requestId}] compactRetryFailed afterMs=${Date.now() - streamStartedAt}`
+                            );
                             safeEnqueue("<question>AI response timed out. Please retry with a shorter prompt.</question>");
                             emittedMeaningfulChunk = true;
                         }
                     } else {
-                        console.error("Streaming error:", e);
+                        console.error(`[evaluate][${requestId}] streamingError:`, e);
                         safeEnqueue("<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment.</question>");
                         emittedMeaningfulChunk = true;
                     }
                 } finally {
                     clearInterval(heartbeat);
                     if (!emittedMeaningfulChunk) {
+                        console.warn(
+                            `[evaluate][${requestId}] noMeaningfulOutput streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
+                        );
                         safeEnqueue("<question>No model output received. Please retry.</question>");
                     }
                     if (!closed) {
@@ -244,7 +279,7 @@ export async function POST(req: Request) {
         });
 
     } catch (error) {
-        console.error("Evaluation error:", error);
+        console.error(`[evaluate][${requestId}] requestError:`, error);
         const status = error instanceof RequestPayloadError ? error.status : 500;
         return NextResponse.json({
             error: status === 413 ? "Evaluate request payload is too large" : "Failed to evaluate input",
