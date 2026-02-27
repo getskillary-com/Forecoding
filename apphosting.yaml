@@ -55,6 +55,10 @@ env:
     value: "usd"
     availability:
       - RUNTIME
+  - variable: FORECODING_ADMIN_EMAILS
+    secret: FORECODING_ADMIN_EMAILS
+    availability:
+      - RUNTIME
 
 
 
