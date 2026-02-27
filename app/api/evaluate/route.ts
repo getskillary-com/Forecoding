@@ -66,6 +66,17 @@ function isErrorWithMessage(error: unknown, message: string) {
     return error instanceof Error && error.message === message;
 }
 
+function isUpstreamOverloadError(error: unknown) {
+    const details = getErrorDetails(error).toLowerCase();
+    return (
+        details.includes("503") ||
+        details.includes("service unavailable") ||
+        details.includes("high demand") ||
+        details.includes("overloaded") ||
+        details.includes("resource exhausted")
+    );
+}
+
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return `${text.slice(0, maxChars)}\n... [truncated]`;
@@ -343,7 +354,11 @@ export async function POST(req: Request) {
                             console.error(
                                 `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
                             );
-                            enqueueQuestionFallback("AI response timed out. Please retry with a shorter prompt.");
+                            enqueueQuestionFallback(
+                                isUpstreamOverloadError(retryError)
+                                    ? "AI service is experiencing high demand. Please try again in a moment."
+                                    : "AI response timed out. Please retry with a shorter prompt."
+                            );
                             emittedMeaningfulChunk = true;
                         }
                     } else {
