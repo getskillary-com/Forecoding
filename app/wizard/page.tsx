@@ -153,6 +153,32 @@ function normalizeSingleQuestion(raw: string) {
     return selected.join("\n").trim() || lines[0];
 }
 
+function extractFallbackAssistantText(raw: string) {
+    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const questionMatch = normalized.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
+    if (questionMatch && questionMatch[1]) {
+        const questionText = normalizeSingleQuestion(questionMatch[1]);
+        if (questionText) return questionText;
+    }
+
+    const plainText = normalized
+        .replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, " ")
+        .replace(/<diagram>[\s\S]*?(?:<\/diagram>|$)/gi, " ")
+        .replace(/<analysis_clarified>[\s\S]*?(?:<\/analysis_clarified>|$)/gi, " ")
+        .replace(/<analysis_missing>[\s\S]*?(?:<\/analysis_missing>|$)/gi, " ")
+        .replace(/<density>[\s\S]*?(?:<\/density>|$)/gi, " ")
+        .replace(/<is_ready>[\s\S]*?(?:<\/is_ready>|$)/gi, " ")
+        .replace(/<options>[\s\S]*?(?:<\/options>|$)/gi, " ")
+        .replace(/<\/?[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (!plainText) return "";
+    return clipText(plainText, 600);
+}
+
 function parseOptionsBlock(raw: string) {
     const parsed = raw
         .split("\n")
@@ -1056,7 +1082,7 @@ function WizardContent() {
                     }
                 }
 
-                const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/);
+                const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
                 if (questionMatch && questionMatch[1]) {
                     const q = normalizeSingleQuestion(questionMatch[1]);
                     if (q) {
@@ -1101,7 +1127,7 @@ function WizardContent() {
                 }
 
                 // Options
-                const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/);
+                const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
                 if (optionsMatch) {
                     const options = currentEval.density_score >= 100
                         ? []
@@ -1117,6 +1143,20 @@ function WizardContent() {
                 }
 
                 setEvaluation({ ...currentEval });
+            }
+
+            if (evalRequestIdRef.current === requestId) {
+                const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
+                setMessages(prev => {
+                    if (evalRequestIdRef.current !== requestId) return prev;
+                    const updated = [...prev];
+                    const current = updated[assistantIndex];
+                    if (!current || current.role !== "assistant") return prev;
+                    if (current.content.trim().length > 0) return prev;
+                    if (current.options && current.options.length > 0) return prev;
+                    updated[assistantIndex] = { ...current, content: fallbackText, options: [] };
+                    return updated;
+                });
             }
 
         } catch (error) {

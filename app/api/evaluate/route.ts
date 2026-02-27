@@ -232,6 +232,9 @@ export async function POST(req: Request) {
                 let closed = false;
                 let emittedMeaningfulChunk = false;
                 let firstChunkLogged = false;
+                let sawQuestionTag = false;
+                let fallbackQuestionInjected = false;
+                let tagScanBuffer = "";
                 const streamStartedAt = Date.now();
 
                 const safeEnqueue = (chunk: string) => {
@@ -241,6 +244,11 @@ export async function POST(req: Request) {
                     } catch {
                         closed = true;
                     }
+                };
+
+                const enqueueQuestionFallback = (message: string) => {
+                    safeEnqueue(`<question>${message} (ref: ${requestId})</question>`);
+                    fallbackQuestionInjected = true;
                 };
 
                 // Send an early byte to reduce upstream gateway idle timeouts.
@@ -256,6 +264,11 @@ export async function POST(req: Request) {
                         contextText,
                         generationReady === true
                     )) {
+                        tagScanBuffer = (tagScanBuffer + chunk).slice(-8192);
+                        if (!sawQuestionTag && /<question>/i.test(tagScanBuffer)) {
+                            sawQuestionTag = true;
+                        }
+
                         if (chunk.trim().length > 0) {
                             emittedMeaningfulChunk = true;
                             if (!firstChunkLogged) {
@@ -308,21 +321,26 @@ export async function POST(req: Request) {
                             console.error(
                                 `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt}`
                             );
-                            safeEnqueue(`<question>AI response timed out. Please retry with a shorter prompt. (ref: ${requestId})</question>`);
+                            enqueueQuestionFallback("AI response timed out. Please retry with a shorter prompt.");
                             emittedMeaningfulChunk = true;
                         }
                     } else {
                         console.error(`[evaluate][${requestId}] streamingError:`, e);
-                        safeEnqueue(`<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment. (ref: ${requestId})</question>`);
+                        enqueueQuestionFallback("Sorry, the AI service is temporarily unavailable. Please try again in a moment.");
                         emittedMeaningfulChunk = true;
                     }
                 } finally {
                     clearInterval(heartbeat);
-                    if (!emittedMeaningfulChunk) {
+                    if (!emittedMeaningfulChunk && !fallbackQuestionInjected) {
                         console.warn(
                             `[evaluate][${requestId}] noMeaningfulOutput streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        safeEnqueue(`<question>No model output received. Please retry. (ref: ${requestId})</question>`);
+                        enqueueQuestionFallback("No model output received. Please retry.");
+                    } else if (emittedMeaningfulChunk && !sawQuestionTag && !fallbackQuestionInjected) {
+                        console.warn(
+                            `[evaluate][${requestId}] missingQuestionTag streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
+                        );
+                        enqueueQuestionFallback("Model response format was invalid. Please retry.");
                     }
                     if (!closed) {
                         closed = true;
