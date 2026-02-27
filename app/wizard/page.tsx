@@ -296,6 +296,31 @@ function summarizeHtmlErrorBody(html: string) {
     return clipText(plain || "Internal Server Error", 200);
 }
 
+function normalizeEvaluateErrorDetail(raw: string) {
+    const source = (raw || "").trim();
+    if (!source) return "";
+
+    const looksLikeHtml = /<!doctype html|<html|<head|<body|<style|<\/[a-z]+>/i.test(source);
+    if (looksLikeHtml) {
+        return summarizeHtmlErrorBody(source);
+    }
+
+    const plain = source
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\b[a-z0-9_.#,\-:\s]{1,120}\{[^{}]{1,300}\}/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (!plain) return "Internal Server Error";
+    if (/internal server error/i.test(plain)) {
+        return clipText("Internal Server Error from upstream gateway. Please retry.", 220);
+    }
+
+    return clipText(plain, 220);
+}
+
 function buildAttachmentPlaceholder(attachment: Attachment, reason: string): Attachment {
     return {
         type: "text",
@@ -1040,15 +1065,18 @@ function WizardContent() {
                 try {
                     if (contentType.includes("application/json")) {
                         const payload = await res.json() as { error?: string; details?: string };
+                        const normalizedPayloadDetails = normalizeEvaluateErrorDetail(payload.details || "");
                         if (payload.error) {
-                            detail = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
+                            detail = normalizedPayloadDetails
+                                ? `${payload.error}: ${normalizedPayloadDetails}`
+                                : payload.error;
+                        } else if (normalizedPayloadDetails) {
+                            detail = normalizedPayloadDetails;
                         }
                     } else {
                         const text = (await res.text()).trim();
                         if (text) {
-                            detail = contentType.includes("text/html")
-                                ? summarizeHtmlErrorBody(text)
-                                : clipText(text, 300);
+                            detail = normalizeEvaluateErrorDetail(text);
                         }
                     }
                 } catch {
