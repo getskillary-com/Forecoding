@@ -20,6 +20,7 @@ const CLAUDE_API_BASE_URL = (process.env.CLAUDE_API_BASE_URL || "https://api.ant
 const CLAUDE_API_VERSION = process.env.CLAUDE_API_VERSION || "2023-06-01";
 const CLAUDE_MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || "8192");
 const CLAUDE_COOLDOWN_MS = Number(process.env.CLAUDE_COOLDOWN_MS || "120000");
+const GEMINI_CORE_COOLDOWN_MS = Number(process.env.GEMINI_CORE_COOLDOWN_MS || "180000");
 
 // Initialize Gemini Client
 const apiKey = process.env.GEMINI_API_KEY || "";
@@ -43,6 +44,7 @@ function hasGeminiKey() {
 }
 
 let claudeCooldownUntil = 0;
+let geminiCoreCooldownUntil = 0;
 
 function shouldSkipClaude() {
     return Date.now() < claudeCooldownUntil;
@@ -50,6 +52,14 @@ function shouldSkipClaude() {
 
 function markClaudeFailure() {
     claudeCooldownUntil = Date.now() + CLAUDE_COOLDOWN_MS;
+}
+
+function shouldSkipGeminiCore() {
+    return Date.now() < geminiCoreCooldownUntil;
+}
+
+function markGeminiCoreFailure() {
+    geminiCoreCooldownUntil = Date.now() + GEMINI_CORE_COOLDOWN_MS;
 }
 
 const CLAUDE_RETRYABLE_ERROR_PATTERNS = [
@@ -65,18 +75,41 @@ const CLAUDE_RETRYABLE_ERROR_PATTERNS = [
     /socket hang up/i
 ];
 
+const GEMINI_CORE_RETRYABLE_ERROR_PATTERNS = [
+    /\b429\b/i,
+    /\b503\b/i,
+    /high demand/i,
+    /temporarily unavailable/i,
+    /overloaded/i,
+    /resource exhausted/i,
+    /deadline exceeded/i,
+    /timed out/i,
+    /timeout/i
+];
+
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function clipErrorText(text: string, maxChars: number = 300) {
+    const normalized = (text || "").replace(/\s+/g, " ").trim();
+    if (!normalized) return "No error details";
+    return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized;
+}
+
 function getErrorMessage(error: unknown) {
-    if (error instanceof Error) return error.message;
-    return String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    return clipErrorText(raw, 500);
 }
 
 function isRetryableClaudeStreamError(error: unknown) {
     const message = getErrorMessage(error);
     return CLAUDE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function isRetryableGeminiCoreError(error: unknown) {
+    const message = getErrorMessage(error);
+    return GEMINI_CORE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 console.log(`[AI] Active provider: ${AI_PROVIDER}`);
@@ -88,21 +121,34 @@ async function withFallback<T>(
     operation: (model: any) => Promise<T>,
     isJsonMode: boolean = false
 ): Promise<T> {
+    const useBackupFirst = shouldSkipGeminiCore();
+    const primaryModelName = useBackupFirst ? BACKUP_MODEL : CORE_MODEL;
+    const fallbackModelName = useBackupFirst ? null : BACKUP_MODEL;
+
     try {
-        console.log(`[AI] Attempting with CORE model: ${CORE_MODEL}`);
+        console.log(`[AI] Attempting with model: ${primaryModelName}`);
         const model = genAI.getGenerativeModel({
-            model: CORE_MODEL,
+            model: primaryModelName,
             generationConfig: isJsonMode ? { responseMimeType: "application/json" } : undefined
         });
         return await operation(model);
     } catch (error: any) {
-        console.warn(`[AI] CORE model failed (${error.message}). Falling back to BACKUP: ${BACKUP_MODEL}`);
-        // Fallback to flash, which is usually very reliable
-        const model = genAI.getGenerativeModel({
-            model: BACKUP_MODEL,
+        const message = getErrorMessage(error);
+
+        if (primaryModelName === CORE_MODEL && isRetryableGeminiCoreError(error)) {
+            markGeminiCoreFailure();
+        }
+
+        if (!fallbackModelName) {
+            throw error;
+        }
+
+        console.warn(`[AI] ${primaryModelName} failed (${message}). Falling back to ${fallbackModelName}`);
+        const fallbackModel = genAI.getGenerativeModel({
+            model: fallbackModelName,
             generationConfig: isJsonMode ? { responseMimeType: "application/json" } : undefined
         });
-        return await operation(model);
+        return await operation(fallbackModel);
     }
 }
 
@@ -241,7 +287,7 @@ async function generateTextWithClaude(
 
     if (!response.ok) {
         const errorBody = await response.text();
-        throw new Error(`[Claude] ${response.status}: ${errorBody}`);
+        throw new Error(`[Claude] ${response.status}: ${clipErrorText(errorBody)}`);
     }
 
     const payload = await response.json();
@@ -307,7 +353,7 @@ async function* streamWithClaude(messages: Message[], systemInstructionText: str
 
     if (!response.ok) {
         const errorBody = await response.text();
-        throw new Error(`[Claude] ${response.status}: ${errorBody}`);
+        throw new Error(`[Claude] ${response.status}: ${clipErrorText(errorBody)}`);
     }
 
     if (!response.body) {
@@ -354,14 +400,25 @@ async function* streamWithGemini(
         return await chatModel.generateContentStream({ contents });
     };
 
-    const primaryModel = preferBackupModel ? BACKUP_MODEL : CORE_MODEL;
-    const fallbackModel = preferBackupModel ? CORE_MODEL : BACKUP_MODEL;
+    const useBackupFirst = preferBackupModel || shouldSkipGeminiCore();
+    const primaryModel = useBackupFirst ? BACKUP_MODEL : CORE_MODEL;
+    const fallbackModel = useBackupFirst ? null : BACKUP_MODEL;
 
     let streamResult;
     try {
         streamResult = await openStream(primaryModel);
     } catch (error: any) {
-        console.warn(`[AI] ${primaryModel} stream failed (${error.message}). Falling back to ${fallbackModel}`);
+        const message = getErrorMessage(error);
+
+        if (primaryModel === CORE_MODEL && isRetryableGeminiCoreError(error)) {
+            markGeminiCoreFailure();
+        }
+
+        if (!fallbackModel) {
+            throw error;
+        }
+
+        console.warn(`[AI] ${primaryModel} stream failed (${message}). Falling back to ${fallbackModel}`);
         streamResult = await openStream(fallbackModel);
     }
 

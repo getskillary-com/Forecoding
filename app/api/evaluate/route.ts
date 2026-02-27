@@ -4,12 +4,12 @@ import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
 import type { Message, Attachment } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
-const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 15_000, 5_000, 30_000);
+const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 10_000, 5_000, 20_000);
 // Clamp timeout values so misconfigured env vars cannot cause multi-minute UI stalls.
-const EVALUATE_MODEL_IDLE_TIMEOUT_MS = readBoundedIntEnv("EVALUATE_MODEL_IDLE_TIMEOUT_MS", 45_000, 10_000, 60_000);
+const EVALUATE_MODEL_IDLE_TIMEOUT_MS = readBoundedIntEnv("EVALUATE_MODEL_IDLE_TIMEOUT_MS", 25_000, 8_000, 30_000);
 const EVALUATE_TOTAL_TIMEOUT_MS = Math.max(
-    readBoundedIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 90_000, 30_000, 120_000),
-    EVALUATE_MODEL_IDLE_TIMEOUT_MS + 10_000
+    readBoundedIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 70_000, 20_000, 90_000),
+    EVALUATE_MODEL_IDLE_TIMEOUT_MS + 5_000
 );
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
@@ -36,6 +36,20 @@ class RequestPayloadError extends Error {
 function getErrorDetails(error: unknown) {
     if (error instanceof Error) return error.message;
     return String(error);
+}
+
+function normalizeServerErrorDetails(raw: string) {
+    const source = (raw || "").trim();
+    if (!source) return "Unknown error";
+
+    const looksLikeHtmlOrCss = /<!doctype html|<html|<head|<body|<style|<\/[a-z]+>|\bbody\s*\{|font-family\s*:|h1\s*,\s*h2/i.test(source);
+    if (looksLikeHtmlOrCss) {
+        return "Internal Server Error from upstream gateway.";
+    }
+
+    const compact = source.replace(/\s+/g, " ").trim();
+    if (!compact) return "Unknown error";
+    return compact.length > 260 ? `${compact.slice(0, 260)}...` : compact;
 }
 
 function readBoundedIntEnv(name: string, fallback: number, min: number, max: number) {
@@ -297,7 +311,7 @@ export async function POST(req: Request) {
                             isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT"))
                     ) {
                         console.warn(
-                            `[evaluate][${requestId}] primaryTimeout type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt}; retrying compact payload`
+                            `[evaluate][${requestId}] primaryTimeout type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}; retrying compact payload`
                         );
                         try {
                             const retryMessages = buildRetryMessages(messages);
@@ -327,7 +341,7 @@ export async function POST(req: Request) {
                             );
                         } catch (retryError) {
                             console.error(
-                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt}`
+                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
                             );
                             enqueueQuestionFallback("AI response timed out. Please retry with a shorter prompt.");
                             emittedMeaningfulChunk = true;
@@ -375,7 +389,7 @@ export async function POST(req: Request) {
         return NextResponse.json(
             {
                 error: status === 413 ? "Evaluate request payload is too large" : "Failed to evaluate input",
-                details: getErrorDetails(error)
+                details: normalizeServerErrorDetails(getErrorDetails(error))
             },
             {
                 status,
