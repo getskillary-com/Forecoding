@@ -41,15 +41,15 @@ export function getStripeCurrency() {
 }
 
 export function getStripeUnitAmountCents() {
-    const value = Number(process.env.STRIPE_UNIT_AMOUNT_CENTS || "166");
-    if (!Number.isFinite(value)) return 166;
+    const value = Number(process.env.STRIPE_UNIT_AMOUNT_CENTS || "799");
+    if (!Number.isFinite(value)) return 799;
     return Math.max(1, Math.round(value));
 }
 
 export function getStripeMaxUnitAmountCents() {
     const base = getStripeUnitAmountCents();
-    const configured = Number(process.env.STRIPE_MAX_UNIT_AMOUNT_CENTS || "");
-    if (!Number.isFinite(configured)) return base * 8;
+    const configured = Number(process.env.STRIPE_MAX_UNIT_AMOUNT_CENTS || "1499");
+    if (!Number.isFinite(configured)) return Math.max(base, 1499);
     return Math.max(base, Math.round(configured));
 }
 

@@ -123,22 +123,90 @@ function yieldToBrowser(): Promise<void> {
     });
 }
 
+function stripWrappingQuotes(value: string) {
+    return value.replace(/^["']|["']$/g, "").trim();
+}
+
+function isGenericOptionLabel(label: string) {
+    const normalized = label.trim().toLowerCase();
+    if (!normalized) return true;
+
+    return /^(option|choice|selection|answer|question|item|step|type|mode|entry|device)\b/.test(normalized);
+}
+
+function normalizeSingleQuestion(raw: string) {
+    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const lines = normalized
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    if (lines.length === 0) return "";
+
+    const selected: string[] = [];
+    for (const line of lines) {
+        selected.push(line);
+        if (/[?？]/.test(line)) break;
+    }
+
+    return selected.join("\n").trim() || lines[0];
+}
+
 function parseOptionsBlock(raw: string) {
-    return raw
+    const parsed = raw
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line) => line.replace(/^[-*]\s*/, ""))
-        .map((line) => line.replace(/^["']|["']$/g, ""))
+        .map((line) => stripWrappingQuotes(line))
         .map((line) => {
             const [rawLabel, ...rest] = line.split("::");
-            const label = (rawLabel || "").trim();
-            const valueRaw = rest.join("::").trim();
+            const label = stripWrappingQuotes(rawLabel || "");
+            const valueRaw = stripWrappingQuotes(rest.join("::"));
             const value = valueRaw || label;
-            if (!label) return null;
-            return { label, value };
+
+            if (!label && !value) return null;
+            return {
+                label: label || value,
+                value
+            };
         })
         .filter((item): item is { label: string; value: string } => Boolean(item));
+
+    if (parsed.length === 0) return [];
+
+    const labelCounts = new Map<string, number>();
+    for (const option of parsed) {
+        const key = option.label.toLowerCase();
+        labelCounts.set(key, (labelCounts.get(key) || 0) + 1);
+    }
+
+    const dedupe = new Set<string>();
+
+    return parsed
+        .map((option) => {
+            const label = option.label.trim();
+            const value = option.value.trim() || label;
+            const duplicatedLabel = (labelCounts.get(label.toLowerCase()) || 0) > 1;
+            const shouldPromoteValueToLabel = Boolean(
+                value &&
+                value.toLowerCase() !== label.toLowerCase() &&
+                (duplicatedLabel || isGenericOptionLabel(label))
+            );
+
+            return {
+                label: shouldPromoteValueToLabel ? value : label,
+                value
+            };
+        })
+        .filter((option) => {
+            if (!option.label) return false;
+            const key = `${option.label.toLowerCase()}::${option.value.toLowerCase()}`;
+            if (dedupe.has(key)) return false;
+            dedupe.add(key);
+            return true;
+        });
 }
 
 function sanitizeStartupPromptText(prompt: string) {
@@ -990,7 +1058,7 @@ function WizardContent() {
 
                 const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/);
                 if (questionMatch && questionMatch[1]) {
-                    const q = questionMatch[1].trim();
+                    const q = normalizeSingleQuestion(questionMatch[1]);
                     if (q) {
                         currentEval.next_step.question = q;
                         setMessages(prev => {
@@ -1079,7 +1147,7 @@ function WizardContent() {
     const handleOptionClick = (option: { label: string; value: string }) => {
         const optionLabel = option.label.trim();
         const optionValue = option.value.trim();
-        const textToSend = optionLabel || optionValue;
+        const textToSend = optionValue || optionLabel;
         if (!textToSend) return;
 
         setInput(textToSend);

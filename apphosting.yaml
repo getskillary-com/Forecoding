@@ -40,11 +40,11 @@ env:
     availability:
       - RUNTIME
   - variable: STRIPE_UNIT_AMOUNT_CENTS
-    value: "166"
+    value: "799"
     availability:
       - RUNTIME
   - variable: STRIPE_MAX_UNIT_AMOUNT_CENTS
-    value: "1330"
+    value: "1499"
     availability:
       - RUNTIME
   - variable: STRIPE_DYNAMIC_PRICING_ENABLED

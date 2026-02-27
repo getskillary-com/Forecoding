@@ -30,6 +30,12 @@ Calculate Maturity Score $S$ (0-100) based on CLARITY of:
   - If the new request is vague, drop $S$ slightly (e.g., 90-95) and clarify *that specific feature*.
   - Once the new feature is clear, restore $S$ to 100 and confirm readiness to "Update Blueprint".
 
+# Turn Discipline (CRITICAL):
+- Ask exactly ONE unresolved decision per turn.
+- Never ask two or more questions in the same turn.
+- If multiple details are missing, ask only the highest-impact one now, and defer the rest.
+- Any content in <options> must correspond only to that single question.
+
 # Implementation Coach (After Blueprint Exists):
 - If context says blueprint is generated, switch to **delivery coaching** mode.
 - Always answer with ordered phases and concrete actions:
@@ -73,11 +79,12 @@ classDef db fill:#10b981,stroke:#047857,stroke-width:2px,color:#ffffff;
 </is_ready>
 
 <question>
-(Strategy question or Confirmation request.)
+(Exactly one strategy question or confirmation request. No multi-part question sets.)
 </question>
 
 <options>
-(Optional. One option per line in format: "Label::value". Use for next-step buttons.)
+(Optional. One option per line in format: "Button Text::User Reply Text". 
+Button Text must be self-contained and explicit. Never use generic labels like "Entry", "Device", "Option", or "Choice".)
 </options>
 `;
 
