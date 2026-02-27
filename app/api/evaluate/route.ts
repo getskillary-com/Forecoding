@@ -353,15 +353,24 @@ export async function POST(req: Request) {
         return new Response(stream, {
             headers: {
                 'Content-Type': 'text/plain; charset=utf-8',
+                'X-Evaluate-Request-Id': requestId
             }
         });
 
     } catch (error) {
         console.error(`[evaluate][${requestId}] requestError:`, error);
         const status = error instanceof RequestPayloadError ? error.status : 500;
-        return NextResponse.json({
-            error: status === 413 ? "Evaluate request payload is too large" : "Failed to evaluate input",
-            details: getErrorDetails(error)
-        }, { status });
+        return NextResponse.json(
+            {
+                error: status === 413 ? "Evaluate request payload is too large" : "Failed to evaluate input",
+                details: getErrorDetails(error)
+            },
+            {
+                status,
+                headers: {
+                    "X-Evaluate-Request-Id": requestId
+                }
+            }
+        );
     }
 }

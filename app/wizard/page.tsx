@@ -62,7 +62,7 @@ const EVALUATE_COMPACT_HISTORY_MESSAGES = 10;
 const EVALUATE_COMPACT_MESSAGE_CONTENT_CHARS = 2400;
 const EVALUATE_COMPACT_TEXT_ATTACHMENT_CHARS = 6000;
 const EVALUATE_COMPACT_CONTEXT_CHARS = 4000;
-const EVALUATE_RETRYABLE_STATUS = new Set([429, 502, 503, 504, 524]);
+const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -275,6 +275,25 @@ type EvaluateMessageBuildOptions = {
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return text.slice(0, maxChars) + "\n... [truncated]";
+}
+
+function summarizeHtmlErrorBody(html: string) {
+    const source = (html || "").trim();
+    if (!source) return "";
+
+    const titleMatch = source.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const h1Match = source.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const h2Match = source.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+    const candidate = titleMatch?.[1] || h1Match?.[1] || h2Match?.[1] || source;
+
+    const plain = candidate
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    return clipText(plain || "Internal Server Error", 200);
 }
 
 function buildAttachmentPlaceholder(attachment: Attachment, reason: string): Attachment {
@@ -1016,6 +1035,7 @@ function WizardContent() {
             if (!res.ok) {
                 let detail = `${res.status} ${res.statusText}`;
                 const contentType = (res.headers.get("content-type") || "").toLowerCase();
+                const serverRequestId = res.headers.get("x-evaluate-request-id") || "";
 
                 try {
                     if (contentType.includes("application/json")) {
@@ -1025,7 +1045,11 @@ function WizardContent() {
                         }
                     } else {
                         const text = (await res.text()).trim();
-                        if (text) detail = clipText(text, 300);
+                        if (text) {
+                            detail = contentType.includes("text/html")
+                                ? summarizeHtmlErrorBody(text)
+                                : clipText(text, 300);
+                        }
                     }
                 } catch {
                     // Use default detail above.
@@ -1033,6 +1057,10 @@ function WizardContent() {
 
                 if (res.status === 524) {
                     detail = `${detail}. Gateway timeout from CDN/origin (524). Please retry.`;
+                }
+
+                if (serverRequestId) {
+                    detail = `${detail} (ref: ${serverRequestId})`;
                 }
 
                 throw new Error(`Failed to evaluate (${res.status}): ${detail}`);
