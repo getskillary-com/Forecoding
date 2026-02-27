@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import type { Project } from "@/types";
 import { authOptions } from "@/lib/auth";
+import { isAdminUser } from "@/lib/admin";
 import { prisma, withPrismaRetry } from "@/lib/prisma";
 import {
     getStripeCurrency,
@@ -55,9 +56,24 @@ async function loadProjectForUser(userId: string, projectId: string) {
 export async function POST(req: Request) {
     try {
         const session = await getServerSession(authOptions);
-        const user = session?.user as { id?: string } | undefined;
+        const user = session?.user as { id?: string; email?: string | null } | undefined;
         if (!user?.id) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+        if (isAdminUser(user)) {
+            const currency = getStripeCurrency();
+            return NextResponse.json({
+                ok: true,
+                adminBypass: true,
+                quote: {
+                    unitAmountCents: 0,
+                    currency,
+                    displayAmount: formatCurrencyCents(0, currency),
+                    complexityScore: 0,
+                    complexityTier: "simple",
+                    factors: ["Admin bypass enabled."]
+                }
+            });
         }
 
         const body = (await req.json()) as QuoteRequestBody;

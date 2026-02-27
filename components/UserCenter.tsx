@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
-import { ChevronDown, Home, LayoutDashboard, LogIn, LogOut, Settings, UserPlus } from "lucide-react";
+import { ChevronDown, Home, LayoutDashboard, LogIn, LogOut, Settings, Shield, UserPlus } from "lucide-react";
 
 type UserCenterProps = {
     className?: string;
@@ -20,6 +20,7 @@ function getInitials(value: string) {
 export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterProps) {
     const { data: session, status } = useSession();
     const [isOpen, setIsOpen] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
 
     const displayName = session?.user?.name || session?.user?.email || "User";
@@ -48,6 +49,38 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
             document.removeEventListener("keydown", handleKeyDown);
         };
     }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        if (!isAuthed) {
+            return () => {
+                cancelled = true;
+            };
+        }
+
+        const loadAdminStatus = async () => {
+            try {
+                const res = await fetch("/api/admin/status", { cache: "no-store" });
+                if (!res.ok) {
+                    if (!cancelled) setIsAdmin(false);
+                    return;
+                }
+
+                const payload = (await res.json()) as { isAdmin?: boolean };
+                if (!cancelled) {
+                    setIsAdmin(payload.isAdmin === true);
+                }
+            } catch {
+                if (!cancelled) setIsAdmin(false);
+            }
+        };
+
+        void loadAdminStatus();
+        return () => {
+            cancelled = true;
+        };
+    }, [isAuthed]);
 
     return (
         <div ref={rootRef} className={`relative ${className ?? ""}`}>
@@ -93,6 +126,16 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
                                 <Settings className="h-4 w-4" />
                                 Account
                             </Link>
+                            {isAdmin && (
+                                <Link
+                                    href="/admin"
+                                    className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                    onClick={() => setIsOpen(false)}
+                                >
+                                    <Shield className="h-4 w-4" />
+                                    Admin
+                                </Link>
+                            )}
                             <Link
                                 href="/"
                                 className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"

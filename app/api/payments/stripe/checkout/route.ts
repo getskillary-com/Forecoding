@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import type { Project } from "@/types";
 import { authOptions } from "@/lib/auth";
+import { isAdminUser } from "@/lib/admin";
 import {
     createStripeCheckoutSession,
     getStripeMaxUnitAmountCents,
@@ -83,6 +84,15 @@ export async function POST(req: Request) {
         const user = session?.user as { id?: string; email?: string | null } | undefined;
         if (!user?.id) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+        if (isAdminUser(user)) {
+            return NextResponse.json(
+                {
+                    error: "Admin users bypass Stripe checkout. Generate directly in wizard.",
+                    adminBypass: true
+                },
+                { status: 403 }
+            );
         }
 
         const secretKey = getStripeSecretKey();

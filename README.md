@@ -68,6 +68,16 @@ Implemented routes:
 - `POST /api/payments/stripe/checkout` creates a Stripe Checkout Session and returns `checkoutUrl`.
 - `POST /api/webhooks/stripe` verifies `stripe-signature` and handles `checkout.session.completed`.
 
+## Admin Console
+
+Set admin emails in env:
+
+```env
+FORECODING_ADMIN_EMAILS=admin@example.com,ops@example.com
+```
+
+Admin users can access `/admin`, and generation in `/wizard` bypasses payment (no Stripe checkout link is created).
+
 Local webhook forwarding:
 
 ```bash

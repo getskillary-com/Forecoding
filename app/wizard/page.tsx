@@ -531,6 +531,8 @@ function WizardContent() {
     const [isQuoteLoading, setIsQuoteLoading] = useState(false);
     const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
     const [generateError, setGenerateError] = useState<string | null>(null);
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [isAdminStatusLoaded, setIsAdminStatusLoaded] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(420);
     const isResizingRef = useRef(false);
     const generateInFlightRef = useRef(false);
@@ -559,6 +561,7 @@ function WizardContent() {
     const visibleMessages = messages.slice(baseMessageIndex);
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
+    const requiresPayment = !hasPaid && !isAdmin;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -574,6 +577,36 @@ function WizardContent() {
 
 
     // --- Effects ---
+
+    // 0. Resolve admin mode
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadAdminStatus = async () => {
+            setIsAdminStatusLoaded(false);
+            try {
+                const res = await fetch("/api/admin/status", { cache: "no-store" });
+                if (!res.ok) {
+                    if (!cancelled) setIsAdmin(false);
+                    return;
+                }
+
+                const payload = (await res.json()) as { isAdmin?: boolean };
+                if (!cancelled) {
+                    setIsAdmin(payload.isAdmin === true);
+                }
+            } catch {
+                if (!cancelled) setIsAdmin(false);
+            } finally {
+                if (!cancelled) setIsAdminStatusLoaded(true);
+            }
+        };
+
+        void loadAdminStatus();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     // 1. Load Project & Version Data
     useEffect(() => {
@@ -678,7 +711,7 @@ function WizardContent() {
                     }
                 });
             }
-        } else if (payment === "cancelled") {
+        } else if (payment === "cancelled" && !isAdmin) {
             setGenerateError("Payment cancelled.");
         }
 
@@ -686,11 +719,11 @@ function WizardContent() {
         params.set("projectId", projectId);
         params.set("versionId", currentVersion.id);
         router.replace(`/wizard?${params.toString()}`);
-    }, [searchParams, currentVersion, projectId, router]);
+    }, [searchParams, currentVersion, projectId, router, isAdmin]);
 
     // 1f. Fetch complexity-based quote for unpaid projects
     useEffect(() => {
-        if (!projectId || !evaluation?.is_ready || hasPaid) {
+        if (!projectId || !evaluation?.is_ready || hasPaid || isAdmin || !isAdminStatusLoaded) {
             setCheckoutQuote(null);
             setIsQuoteLoading(false);
             return;
@@ -724,7 +757,15 @@ function WizardContent() {
                     return;
                 }
 
-                const payload = (await res.json()) as { quote?: CheckoutQuote; error?: string };
+                const payload = (await res.json()) as {
+                    quote?: CheckoutQuote;
+                    error?: string;
+                    adminBypass?: boolean;
+                };
+                if (payload.adminBypass) {
+                    if (!cancelled) setCheckoutQuote(null);
+                    return;
+                }
                 if (!res.ok || !payload.quote) {
                     throw new Error(payload.error || "Failed to load checkout quote.");
                 }
@@ -748,6 +789,8 @@ function WizardContent() {
     }, [
         projectId,
         hasPaid,
+        isAdmin,
+        isAdminStatusLoaded,
         project,
         currentVersion,
         messages,
@@ -1329,6 +1372,10 @@ function WizardContent() {
             setGenerateError("Missing project context for checkout.");
             return;
         }
+        if (isAdmin) {
+            setGenerateError("Admin mode bypasses payment. Please generate directly.");
+            return;
+        }
         if (isCheckingOut) return;
         setIsCheckingOut(true);
 
@@ -1383,7 +1430,7 @@ function WizardContent() {
         if (isGenerating || isCheckingOut) return;
 
         setGenerateError(null);
-        if (!hasPaid) {
+        if (requiresPayment) {
             await startCheckout();
             return;
         }
@@ -1457,17 +1504,19 @@ function WizardContent() {
                                             <>
                                             <button
                                                 onClick={handleGenerate}
-                                                disabled={isGenerating || isCheckingOut}
+                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded}
                                                 className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95"
                                             >
                                                 {isGenerating || isCheckingOut
                                                     ? <Loader2 className="animate-spin" />
                                                     : <Sparkles className="w-5 h-5" />}
-                                                {isCheckingOut
+                                                {!isAdminStatusLoaded
+                                                    ? "Checking access..."
+                                                    : isCheckingOut
                                                     ? "Redirecting to Payment..."
                                                     : isGenerating
                                                         ? "Architecting Solution..."
-                                                        : hasPaid
+                                                        : !requiresPayment
                                                             ? "Generate Blueprint"
                                                             : checkoutQuote?.displayAmount
                                                                 ? `Proceed to Payment (${checkoutQuote.displayAmount})`
@@ -1479,8 +1528,12 @@ function WizardContent() {
                                                 <div className="text-xs text-red-500 text-center">{generateError}</div>
                                             )}
                                             <p className="text-xs text-center text-gray-500">
-                                                {hasPaid
-                                                    ? "Ready to build or update blueprint"
+                                                {!isAdminStatusLoaded
+                                                    ? "Checking permissions..."
+                                                    : isAdmin
+                                                    ? "Admin mode: payment bypass enabled"
+                                                    : hasPaid
+                                                        ? "Ready to build or update blueprint"
                                                     : checkoutQuote
                                                         ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
                                                         : isQuoteLoading
