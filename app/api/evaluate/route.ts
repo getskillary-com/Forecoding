@@ -4,9 +4,9 @@ import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
 import type { Message, Attachment } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
-const EVALUATE_STREAM_HEARTBEAT_MS = 15_000;
-const EVALUATE_MODEL_IDLE_TIMEOUT_MS = 70_000;
-const EVALUATE_TOTAL_TIMEOUT_MS = 180_000;
+const EVALUATE_STREAM_HEARTBEAT_MS = readPositiveIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 15_000);
+const EVALUATE_MODEL_IDLE_TIMEOUT_MS = readPositiveIntEnv("EVALUATE_MODEL_IDLE_TIMEOUT_MS", 110_000);
+const EVALUATE_TOTAL_TIMEOUT_MS = readPositiveIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 300_000);
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
@@ -32,6 +32,15 @@ class RequestPayloadError extends Error {
 function getErrorDetails(error: unknown) {
     if (error instanceof Error) return error.message;
     return String(error);
+}
+
+function readPositiveIntEnv(name: string, fallback: number) {
+    const value = process.env[name];
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+    }
+    return fallback;
 }
 
 function isErrorWithMessage(error: unknown, message: string) {
@@ -86,6 +95,47 @@ function buildRetryMessages(rawMessages: unknown): Message[] {
     return normalized.slice(-EVALUATE_RETRY_HISTORY_MESSAGES);
 }
 
+function getMessageStats(rawMessages: unknown) {
+    if (!Array.isArray(rawMessages)) {
+        return {
+            messageCount: 0,
+            totalContentChars: 0,
+            totalAttachments: 0,
+            textAttachments: 0,
+            binaryAttachments: 0
+        };
+    }
+
+    let totalContentChars = 0;
+    let totalAttachments = 0;
+    let textAttachments = 0;
+    let binaryAttachments = 0;
+
+    for (const item of rawMessages) {
+        if (!item || typeof item !== "object") continue;
+        const candidate = item as Message;
+        totalContentChars += typeof candidate.content === "string" ? candidate.content.length : 0;
+
+        if (!Array.isArray(candidate.attachments)) continue;
+        totalAttachments += candidate.attachments.length;
+        for (const attachment of candidate.attachments) {
+            if (attachment.type === "text") {
+                textAttachments += 1;
+            } else {
+                binaryAttachments += 1;
+            }
+        }
+    }
+
+    return {
+        messageCount: rawMessages.length,
+        totalContentChars,
+        totalAttachments,
+        textAttachments,
+        binaryAttachments
+    };
+}
+
 async function* streamWithTimeGuards(
     messages: Message[],
     contextText: string | undefined,
@@ -95,24 +145,33 @@ async function* streamWithTimeGuards(
     const iterator = streamEvaluateInput(messages, contextText, {
         generationReady
     })[Symbol.asyncIterator]();
+    try {
+        while (true) {
+            if (Date.now() - startedAt > EVALUATE_TOTAL_TIMEOUT_MS) {
+                throw new Error("EVALUATE_TOTAL_TIMEOUT");
+            }
 
-    while (true) {
-        if (Date.now() - startedAt > EVALUATE_TOTAL_TIMEOUT_MS) {
-            throw new Error("EVALUATE_TOTAL_TIMEOUT");
+            const next = await withTimeout(
+                iterator.next(),
+                EVALUATE_MODEL_IDLE_TIMEOUT_MS,
+                "EVALUATE_MODEL_IDLE_TIMEOUT"
+            );
+
+            if (next.done) {
+                break;
+            }
+
+            const chunk = typeof next.value === "string" ? next.value : String(next.value ?? "");
+            yield chunk;
         }
-
-        const next = await withTimeout(
-            iterator.next(),
-            EVALUATE_MODEL_IDLE_TIMEOUT_MS,
-            "EVALUATE_MODEL_IDLE_TIMEOUT"
-        );
-
-        if (next.done) {
-            break;
+    } finally {
+        if (typeof iterator.return === "function") {
+            try {
+                await iterator.return();
+            } catch {
+                // Swallow cleanup errors so timeout paths can return gracefully.
+            }
         }
-
-        const chunk = typeof next.value === "string" ? next.value : String(next.value ?? "");
-        yield chunk;
     }
 }
 
@@ -162,8 +221,9 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
         const provider = getActiveAiProvider();
+        const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} messages=${messages.length} contextChars=${contextText?.length || 0} generationReady=${generationReady === true}`
+            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
         );
 
         const stream = new ReadableStream({
@@ -244,16 +304,16 @@ export async function POST(req: Request) {
                             console.log(
                                 `[evaluate][${requestId}] completedAfterRetry streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                             );
-                        } catch {
+                        } catch (retryError) {
                             console.error(
-                                `[evaluate][${requestId}] compactRetryFailed afterMs=${Date.now() - streamStartedAt}`
+                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt}`
                             );
-                            safeEnqueue("<question>AI response timed out. Please retry with a shorter prompt.</question>");
+                            safeEnqueue(`<question>AI response timed out. Please retry with a shorter prompt. (ref: ${requestId})</question>`);
                             emittedMeaningfulChunk = true;
                         }
                     } else {
                         console.error(`[evaluate][${requestId}] streamingError:`, e);
-                        safeEnqueue("<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment.</question>");
+                        safeEnqueue(`<question>Sorry, the AI service is temporarily unavailable. Please try again in a moment. (ref: ${requestId})</question>`);
                         emittedMeaningfulChunk = true;
                     }
                 } finally {
@@ -262,7 +322,7 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] noMeaningfulOutput streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        safeEnqueue("<question>No model output received. Please retry.</question>");
+                        safeEnqueue(`<question>No model output received. Please retry. (ref: ${requestId})</question>`);
                     }
                     if (!closed) {
                         closed = true;
