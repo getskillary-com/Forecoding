@@ -340,16 +340,30 @@ async function* streamWithClaude(messages: Message[], systemInstructionText: str
     }
 }
 
-async function* streamWithGemini(messages: Message[], systemInstructionText: string) {
+async function* streamWithGemini(
+    messages: Message[],
+    systemInstructionText: string,
+    preferBackupModel: boolean = false
+) {
     const contents = buildGeminiContents(messages);
-    const streamResult = await withFallback(async (model) => {
+    const openStream = async (modelName: string) => {
         const chatModel = genAI.getGenerativeModel({
-            model: model.model,
+            model: modelName,
             systemInstruction: systemInstructionText
         });
-
         return await chatModel.generateContentStream({ contents });
-    });
+    };
+
+    const primaryModel = preferBackupModel ? BACKUP_MODEL : CORE_MODEL;
+    const fallbackModel = preferBackupModel ? CORE_MODEL : BACKUP_MODEL;
+
+    let streamResult;
+    try {
+        streamResult = await openStream(primaryModel);
+    } catch (error: any) {
+        console.warn(`[AI] ${primaryModel} stream failed (${error.message}). Falling back to ${fallbackModel}`);
+        streamResult = await openStream(fallbackModel);
+    }
 
     for await (const chunk of streamResult.stream) {
         const chunkText = chunk.text();
@@ -404,6 +418,7 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
  */
 type EvaluateRuntimeOptions = {
     generationReady?: boolean;
+    preferBackupModel?: boolean;
 };
 
 export async function* streamEvaluateInput(
@@ -474,7 +489,11 @@ export async function* streamEvaluateInput(
         }
 
         if (shouldUseGeminiStream) {
-            for await (const chunk of streamWithGemini(messages, systemInstructionText)) {
+            for await (const chunk of streamWithGemini(
+                messages,
+                systemInstructionText,
+                options?.preferBackupModel === true
+            )) {
                 if (chunk) yield chunk;
             }
         }

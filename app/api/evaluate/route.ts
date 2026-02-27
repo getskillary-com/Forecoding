@@ -4,10 +4,13 @@ import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
 import type { Message, Attachment } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
-const EVALUATE_STREAM_HEARTBEAT_MS = readPositiveIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 15_000);
-// Keep timeouts below common CDN gateway ceilings to avoid upstream HTML 5xx pages.
-const EVALUATE_MODEL_IDLE_TIMEOUT_MS = readPositiveIntEnv("EVALUATE_MODEL_IDLE_TIMEOUT_MS", 45_000);
-const EVALUATE_TOTAL_TIMEOUT_MS = readPositiveIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 90_000);
+const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 15_000, 5_000, 30_000);
+// Clamp timeout values so misconfigured env vars cannot cause multi-minute UI stalls.
+const EVALUATE_MODEL_IDLE_TIMEOUT_MS = readBoundedIntEnv("EVALUATE_MODEL_IDLE_TIMEOUT_MS", 45_000, 10_000, 60_000);
+const EVALUATE_TOTAL_TIMEOUT_MS = Math.max(
+    readBoundedIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 90_000, 30_000, 120_000),
+    EVALUATE_MODEL_IDLE_TIMEOUT_MS + 10_000
+);
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
@@ -35,13 +38,14 @@ function getErrorDetails(error: unknown) {
     return String(error);
 }
 
-function readPositiveIntEnv(name: string, fallback: number) {
+function readBoundedIntEnv(name: string, fallback: number, min: number, max: number) {
     const value = process.env[name];
     const parsed = Number(value);
     if (Number.isFinite(parsed) && parsed > 0) {
-        return Math.floor(parsed);
+        const intValue = Math.floor(parsed);
+        return Math.min(max, Math.max(min, intValue));
     }
-    return fallback;
+    return Math.min(max, Math.max(min, fallback));
 }
 
 function isErrorWithMessage(error: unknown, message: string) {
@@ -140,11 +144,13 @@ function getMessageStats(rawMessages: unknown) {
 async function* streamWithTimeGuards(
     messages: Message[],
     contextText: string | undefined,
-    generationReady: boolean
+    generationReady: boolean,
+    options?: { preferBackupModel?: boolean }
 ) {
     const startedAt = Date.now();
     const iterator = streamEvaluateInput(messages, contextText, {
-        generationReady
+        generationReady,
+        preferBackupModel: options?.preferBackupModel === true
     })[Symbol.asyncIterator]();
     try {
         while (true) {
@@ -302,7 +308,8 @@ export async function POST(req: Request) {
                             for await (const retryChunk of streamWithTimeGuards(
                                 retryMessages,
                                 retryContext,
-                                generationReady === true
+                                generationReady === true,
+                                { preferBackupModel: true }
                             )) {
                                 if (retryChunk.trim().length > 0) {
                                     emittedMeaningfulChunk = true;
