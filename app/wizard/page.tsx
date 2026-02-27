@@ -305,11 +305,16 @@ function normalizeEvaluateErrorDetail(raw: string) {
         return summarizeHtmlErrorBody(source);
     }
 
+    const looksLikeCssDump = /\bbody\s*\{[\s\S]{20,2000}\}|\bh1\s*,\s*h2|\bfont-family\s*:/i.test(source);
+    if (looksLikeCssDump) {
+        return "Internal Server Error from upstream gateway. Please retry.";
+    }
+
     const plain = source
         .replace(/<style[\s\S]*?<\/style>/gi, " ")
         .replace(/<script[\s\S]*?<\/script>/gi, " ")
         .replace(/<[^>]+>/g, " ")
-        .replace(/\b[a-z0-9_.#,\-:\s]{1,120}\{[^{}]{1,300}\}/gi, " ")
+        .replace(/\b[a-z0-9_.#,\-:\s]{1,200}\{[^{}]{1,4000}\}/gi, " ")
         .replace(/\s+/g, " ")
         .trim();
 
@@ -1037,8 +1042,12 @@ function WizardContent() {
 
             const runEvaluateRequest = async (body: string) => fetch("/api/evaluate", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream"
+                },
                 body,
+                cache: "no-store",
                 signal: controller.signal
             });
 

@@ -353,7 +353,11 @@ export async function POST(req: Request) {
 
         return new Response(stream, {
             headers: {
-                'Content-Type': 'text/plain; charset=utf-8',
+                // Event-stream headers help intermediaries avoid buffering long responses.
+                'Content-Type': 'text/event-stream; charset=utf-8',
+                'Cache-Control': 'no-cache, no-transform',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
                 'X-Evaluate-Request-Id': requestId
             }
         });
