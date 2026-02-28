@@ -109,7 +109,14 @@ function TreeNode({
 export function FileTreeDisplay({ content, projectName }: Props) {
     const [isZipping, setIsZipping] = useState(false);
     const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-    const AUTO_GENERATED_FILES = new Set(["package.json", "tsconfig.json", "next.config.ts"]);
+    const ZIP_REAL_CONTENT_FILES = new Set([
+        "package.json",
+        "tsconfig.json",
+        "next.config.ts",
+        ".env.example",
+        "README.md",
+        "IMPLEMENTATION_PLAN.md"
+    ]);
     const resolvedProjectName = projectName?.trim();
     const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-scaffold")
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
@@ -145,8 +152,7 @@ export function FileTreeDisplay({ content, projectName }: Props) {
     };
 
     const shouldWriteRealContent = (path: string, fileName: string) => {
-        if (AUTO_GENERATED_FILES.has(fileName)) return true;
-        if (path === ".env.example") return true;
+        if (ZIP_REAL_CONTENT_FILES.has(fileName)) return true;
         if (path.startsWith("docs/")) return true;
         if (path.startsWith("config/integrations/") && /\.template\./.test(fileName)) return true;
         return false;
@@ -159,6 +165,8 @@ export function FileTreeDisplay({ content, projectName }: Props) {
         try {
             const { default: JSZip } = await import("jszip");
             const zip = new JSZip();
+            let zipRealFileCount = 0;
+            let zipPlaceholderFileCount = 0;
 
             const addToZip = (nodes: FileNode[], currentPath: string) => {
                 const folderFiles: FileNode[] = [];
@@ -173,6 +181,10 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                     let promptContent = "# AI Code Generation Tasks\n\n";
                     promptContent += `This file contains generation guidance for: \`${currentPath || "root"}\`\n\n`;
                     promptContent += "**Usage:** Open this file in your editor and ask your coding assistant to implement the files listed below.\n\n";
+                    promptContent += "## Mandatory Execution Order\n";
+                    promptContent += "1. Open and follow `IMPLEMENTATION_PLAN.md` first.\n";
+                    promptContent += "2. Implement by Phase order only (Phase 0 -> Phase 6).\n";
+                    promptContent += "3. Treat this file as index + constraints, not source of execution order.\n\n";
                     promptContent += "---\n\n";
 
                     folderFiles.forEach((file) => {
@@ -191,11 +203,13 @@ export function FileTreeDisplay({ content, projectName }: Props) {
 
                         if (includeRawContent && file.content) {
                             zip.file(relativePath, file.content);
+                            zipRealFileCount += 1;
                         } else {
                             zip.file(
                                 relativePath,
                                 toScaffoldPlaceholder(promptPath, file.content)
                             );
+                            zipPlaceholderFileCount += 1;
                         }
                     });
 
@@ -212,6 +226,9 @@ export function FileTreeDisplay({ content, projectName }: Props) {
             };
 
             addToZip(content, "");
+            console.info(
+                `[zip] scaffoldExport realFiles=${zipRealFileCount} placeholderFiles=${zipPlaceholderFileCount} fileName=${zipFileName}`
+            );
 
             const blob = await zip.generateAsync({ type: "blob" });
             const url = URL.createObjectURL(blob);

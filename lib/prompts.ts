@@ -113,6 +113,26 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - **Interactions**: implementation details.
   - **Exports**: What should be exported?
 
+## 2. Mandatory Docs
+- You MUST include both \`README.md\` and \`IMPLEMENTATION_PLAN.md\` in outputs.
+- \`README.md\` is NOT a one-line intro. It must cover:
+  - Project overview
+  - Target users and business goals
+  - Tech stack
+  - Project structure
+  - Setup / run / build steps
+  - Environment variables
+  - Acceptance checklist
+- \`IMPLEMENTATION_PLAN.md\` defines the ONLY execution order for AI IDE:
+  - Phase 0 Bootstrap
+  - Phase 1 Domain & Types
+  - Phase 2 State & Core Logic
+  - Phase 3 App Shell & Shared UI
+  - Phase 4 Feature UI & Pages
+  - Phase 5 API & Integration
+  - Phase 6 Validation & Handoff
+- Do NOT tell implementers to follow raw directory traversal order.
+
 # Output Format (JSON):
 {
   "projectTree": [

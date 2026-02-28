@@ -4,6 +4,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { CTO_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
 import type { Message } from "@/types";
 
+type OutputLanguage = "zh" | "en";
+
 function normalizeProvider(value: string | undefined) {
     const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
     if (raw === "claude" || raw === "anthropic") return "claude";
@@ -640,6 +642,7 @@ export async function evaluateInput() {
  */
 type GenerateProjectResourcesOptions = {
     projectName?: string;
+    outputLanguage?: OutputLanguage;
 };
 
 export async function generateProjectResources(
@@ -649,6 +652,12 @@ export async function generateProjectResources(
     options?: GenerateProjectResourcesOptions
 ) {
     const resolvedProjectName = (options?.projectName || "").trim();
+    const resolvedOutputLanguage = resolveOutputLanguage(
+        options?.outputLanguage,
+        history,
+        diagram,
+        resolvedProjectName
+    );
 
     let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\nFinalized Requirement Consensus:\n${history}\n\nApproved System Architecture (Mermaid):\n${diagram || "Not provided"}`;
 
@@ -703,9 +712,16 @@ export async function generateProjectResources(
             data.projectTree,
             data.toolStack,
             history,
-            resolvedProjectName || "generated-project"
+            resolvedProjectName || "generated-project",
+            resolvedOutputLanguage
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
+
+        const generatedReadme = getFileContentByPath(data.projectTree, "README.md");
+        const generatedImplementationPlan = getFileContentByPath(data.projectTree, "IMPLEMENTATION_PLAN.md");
+        console.log(
+            `[AI] Scaffold docs language=${resolvedOutputLanguage} readmeChars=${generatedReadme.length} implementationPlanChars=${generatedImplementationPlan.length}`
+        );
 
         return data;
 
@@ -859,6 +875,27 @@ function ensureDefaultToolStack(toolStack: string | undefined) {
     ].join("\n");
 }
 
+function inferOutputLanguageFromText(text: string): OutputLanguage {
+    const source = (text || "").trim();
+    if (!source) return "en";
+
+    const chineseChars = (source.match(/[\u3400-\u9fff]/g) || []).length;
+    const latinChars = (source.match(/[A-Za-z]/g) || []).length;
+    if (chineseChars >= 6) return "zh";
+    if (chineseChars >= 2 && chineseChars / Math.max(1, chineseChars + latinChars) >= 0.08) return "zh";
+    return "en";
+}
+
+function resolveOutputLanguage(
+    explicit: OutputLanguage | undefined,
+    ...texts: Array<string | undefined>
+): OutputLanguage {
+    if (explicit === "zh" || explicit === "en") return explicit;
+
+    const merged = texts.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
+    return inferOutputLanguageFromText(merged);
+}
+
 function collectProjectTreeText(projectTree: any[]) {
     if (!Array.isArray(projectTree) || projectTree.length === 0) return "";
 
@@ -891,7 +928,8 @@ function ensureCoreConfigFiles(
     projectTree: any[],
     toolStack: string,
     history: string,
-    projectName: string
+    projectName: string,
+    outputLanguage: OutputLanguage
 ): any[] {
     const tree = Array.isArray(projectTree) ? projectTree : [];
     const existingNames = new Set<string>();
@@ -939,18 +977,42 @@ function ensureCoreConfigFiles(
         });
     }
 
-    upsertReadmeSetup(tree);
+    const finalTree = coreFiles.length > 0
+        ? [
+            ...coreFiles.map(f => ({
+                name: f.name,
+                type: "file",
+                content: f.content
+            })),
+            ...tree
+        ]
+        : tree;
 
-    if (coreFiles.length === 0) return tree;
+    const structuredReadme = ensureStructuredReadmeQuality(
+        buildStructuredReadme({
+            outputLanguage,
+            projectName,
+            toolStack,
+            history,
+            tree: finalTree
+        }),
+        {
+            outputLanguage,
+            projectName,
+            toolStack,
+            history,
+            tree: finalTree
+        }
+    );
+    const implementationPlan = buildImplementationPlan({
+        outputLanguage,
+        projectName,
+        tree: finalTree
+    });
 
-    return [
-        ...coreFiles.map(f => ({
-            name: f.name,
-            type: "file",
-            content: f.content
-        })),
-        ...tree
-    ];
+    upsertFileByPath(finalTree, "README.md", structuredReadme);
+    upsertFileByPath(finalTree, "IMPLEMENTATION_PLAN.md", implementationPlan);
+    return finalTree;
 }
 
 function generatePackageJson(input: {
@@ -1133,23 +1195,457 @@ function upsertFileByPath(tree: any[], filePath: string, content: string) {
     }
 }
 
-function upsertReadmeSetup(tree: any[]) {
+function getFileContentByPath(tree: any[], filePath: string): string {
+    const segments = filePath.split("/").filter(Boolean);
+    if (segments.length === 0) return "";
+
+    let current = tree;
+    for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        const isFile = i === segments.length - 1;
+        const node = current.find((item: any) => item?.name === segment);
+        if (!node) return "";
+
+        if (isFile) {
+            if (node.type === "file" && typeof node.content === "string") return node.content;
+            return "";
+        }
+
+        if (node.type !== "folder" || !Array.isArray(node.children)) return "";
+        current = node.children;
+    }
+
+    return "";
+}
+
+function collectFilePathsFromTree(tree: any[]): string[] {
+    const paths: string[] = [];
+    const walk = (nodes: any[], prefix: string) => {
+        for (const node of nodes || []) {
+            if (!node || typeof node !== "object" || typeof node.name !== "string") continue;
+            const filePath = prefix ? `${prefix}/${node.name}` : node.name;
+            if (node.type === "file") {
+                paths.push(filePath);
+                continue;
+            }
+            if (node.type === "folder" && Array.isArray(node.children)) {
+                walk(node.children, filePath);
+            }
+        }
+    };
+
+    walk(tree, "");
+    return paths.sort((a, b) => a.localeCompare(b));
+}
+
+function extractUserIntentLines(history: string, outputLanguage: OutputLanguage) {
+    const lines = history
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    const userLines = lines
+        .filter((line) => /^user:/i.test(line))
+        .map((line) => line.replace(/^user:\s*/i, ""))
+        .filter((line) => line.length > 0);
+
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const line of userLines) {
+        const normalized = line.replace(/\s+/g, " ").trim().toLowerCase();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        deduped.push(line.replace(/\s+/g, " ").trim());
+        if (deduped.length >= 5) break;
+    }
+
+    if (deduped.length > 0) return deduped;
+    return outputLanguage === "zh"
+        ? ["待补充：请在后续会话中细化核心业务目标与关键流程。"]
+        : ["TBD: clarify core business goal and user flow in follow-up prompts."];
+}
+
+function buildStructuredReadme(input: {
+    outputLanguage: OutputLanguage;
+    projectName: string;
+    toolStack: string;
+    history: string;
+    tree: any[];
+}) {
+    const projectName = input.projectName || "generated-project";
+    const filePaths = collectFilePathsFromTree(input.tree);
+    const topLevelEntries = Array.from(new Set(filePaths.map((path) => path.split("/")[0]))).slice(0, 20);
+    const scopedPaths = filePaths.slice(0, 40);
+    const intents = extractUserIntentLines(input.history, input.outputLanguage);
+
+    if (input.outputLanguage === "zh") {
+        const lines: string[] = [];
+        lines.push(`# ${projectName} 开发指南`);
+        lines.push("");
+        lines.push("## 项目概述");
+        lines.push(`该项目由 Forecoding 生成，目标是为 **${projectName}** 提供可执行的脚手架规范与实现顺序。`);
+        lines.push("README 作为团队与 AI IDE 的统一入口，重点说明业务目标、运行方式、环境变量、验收标准，以及开发推进顺序。");
+        lines.push("");
+        lines.push("## 目标用户与业务目标");
+        lines.push("- 目标用户：业务负责人、产品经理、工程师、AI IDE 协作开发者。");
+        lines.push("- 核心目标：将需求讨论内容稳定转化为可执行实现计划，降低“开始写代码前的不确定性”。");
+        lines.push("- 本次会话提炼要点：");
+        intents.forEach((line) => lines.push(`  - ${line}`));
+        lines.push("");
+        lines.push("## 技术栈");
+        lines.push("以下技术栈由生成阶段输出，可作为默认参考：");
+        lines.push("");
+        lines.push(input.toolStack || "- 暂无明确技术栈，建议先在 `IMPLEMENTATION_PLAN.md` 的 Phase 0 完成基线选型。");
+        lines.push("");
+        lines.push("## 项目结构");
+        lines.push("当前脚手架包含的主要目录/文件：");
+        topLevelEntries.forEach((entry) => lines.push(`- \`${entry}\``));
+        lines.push("");
+        lines.push("关键路径（节选）：");
+        scopedPaths.forEach((path) => lines.push(`- \`${path}\``));
+        lines.push("");
+        lines.push("## 快速开始");
+        lines.push("### 1) 安装依赖");
+        lines.push("```bash");
+        lines.push("npm install");
+        lines.push("```");
+        lines.push("");
+        lines.push("### 2) 本地运行");
+        lines.push("```bash");
+        lines.push("npm run dev");
+        lines.push("```");
+        lines.push("");
+        lines.push("### 3) 构建与启动");
+        lines.push("```bash");
+        lines.push("npm run build");
+        lines.push("npm run start");
+        lines.push("```");
+        lines.push("");
+        lines.push("## 环境变量");
+        lines.push("- 建议从 `.env.example` 复制到 `.env.local` 后再启动。");
+        lines.push("- 所有密钥仅用于服务端，不要提交到仓库。");
+        lines.push("- 按环境（dev/staging/prod）分离配置，避免跨环境污染。");
+        lines.push("");
+        lines.push("## 开发流程");
+        lines.push("- **必须先阅读** `IMPLEMENTATION_PLAN.md`。");
+        lines.push("- 严格按 Phase 0 -> Phase 6 依次推进，避免跳步导致返工。");
+        lines.push("- 每完成一个 Phase，先执行验证命令，再进入下个 Phase。");
+        lines.push("- 对于 ZIP 中的占位文件，请在 AI IDE 中根据 `_AI_PROMPT.md` 和 `IMPLEMENTATION_PLAN.md` 生成实现内容。");
+        lines.push("");
+        lines.push("## 验收清单");
+        lines.push("- [ ] 项目可安装并成功启动。");
+        lines.push("- [ ] Phase 0~6 的输出物均已完成并通过验证。");
+        lines.push("- [ ] 关键页面和 API 行为与需求一致。");
+        lines.push("- [ ] README、IMPLEMENTATION_PLAN 与代码实现保持一致。");
+        lines.push("- [ ] 无敏感信息泄露（尤其是 `.env` 与密钥）。");
+        lines.push("");
+        lines.push("## 常见问题");
+        lines.push("### 1) 为什么 ZIP 中有些文件是占位内容？");
+        lines.push("这是 Forecoding 的规范驱动策略：关键配置与文档直接可用，其余由 AI IDE 按阶段生成，以减少一次性输出错误代码的风险。");
+        lines.push("");
+        lines.push("### 2) 先改哪个文件？");
+        lines.push("不要按目录直觉修改，必须按 `IMPLEMENTATION_PLAN.md` 的 Phase 顺序执行。");
+        lines.push("");
+        lines.push("### 3) README 与实现不一致怎么办？");
+        lines.push("以当前需求为准更新 README 和 IMPLEMENTATION_PLAN，再同步代码实现，保持三者一致。");
+        lines.push("");
+        lines.push("### 4) 如何保证交付质量？");
+        lines.push("每个阶段执行对应验证命令，并在合并前完成手工回归检查。");
+        lines.push("");
+        return lines.join("\n");
+    }
+
     const lines: string[] = [];
-    lines.push("# Getting Started");
+    lines.push(`# ${projectName} Development Guide`);
     lines.push("");
-    lines.push("## Install");
+    lines.push("## Project Overview");
+    lines.push(`This project is generated by Forecoding to provide an execution-ready scaffold for **${projectName}**.`);
+    lines.push("This README is the single onboarding entry for engineers and AI IDE agents, covering business goals, runtime setup, environment variables, acceptance standards, and delivery flow.");
+    lines.push("");
+    lines.push("## Target Users & Business Goals");
+    lines.push("- Primary users: product owners, engineers, and AI IDE-assisted builders.");
+    lines.push("- Core objective: transform requirement discussions into a deterministic implementation workflow.");
+    lines.push("- Key signals extracted from this conversation:");
+    intents.forEach((line) => lines.push(`  - ${line}`));
+    lines.push("");
+    lines.push("## Tech Stack");
+    lines.push("The following stack was generated as baseline context:");
+    lines.push("");
+    lines.push(input.toolStack || "- No explicit stack generated yet. Finalize baseline choices in `IMPLEMENTATION_PLAN.md` Phase 0.");
+    lines.push("");
+    lines.push("## Project Structure");
+    lines.push("Main directories/files currently in scaffold:");
+    topLevelEntries.forEach((entry) => lines.push(`- \`${entry}\``));
+    lines.push("");
+    lines.push("Key paths (sample):");
+    scopedPaths.forEach((path) => lines.push(`- \`${path}\``));
+    lines.push("");
+    lines.push("## Quick Start");
+    lines.push("### 1) Install dependencies");
     lines.push("```bash");
     lines.push("npm install");
     lines.push("```");
-
     lines.push("");
-    lines.push("## Run");
+    lines.push("### 2) Run locally");
     lines.push("```bash");
     lines.push("npm run dev");
     lines.push("```");
     lines.push("");
+    lines.push("### 3) Build and start");
+    lines.push("```bash");
+    lines.push("npm run build");
+    lines.push("npm run start");
+    lines.push("```");
+    lines.push("");
+    lines.push("## Environment Variables");
+    lines.push("- Copy `.env.example` to `.env.local` before local execution.");
+    lines.push("- Keep secrets server-side only.");
+    lines.push("- Split config by environment (dev/staging/prod).");
+    lines.push("");
+    lines.push("## Development Workflow");
+    lines.push("- **Read `IMPLEMENTATION_PLAN.md` first.**");
+    lines.push("- Execute phases strictly in order (Phase 0 -> Phase 6).");
+    lines.push("- Run validation commands at each phase before moving on.");
+    lines.push("- For placeholder files in ZIP, generate final code in AI IDE using `_AI_PROMPT.md` + `IMPLEMENTATION_PLAN.md`.");
+    lines.push("");
+    lines.push("## Acceptance Checklist");
+    lines.push("- [ ] Project installs and starts successfully.");
+    lines.push("- [ ] Outputs for Phase 0~6 are completed and validated.");
+    lines.push("- [ ] Key pages/APIs match requirement intent.");
+    lines.push("- [ ] README, IMPLEMENTATION_PLAN, and implementation stay aligned.");
+    lines.push("- [ ] No secret leakage in repository.");
+    lines.push("");
+    lines.push("## FAQ");
+    lines.push("### 1) Why are some ZIP files placeholders?");
+    lines.push("Forecoding intentionally ships runnable baseline + high-quality specs, then lets AI IDE complete feature code by phase to reduce one-shot generation drift.");
+    lines.push("");
+    lines.push("### 2) What should I implement first?");
+    lines.push("Do not follow raw directory order. Always follow `IMPLEMENTATION_PLAN.md` phase order.");
+    lines.push("");
+    lines.push("### 3) What if docs and code drift?");
+    lines.push("Update README + IMPLEMENTATION_PLAN first, then align implementation.");
+    lines.push("");
+    lines.push("### 4) How do we keep delivery quality stable?");
+    lines.push("Run phase-level validation commands and complete manual QA before merge.");
+    lines.push("");
+    return lines.join("\n");
+}
 
-    upsertFileByPath(tree, "README.md", lines.join("\n"));
+function validateStructuredReadme(readme: string, outputLanguage: OutputLanguage) {
+    if (readme.trim().length < 900) return false;
+    const requiredHeadings = outputLanguage === "zh"
+        ? ["## 项目概述", "## 目标用户与业务目标", "## 技术栈", "## 项目结构", "## 快速开始", "## 环境变量", "## 开发流程", "## 验收清单", "## 常见问题"]
+        : ["## Project Overview", "## Target Users & Business Goals", "## Tech Stack", "## Project Structure", "## Quick Start", "## Environment Variables", "## Development Workflow", "## Acceptance Checklist", "## FAQ"];
+    return requiredHeadings.every((heading) => readme.includes(heading));
+}
+
+function ensureStructuredReadmeQuality(
+    readme: string,
+    input: {
+        outputLanguage: OutputLanguage;
+        projectName: string;
+        toolStack: string;
+        history: string;
+        tree: any[];
+    }
+) {
+    if (validateStructuredReadme(readme, input.outputLanguage)) return readme;
+
+    const rebuilt = buildStructuredReadme(input);
+    if (validateStructuredReadme(rebuilt, input.outputLanguage)) return rebuilt;
+
+    const supplement = input.outputLanguage === "zh"
+        ? "\n## 附加说明\n- 若文档长度不足，请补充业务边界、失败场景、监控与回滚策略。\n- 每个 Phase 必须可验证、可回滚、可交接。\n"
+        : "\n## Additional Guidance\n- If documentation is still short, expand business boundaries, failure modes, monitoring, and rollback instructions.\n- Every phase must be verifiable, reversible, and handoff-ready.\n";
+    return `${rebuilt}\n${supplement}`;
+}
+
+function classifyImplementationPhase(filePath: string): number {
+    const normalized = filePath.replace(/\\/g, "/");
+    const bootstrapSet = new Set([
+        "package.json",
+        "tsconfig.json",
+        "next.config.ts",
+        ".env.example",
+        "README.md",
+        "IMPLEMENTATION_PLAN.md"
+    ]);
+
+    if (bootstrapSet.has(normalized)) return 0;
+    if (normalized.startsWith("types/")) return 1;
+    if (/\/(schema|model|entity|domain)\b/i.test(normalized)) return 1;
+    if (normalized === "app/layout.tsx" || normalized === "app/layout.ts") return 3;
+    if (normalized.startsWith("components/layout/")) return 3;
+    if (normalized.startsWith("app/api/")) return 5;
+    if (/^app\/.+\/page\.(tsx|ts|jsx|js)$/i.test(normalized) || normalized === "app/page.tsx") return 4;
+    if (normalized.startsWith("components/")) return 4;
+    if (normalized.startsWith("lib/") && /(store|service|utils|helper|core)/i.test(normalized)) return 2;
+    if (normalized.startsWith("lib/")) return 2;
+    if (normalized.startsWith("docs/")) return 6;
+    return 4;
+}
+
+function readPackageScripts(tree: any[]) {
+    const packageJsonRaw = getFileContentByPath(tree, "package.json");
+    if (!packageJsonRaw) return {} as Record<string, string>;
+
+    try {
+        const parsed = JSON.parse(packageJsonRaw) as { scripts?: Record<string, string> };
+        if (parsed && typeof parsed === "object" && parsed.scripts && typeof parsed.scripts === "object") {
+            return parsed.scripts;
+        }
+    } catch {
+        return {} as Record<string, string>;
+    }
+
+    return {} as Record<string, string>;
+}
+
+function buildPhaseValidationCommands(
+    phaseIndex: number,
+    scripts: Record<string, string>
+) {
+    const commands: string[] = [];
+    const hasScript = (name: string) => typeof scripts[name] === "string" && scripts[name].trim().length > 0;
+    const pushScript = (name: string, fallback: string) => {
+        commands.push(hasScript(name) ? `npm run ${name}` : fallback);
+    };
+
+    if (phaseIndex === 0) {
+        commands.push("npm install");
+        pushScript("dev", "npm run dev");
+        return commands;
+    }
+
+    if (phaseIndex >= 1 && phaseIndex <= 5) {
+        pushScript("type-check", "npx tsc --noEmit");
+        return commands;
+    }
+
+    pushScript("lint", "npx eslint .");
+    pushScript("type-check", "npx tsc --noEmit");
+    pushScript("build", "npm run build");
+    return commands;
+}
+
+function buildImplementationPlan(input: {
+    outputLanguage: OutputLanguage;
+    projectName: string;
+    tree: any[];
+}) {
+    const scripts = readPackageScripts(input.tree);
+    const allFiles = collectFilePathsFromTree(input.tree);
+    const phases = new Map<number, string[]>();
+    for (let i = 0; i <= 6; i++) phases.set(i, []);
+
+    for (const filePath of allFiles) {
+        const phase = classifyImplementationPhase(filePath);
+        phases.get(phase)?.push(filePath);
+    }
+
+    const sortedPhases = Array.from(phases.entries()).sort((a, b) => a[0] - b[0]);
+    if (input.outputLanguage === "zh") {
+        const phaseMeta = [
+            { title: "Phase 0 - 启动与基线", goal: "建立可运行基线，确保安装、启动、配置文件完整。", output: "完成运行基线文档与配置，团队可启动项目。", done: "依赖安装通过，开发环境可启动，README 与计划文件可读。" },
+            { title: "Phase 1 - 领域模型与类型", goal: "先定义业务对象、类型边界和数据契约，避免后续返工。", output: "类型与领域模型稳定，供后续状态层与页面复用。", done: "关键类型可覆盖核心业务语义，类型检查通过。" },
+            { title: "Phase 2 - 状态管理与核心逻辑", goal: "实现核心业务逻辑与状态流转，形成功能主干。", output: "状态层/服务层具备可调用能力。", done: "核心流程可在本地最小验证。"},
+            { title: "Phase 3 - 应用壳层与共享布局", goal: "完善应用外壳和通用布局，统一导航与视觉骨架。", output: "可复用壳层和布局组件。", done: "页面基础布局稳定，可承载业务页面。"},
+            { title: "Phase 4 - 功能页面与界面交互", goal: "实现业务页面与组件交互，打通用户侧操作路径。", output: "主要页面具备交互闭环。", done: "关键用户流程可端到端操作。"},
+            { title: "Phase 5 - API 与集成层", goal: "实现服务端接口与外部集成，连接前后端数据流。", output: "API 契约可用，集成边界明确。", done: "前后端对接成功，接口返回稳定。"},
+            { title: "Phase 6 - 验证与交付", goal: "执行静态检查、构建验证与人工回归，形成可交付状态。", output: "最终交付包与文档一致。", done: "lint/type-check/build 通过，关键场景回归完成。"}
+        ];
+
+        const lines: string[] = [];
+        lines.push(`# ${input.projectName || "generated-project"} 实施执行计划`);
+        lines.push("");
+        lines.push("> 本文件定义 AI IDE 的唯一执行顺序。请严格按 Phase 0 -> Phase 6 执行，不要按目录遍历顺序直接实现。");
+        lines.push("");
+
+        for (const [phaseIndex, files] of sortedPhases) {
+            const meta = phaseMeta[phaseIndex];
+            const commands = buildPhaseValidationCommands(phaseIndex, scripts);
+            lines.push(`## ${meta.title}`);
+            lines.push("");
+            lines.push("### 目标");
+            lines.push(meta.goal);
+            lines.push("");
+            lines.push("### 输入文件");
+            if (files.length === 0) {
+                lines.push("- （无）");
+            } else {
+                files.forEach((file) => lines.push(`- \`${file}\``));
+            }
+            lines.push("");
+            lines.push("### 输出定义");
+            lines.push(meta.output);
+            lines.push("");
+            lines.push("### 完成条件");
+            lines.push(`- ${meta.done}`);
+            lines.push("");
+            lines.push("### 验证命令");
+            lines.push("```bash");
+            commands.forEach((cmd) => lines.push(cmd));
+            lines.push("```");
+            lines.push("");
+        }
+
+        lines.push("## 交接要求");
+        lines.push("- 每个 Phase 完成后更新 README 与实现状态。");
+        lines.push("- 若需求发生变化，先更新计划，再更新代码。");
+        lines.push("- 提交前确保验证命令全部通过。");
+        lines.push("");
+        return lines.join("\n");
+    }
+
+    const phaseMeta = [
+        { title: "Phase 0 - Bootstrap", goal: "Establish runnable baseline, configs, and onboarding docs.", output: "Runnable baseline with setup documentation.", done: "Dependencies install, app starts, docs are available." },
+        { title: "Phase 1 - Domain & Types", goal: "Define domain objects and type contracts before implementation.", output: "Stable type boundaries for feature work.", done: "Type contracts cover key business entities." },
+        { title: "Phase 2 - State & Core Logic", goal: "Implement state transitions and core business logic.", output: "Callable core logic/state layer.", done: "Core flow is minimally executable locally." },
+        { title: "Phase 3 - App Shell & Shared UI", goal: "Set up shared shell/layout and reusable structure.", output: "Stable layout and shared shell components.", done: "Pages can mount on consistent layout." },
+        { title: "Phase 4 - Feature UI & Pages", goal: "Implement user-facing pages and component interactions.", output: "Feature pages with usable interaction loops.", done: "Primary user journeys are navigable end-to-end." },
+        { title: "Phase 5 - API & Integration", goal: "Build backend routes and external integration boundaries.", output: "Usable API contracts and integration flow.", done: "Frontend/backed integration works stably." },
+        { title: "Phase 6 - Validation & Handoff", goal: "Run static checks, build validation, and manual QA.", output: "Ship-ready handoff package.", done: "lint/type-check/build pass and key QA completed." }
+    ];
+
+    const lines: string[] = [];
+    lines.push(`# ${input.projectName || "generated-project"} Implementation Plan`);
+    lines.push("");
+    lines.push("> This file is the single source of execution order for AI IDE. Follow Phase 0 -> Phase 6 strictly. Do not implement by raw directory order.");
+    lines.push("");
+
+    for (const [phaseIndex, files] of sortedPhases) {
+        const meta = phaseMeta[phaseIndex];
+        const commands = buildPhaseValidationCommands(phaseIndex, scripts);
+        lines.push(`## ${meta.title}`);
+        lines.push("");
+        lines.push("### Goal");
+        lines.push(meta.goal);
+        lines.push("");
+        lines.push("### Input Files");
+        if (files.length === 0) {
+            lines.push("- (none)");
+        } else {
+            files.forEach((file) => lines.push(`- \`${file}\``));
+        }
+        lines.push("");
+        lines.push("### Expected Output");
+        lines.push(meta.output);
+        lines.push("");
+        lines.push("### Done Criteria");
+        lines.push(`- ${meta.done}`);
+        lines.push("");
+        lines.push("### Validation Commands");
+        lines.push("```bash");
+        commands.forEach((cmd) => lines.push(cmd));
+        lines.push("```");
+        lines.push("");
+    }
+
+    lines.push("## Handoff Requirements");
+    lines.push("- Keep README and implementation status updated after each phase.");
+    lines.push("- If requirements change, update plan first, then implementation.");
+    lines.push("- Ensure all validation commands pass before merge.");
+    lines.push("");
+    return lines.join("\n");
 }
 
 function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {

@@ -67,6 +67,7 @@ const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_COMPACT_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
 const DIAGRAM_POLICY = "incremental_manual_review_v1" as const;
+const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -162,6 +163,43 @@ function normalizeMermaidForComparison(raw: string | null | undefined): string {
 
 function hasMeaningfulDiagramChange(current: string, candidate: string): boolean {
     return normalizeMermaidForComparison(current) !== normalizeMermaidForComparison(candidate);
+}
+
+function countChineseChars(text: string) {
+    return (text.match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function countLatinChars(text: string) {
+    return (text.match(/[A-Za-z]/g) || []).length;
+}
+
+function detectOutputLanguageFromText(text: string): "zh" | "en" {
+    if (!text.trim()) return "en";
+
+    const chinese = countChineseChars(text);
+    const latin = countLatinChars(text);
+
+    if (chinese >= 6) return "zh";
+    if (chinese >= 2 && chinese / Math.max(1, chinese + latin) >= SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD) {
+        return "zh";
+    }
+
+    return "en";
+}
+
+function inferScaffoldOutputLanguage(messages: Message[]): "zh" | "en" {
+    const recentUserText = messages
+        .filter((m) => m.role === "user")
+        .slice(-8)
+        .map((m) => m.content || "")
+        .join("\n");
+
+    if (recentUserText.trim()) {
+        return detectOutputLanguageFromText(recentUserText);
+    }
+
+    const fullText = messages.map((m) => m.content || "").join("\n");
+    return detectOutputLanguageFromText(fullText);
 }
 
 function yieldToBrowser(): Promise<void> {
@@ -1486,6 +1524,7 @@ function WizardContent() {
             await yieldToBrowser();
             const historyText = messages.map(m => `${m.role}: ${m.content}`).join("\n") +
                 `\n\nFinal Analysis: ${JSON.stringify(evaluation?.analysis)}`;
+            const outputLanguage = inferScaffoldOutputLanguage(messages);
 
             const res = await fetch("/api/generate", {
                 method: "POST",
@@ -1494,6 +1533,7 @@ function WizardContent() {
                     summary: historyText,
                     diagram: currentDiagram,
                     projectName: project?.name,
+                    outputLanguage,
                     // If this version has a generation already (or base version had one), we can pass it?
                     // Actually, for v2, `generation` state was initialized from base. That is our "existingProjectTree".
                     currentProjectTree: generation?.projectTree
