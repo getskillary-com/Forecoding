@@ -909,6 +909,34 @@ function ensureDefaultToolStack(toolStack: string | undefined) {
     ].join("\n");
 }
 
+function collectProjectTreeText(projectTree: any[]) {
+    if (!Array.isArray(projectTree) || projectTree.length === 0) return "";
+
+    const chunks: string[] = [];
+    const walk = (nodes: any[], path: string) => {
+        for (const node of nodes || []) {
+            if (!node || typeof node !== "object") continue;
+            const name = typeof node.name === "string" ? node.name : "";
+            const nextPath = path ? `${path}/${name}` : name;
+
+            if (name) {
+                chunks.push(nextPath);
+            }
+
+            if (node.type === "file" && typeof node.content === "string" && node.content.trim()) {
+                chunks.push(node.content);
+            }
+
+            if (Array.isArray(node.children) && node.children.length > 0) {
+                walk(node.children, nextPath);
+            }
+        }
+    };
+
+    walk(projectTree, "");
+    return chunks.join("\n");
+}
+
 function ensureCoreConfigFiles(
     projectTree: any[],
     toolStack: string,
@@ -927,7 +955,8 @@ function ensureCoreConfigFiles(
 
     collectNames(tree);
 
-    const context = `${toolStack || ""}\n${history || ""}`;
+    const treeText = collectProjectTreeText(tree);
+    const context = `${toolStack || ""}\n${history || ""}\n${treeText}`;
     const usesNext = /next\.js|nextjs|\bnext\b/i.test(context) || existingNames.has("next.config.ts");
     const usesPhaser = /phaser/i.test(context);
     const usesPrisma = /prisma/i.test(context);
@@ -941,7 +970,8 @@ function ensureCoreConfigFiles(
                 framework: usesNext ? "next" : "react",
                 usesPhaser,
                 projectName,
-                toolStack
+                toolStack,
+                analysisText: `${history || ""}\n${treeText}`
             })
         });
     }
@@ -988,11 +1018,17 @@ function ensureCoreConfigFiles(
     ];
 }
 
-function generatePackageJson(input: { framework: "next" | "react"; usesPhaser: boolean; projectName: string; toolStack?: string }) {
-    const stack = (input.toolStack || "").toLowerCase();
+function generatePackageJson(input: {
+    framework: "next" | "react";
+    usesPhaser: boolean;
+    projectName: string;
+    toolStack?: string;
+    analysisText?: string;
+}) {
+    const stack = `${input.toolStack || ""}\n${input.analysisText || ""}`.toLowerCase();
     const usesTailwind = /tailwind/.test(stack);
     const usesZustand = /zustand/.test(stack);
-    const usesLucide = /lucide/.test(stack);
+    const usesLucide = /lucide|icon/.test(stack);
     const usesThree = /\bthree\.?js\b|\bthree\b/.test(stack);
     const usesPixi = /\bpixi\b/.test(stack);
     const usesReactQuery = /react\s*query|tanstack\s*query/.test(stack);
@@ -1002,6 +1038,11 @@ function generatePackageJson(input: { framework: "next" | "react"; usesPhaser: b
     const usesSWR = /\bswr\b/.test(stack);
     const usesNextAuth = /nextauth|next-auth/.test(stack);
     const usesPrisma = /prisma/.test(stack);
+    const usesSupabase = /supabase|@supabase\/ssr|@supabase\/supabase-js/.test(stack);
+    const usesVercelAiSdk = /vercel ai sdk|\bgenerateobject\b|\bfrom\s+["']ai["']|@ai-sdk\/openai/.test(stack);
+    const usesOpenAiSdk = /openai|@ai-sdk\/openai/.test(stack);
+    const usesShadcn = /shadcn|radix|class-variance-authority|tailwind-merge|clsx/.test(stack);
+    const usesDateFns = /date-fns|date range|calendar/.test(stack);
 
     const extraDeps: Record<string, string> = {};
     if (input.usesPhaser) extraDeps["phaser"] = "^3.80.1";
@@ -1019,6 +1060,14 @@ function generatePackageJson(input: { framework: "next" | "react"; usesPhaser: b
     if (usesNextAuth) extraDeps["next-auth"] = "^4.24.7";
     if (usesPrisma) extraDeps["@prisma/client"] = "^5.16.2";
     if (usesPrisma && usesNextAuth) extraDeps["@auth/prisma-adapter"] = "^1.4.1";
+    if (usesSupabase) extraDeps["@supabase/supabase-js"] = "^2.49.1";
+    if (usesSupabase) extraDeps["@supabase/ssr"] = "^0.5.2";
+    if (usesVercelAiSdk) extraDeps["ai"] = "^4.3.16";
+    if (usesOpenAiSdk) extraDeps["@ai-sdk/openai"] = "^1.3.22";
+    if (usesShadcn) extraDeps["class-variance-authority"] = "^0.7.1";
+    if (usesShadcn) extraDeps["clsx"] = "^2.1.1";
+    if (usesShadcn) extraDeps["tailwind-merge"] = "^2.6.0";
+    if (usesDateFns) extraDeps["date-fns"] = "^4.1.0";
 
     const base = {
         name: sanitizeProjectName(input.projectName || "generated-project"),
@@ -1441,35 +1490,35 @@ function buildGoodBadSection(filePath: string) {
     lines.push("## Good vs Bad Examples");
 
     if (filePath.includes("components/")) {
-        lines.push("### ✅ Good");
+        lines.push("### Good");
         lines.push("```tsx");
         lines.push("const Button = ({ label, onClick }: { label: string; onClick: () => void }) => (");
         lines.push("  <button onClick={onClick} className=\"px-3 py-2\">{label}</button>");
         lines.push(");");
         lines.push("```");
-        lines.push("### ❌ Bad");
+        lines.push("### Bad");
         lines.push("```tsx");
         lines.push("const Button = (props: any) => <button>{props.label}</button>;");
         lines.push("```");
     } else if (filePath.includes("app/api/")) {
-        lines.push("### ✅ Good");
+        lines.push("### Good");
         lines.push("```ts");
         lines.push("const body = schema.parse(await req.json());");
         lines.push("return NextResponse.json({ ok: true });");
         lines.push("```");
-        lines.push("### ❌ Bad");
+        lines.push("### Bad");
         lines.push("```ts");
         lines.push("const body = await req.json();");
         lines.push("return NextResponse.json(body);");
         lines.push("```");
     } else {
-        lines.push("### ✅ Good");
+        lines.push("### Good");
         lines.push("```ts");
         lines.push("export function toTitleCase(input: string) {");
         lines.push("  return input.replace(/\\b\\w/g, c => c.toUpperCase());");
         lines.push("}");
         lines.push("```");
-        lines.push("### ❌ Bad");
+        lines.push("### Bad");
         lines.push("```ts");
         lines.push("export function toTitleCase(input: any) {");
         lines.push("  return input.toUpperCase();");
@@ -1500,3 +1549,4 @@ function buildGlobalQualityRules(toolStack: string) {
 
     return lines.join("\n");
 }
+

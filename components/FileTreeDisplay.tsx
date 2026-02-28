@@ -10,6 +10,8 @@ interface Props {
     projectName?: string;
 }
 
+type ExportMode = "blueprint" | "scaffold";
+
 function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
     const [isOpen, setIsOpen] = useState(true);
     const isFolder = node.type === "folder";
@@ -50,15 +52,23 @@ function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
 
 export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
     const [isZipping, setIsZipping] = useState(false);
+    const [exportMode, setExportMode] = useState<ExportMode>("blueprint");
     const AUTO_GENERATED_FILES = new Set(["package.json", "tsconfig.json", "next.config.ts"]);
     const resolvedProjectName = projectName?.trim();
     const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-blueprint")
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
         .replace(/\s+/g, " ")
         .replace(/[. ]+$/g, "");
-    const zipFileName = `${zipFileNameBase || "founder-blueprint"}.zip`;
+    const zipFileName = `${zipFileNameBase || "founder-blueprint"}-${exportMode}.zip`;
+    const SCAFFOLD_HINT_MAX_CHARS = 1200;
+
+    const toScaffoldPlaceholder = (promptPath: string, fileContent?: string) => {
+        const hint = (fileContent || "").slice(0, SCAFFOLD_HINT_MAX_CHARS);
+        return `// GENERATION PENDING\n// Open ${promptPath} and ask AI to generate this file.\n\n// Content Hint:\n/*\n${hint}...\n*/`;
+    };
 
     const shouldWriteRealContent = (path: string, fileName: string) => {
+        if (exportMode === "blueprint") return true;
         if (AUTO_GENERATED_FILES.has(fileName)) return true;
         if (path === ".env.example") return true;
         if (path.startsWith("docs/")) return true;
@@ -73,9 +83,11 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
         try {
         const { default: JSZip } = await import("jszip");
         const zip = new JSZip();
+            const reservedPaths = new Set<string>();
 
             if (globalPrompt) {
                 zip.file(".cursorrules", globalPrompt);
+                reservedPaths.add(".cursorrules");
             }
 
             const addToZip = (nodes: FileNode[], currentPath: string) => {
@@ -95,7 +107,14 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
 
                     folderFiles.forEach((file) => {
                         const relativePath = `${currentPath}${file.name}`;
+
+                        // Preserve globally generated rules file and avoid overwriting with scaffold placeholders.
+                        if (reservedPaths.has(relativePath)) {
+                            return;
+                        }
+
                         const includeRawContent = shouldWriteRealContent(relativePath, file.name);
+                        const promptPath = `${currentPath}_AI_PROMPT.md`;
 
                         promptContent += `## File: \`${file.name}\`\n`;
                         promptContent += "**Description & Logic:**\n";
@@ -111,7 +130,7 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
                         } else {
                             zip.file(
                                 relativePath,
-                                `// GENERATION PENDING\n// Open ${currentPath}_AI_PROMPT.md and ask AI to generate this file.\n\n// Content Hint:\n/*\n${file.content?.substring(0, 200) || ""}...\n*/`
+                                toScaffoldPlaceholder(promptPath, file.content)
                             );
                         }
                     });
@@ -159,13 +178,37 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
                     Project Structure
                 </h3>
                 <div className="flex items-center gap-2">
+                    <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                        <button
+                            type="button"
+                            onClick={() => setExportMode("blueprint")}
+                            className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                                exportMode === "blueprint"
+                                    ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
+                                    : "bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                            }`}
+                        >
+                            Blueprint
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setExportMode("scaffold")}
+                            className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                                exportMode === "scaffold"
+                                    ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
+                                    : "bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                            }`}
+                        >
+                            Scaffold
+                        </button>
+                    </div>
                     <button
                         onClick={handleDownload}
                         disabled={isZipping}
                         className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                     >
                         <Download className="w-4 h-4" />
-                        {isZipping ? "Zipping..." : "Download ZIP"}
+                        {isZipping ? "Zipping..." : `Download ${exportMode === "blueprint" ? "Blueprint" : "Scaffold"} ZIP`}
                     </button>
                 </div>
             </div>
