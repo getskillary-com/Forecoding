@@ -639,6 +639,7 @@ function WizardContent() {
     const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
+    const [architecturePreviewMode, setArchitecturePreviewMode] = useState<"baseline" | "proposed">("baseline");
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
@@ -651,6 +652,8 @@ function WizardContent() {
     const pendingUpdatedLabel = diagramGovernance.pendingUpdatedAt
         ? new Date(diagramGovernance.pendingUpdatedAt).toLocaleString()
         : null;
+    const previewingProposed = hasPendingDiagram && architecturePreviewMode === "proposed";
+    const architectureViewerCode = previewingProposed ? (pendingDiagram || currentDiagram) : currentDiagram;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -1023,6 +1026,12 @@ function WizardContent() {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
+
+    useEffect(() => {
+        if (!hasPendingDiagram && architecturePreviewMode !== "baseline") {
+            setArchitecturePreviewMode("baseline");
+        }
+    }, [hasPendingDiagram, architecturePreviewMode]);
 
     // --- Handlers ---
 
@@ -1857,52 +1866,65 @@ function WizardContent() {
                                 </span>
                             </div>
 
-                            {hasPendingDiagram ? (
-                                <div className="flex-1 min-h-0 flex flex-col gap-3">
-                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-0">
-                                        <div className="min-h-0 rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-black/20 p-3 flex flex-col">
-                                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Current Baseline</div>
-                                            <div className="flex-1 min-h-0 border border-gray-100 dark:border-gray-800 rounded-lg overflow-hidden">
-                                                <ArchitectureViewer code={currentDiagram} />
+                            <div className="flex-1 min-h-0 flex flex-col gap-3">
+                                {hasPendingDiagram && (
+                                    <div className="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-900/10 p-3">
+                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                            <div className="text-sm text-amber-800 dark:text-amber-200">
+                                                <p className="font-semibold">Review proposed architecture changes before applying.</p>
+                                                <p className="text-xs mt-1 text-amber-700/80 dark:text-amber-300/80">
+                                                    {pendingUpdatedLabel ? `Detected at ${pendingUpdatedLabel}.` : "Detected in latest assistant response."}
+                                                </p>
                                             </div>
-                                        </div>
-                                        <div className="min-h-0 rounded-xl border border-amber-300/70 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10 p-3 flex flex-col">
-                                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">Proposed Update</div>
-                                            <div className="flex-1 min-h-0 border border-amber-200/70 dark:border-amber-800 rounded-lg overflow-hidden">
-                                                <ArchitectureViewer code={pendingDiagram || currentDiagram} />
+                                            <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-700 overflow-hidden">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setArchitecturePreviewMode("baseline")}
+                                                    className={`px-3 py-2 text-xs font-semibold transition-colors ${architecturePreviewMode === "baseline"
+                                                        ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+                                                        : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"}`}
+                                                >
+                                                    Baseline
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setArchitecturePreviewMode("proposed")}
+                                                    className={`px-3 py-2 text-xs font-semibold transition-colors ${architecturePreviewMode === "proposed"
+                                                        ? "bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300"
+                                                        : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"}`}
+                                                >
+                                                    Proposed
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-900/10 px-4 py-3">
-                                        <div className="text-sm text-amber-800 dark:text-amber-200">
-                                            <p className="font-semibold">Review proposed architecture changes before applying.</p>
-                                            <p className="text-xs mt-1 text-amber-700/80 dark:text-amber-300/80">
-                                                {pendingUpdatedLabel ? `Detected at ${pendingUpdatedLabel}.` : "Detected in latest assistant response."}
-                                            </p>
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={applyPendingDiagram}
-                                                className="px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-                                            >
-                                                Apply Update
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={keepCurrentDiagram}
-                                                className="px-3 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                                            >
-                                                Keep Current
-                                            </button>
-                                        </div>
+                                )}
+
+                                <div className={`flex-1 min-h-0 border-2 rounded-xl overflow-hidden relative ${previewingProposed
+                                    ? "border-amber-300/80 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-900/10"
+                                    : "border-dashed border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-black/20"}`}>
+                                    <ArchitectureViewer code={architectureViewerCode} />
+                                </div>
+
+                                {hasPendingDiagram && (
+                                    <div className="flex gap-2 justify-end">
+                                        <button
+                                            type="button"
+                                            onClick={applyPendingDiagram}
+                                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+                                        >
+                                            Apply Update
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={keepCurrentDiagram}
+                                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                        >
+                                            Keep Current
+                                        </button>
                                     </div>
-                                </div>
-                            ) : (
-                                <div className="flex-1 border-2 border-dashed border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden relative bg-gray-50/50 dark:bg-black/20">
-                                    <ArchitectureViewer code={currentDiagram} />
-                                </div>
-                            )}
+                                )}
+                            </div>
                         </div>
                     )}
 
