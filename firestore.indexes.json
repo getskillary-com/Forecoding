@@ -1,0 +1,33 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "authCodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "emailLower", "order": "ASCENDING" },
+        { "fieldPath": "purpose", "order": "ASCENDING" },
+        { "fieldPath": "usedAt", "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "projectPurchases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "projectPurchases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "paymentIntentId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
+

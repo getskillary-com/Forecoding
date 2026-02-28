@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { hashPassword, isValidPassword } from "@/lib/security";
+import { adminAuth } from "@/lib/firebase-admin";
+import { getServerUser } from "@/lib/server-auth";
+import { isValidPassword } from "@/lib/security";
+import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 
 async function getUserId() {
-    const session = await getServerSession(authOptions);
-    return (session?.user as { id?: string } | undefined)?.id ?? null;
+    const user = await getServerUser();
+    return user?.uid ?? null;
 }
 
 export async function POST(req: Request) {
@@ -31,21 +31,25 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Two passwords do not match." }, { status: 400 });
         }
 
-        const user = await prisma.user.findUnique({
-            where: { id: userId },
-            select: { emailVerified: true }
-        });
-
-        if (!user) {
+        const authUser = await adminAuth.getUser(userId);
+        if (!authUser.email) {
             return NextResponse.json({ error: "User not found." }, { status: 404 });
         }
 
-        await prisma.user.update({
-            where: { id: userId },
-            data: {
-                passwordHash: hashPassword(newPassword),
-                emailVerified: user.emailVerified ?? new Date()
-            }
+        await adminAuth.updateUser(userId, {
+            password: newPassword,
+            emailVerified: true
+        });
+
+        const existing = await getUserProfileByUid(userId);
+        await upsertUserProfile({
+            uid: userId,
+            email: authUser.email,
+            name: existing?.name ?? authUser.displayName ?? null,
+            image: existing?.image ?? authUser.photoURL ?? null,
+            emailVerified: existing?.emailVerified ?? new Date(),
+            legacyPasswordResetRequired: false,
+            sessionVersion: existing?.sessionVersion ?? 0
         });
 
         return NextResponse.json({ ok: true });

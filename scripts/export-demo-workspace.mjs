@@ -5,7 +5,9 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
-import { PrismaClient } from "@prisma/client";
+import { cert, getApps, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,7 +62,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-    console.log("Export a public demo workspace from your account data.");
+    console.log("Export a public demo workspace from Firebase data.");
     console.log("");
     console.log("Usage:");
     console.log("  npm run demo:export -- --email you@example.com --project-id <PROJECT_ID>");
@@ -71,6 +73,24 @@ function printHelp() {
     console.log("  --list                  List project IDs for the user and exit.");
     console.log("  --output <path>         Output JSON path. Default: public/demo/workspace.json");
     console.log("  --no-redact             Disable masking for sensitive strings.");
+}
+
+function initFirebaseAdmin() {
+    const existing = getApps()[0];
+    if (existing) return existing;
+
+    const projectId = process.env.FIREBASE_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "";
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
+    const privateKey = (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+
+    if (projectId && clientEmail && privateKey) {
+        return initializeApp({
+            credential: cert({ projectId, clientEmail, privateKey }),
+            projectId
+        });
+    }
+
+    return initializeApp(projectId ? { projectId } : undefined);
 }
 
 function parseProjects(raw) {
@@ -156,71 +176,73 @@ async function main() {
         return;
     }
 
-    const prisma = new PrismaClient({ log: ["warn", "error"] });
+    const app = initFirebaseAdmin();
+    const auth = getAuth(app);
+    const db = getFirestore(app);
 
+    let userRecord;
     try {
-        const user = await prisma.user.findUnique({
-            where: { email: args.email },
-            select: { id: true, email: true }
-        });
-
-        if (!user?.id) {
+        userRecord = await auth.getUserByEmail(args.email);
+    } catch (error) {
+        const code = error && typeof error === "object" ? error.code : "";
+        if (code === "auth/user-not-found") {
             throw new Error(`User not found by email: ${args.email}`);
         }
-
-        const workspace = await prisma.workspaceState.findUnique({
-            where: { userId: user.id },
-            select: { data: true, updatedAt: true }
-        });
-
-        const projects = parseProjects(workspace?.data);
-        if (!projects.length) {
-            throw new Error("No projects found in workspace.");
-        }
-
-        if (args.list) {
-            console.log(`Projects for ${user.email}:`);
-            for (const project of projects) {
-                const updated = Number(project.updatedAt || 0);
-                const updatedText = updated > 0 ? new Date(updated).toLocaleString() : "unknown";
-                console.log(`- ${project.id} | ${project.name || "(untitled)"} | updated: ${updatedText}`);
-            }
-            return;
-        }
-
-        const selectedProject = chooseProject(projects, args.projectId);
-        if (!selectedProject) {
-            throw new Error(
-                args.projectId
-                    ? `Project not found: ${args.projectId}`
-                    : "Unable to select project from workspace."
-            );
-        }
-
-        const publicProject = args.redact
-            ? redactValue(selectedProject)
-            : selectedProject;
-
-        const payload = {
-            version: 1,
-            exportedAt: new Date().toISOString(),
-            project: publicProject
-        };
-
-        ensureParentDir(args.output);
-        fs.writeFileSync(args.output, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-
-        console.log("Demo workspace exported successfully.");
-        console.log(`Email: ${args.email}`);
-        console.log(`Project: ${selectedProject.name || "(untitled)"} (${selectedProject.id})`);
-        console.log(`Output: ${args.output}`);
-        console.log("Public URL after deploy: /demo");
-    } finally {
-        await prisma.$disconnect();
+        throw error;
     }
+
+    const workspaceDoc = await db.collection("workspaces").doc(userRecord.uid).get();
+    if (!workspaceDoc.exists) {
+        throw new Error(`Workspace not found for user: ${userRecord.uid}`);
+    }
+
+    const workspaceData = workspaceDoc.data() || {};
+    const projects = parseProjects(workspaceData.projects);
+    if (!projects.length) {
+        throw new Error("No projects found in workspace.");
+    }
+
+    if (args.list) {
+        console.log(`Projects for ${args.email}:`);
+        for (const project of projects) {
+            const updated = Number(project.updatedAt || 0);
+            const updatedText = updated > 0 ? new Date(updated).toLocaleString() : "unknown";
+            console.log(`- ${project.id} | ${project.name || "(untitled)"} | updated: ${updatedText}`);
+        }
+        return;
+    }
+
+    const selectedProject = chooseProject(projects, args.projectId);
+    if (!selectedProject) {
+        throw new Error(
+            args.projectId
+                ? `Project not found: ${args.projectId}`
+                : "Unable to select project from workspace."
+        );
+    }
+
+    const publicProject = args.redact
+        ? redactValue(selectedProject)
+        : selectedProject;
+
+    const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        project: publicProject
+    };
+
+    ensureParentDir(args.output);
+    fs.writeFileSync(args.output, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+
+    console.log("Demo workspace exported successfully.");
+    console.log(`Email: ${args.email}`);
+    console.log(`Project: ${selectedProject.name || "(untitled)"} (${selectedProject.id})`);
+    console.log(`Output: ${args.output}`);
+    console.log("Public URL after deploy: /demo");
 }
 
 main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
 });
+

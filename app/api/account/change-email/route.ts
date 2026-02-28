@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { AuthCodePurposes, consumeAuthCode } from "@/lib/auth-code";
 import { isValidEmail, sanitizeEmail } from "@/lib/security";
+import { getServerUser } from "@/lib/server-auth";
+import { adminAuth, findAuthUserByEmail } from "@/lib/firebase-admin";
+import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 
 export async function POST(req: Request) {
     try {
-        const session = await getServerSession(authOptions);
-        const userId = (session?.user as { id?: string } | undefined)?.id;
+        const sessionUser = await getServerUser();
+        const userId = sessionUser?.uid;
         if (!userId) {
             return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
         }
@@ -21,23 +21,17 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid request payload." }, { status: 400 });
         }
 
-        const currentUser = await prisma.user.findUnique({
-            where: { id: userId },
-            select: { id: true, email: true }
-        });
-        if (!currentUser) {
+        const currentAuthUser = await adminAuth.getUser(userId);
+        if (!currentAuthUser.email) {
             return NextResponse.json({ error: "Account not found." }, { status: 404 });
         }
 
-        if (currentUser.email && sanitizeEmail(currentUser.email) === email) {
+        if (sanitizeEmail(currentAuthUser.email) === email) {
             return NextResponse.json({ error: "New email must be different from current email." }, { status: 400 });
         }
 
-        const existingUser = await prisma.user.findUnique({
-            where: { email },
-            select: { id: true }
-        });
-        if (existingUser && existingUser.id !== userId) {
+        const existingUser = await findAuthUserByEmail(email);
+        if (existingUser && existingUser.uid !== userId) {
             return NextResponse.json({ error: "This email is already registered." }, { status: 409 });
         }
 
@@ -50,12 +44,19 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: codeResult.error }, { status: 400 });
         }
 
-        await prisma.user.update({
-            where: { id: userId },
-            data: {
-                email,
-                emailVerified: new Date()
-            }
+        await adminAuth.updateUser(userId, {
+            email,
+            emailVerified: true
+        });
+        const profile = await getUserProfileByUid(userId);
+        await upsertUserProfile({
+            uid: userId,
+            email,
+            name: profile?.name ?? currentAuthUser.displayName ?? null,
+            image: profile?.image ?? currentAuthUser.photoURL ?? null,
+            emailVerified: new Date(),
+            legacyPasswordResetRequired: false,
+            sessionVersion: profile?.sessionVersion ?? 0
         });
 
         return NextResponse.json({ ok: true, email });

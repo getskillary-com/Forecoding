@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { AuthCodePurposes, consumeAuthCode } from "@/lib/auth-code";
-import { hashPassword, isValidEmail, isValidPassword, sanitizeEmail } from "@/lib/security";
+import { isValidEmail, isValidPassword, sanitizeEmail } from "@/lib/security";
+import { adminAuth, findAuthUserByEmail } from "@/lib/firebase-admin";
+import { upsertUserProfile } from "@/lib/data/users";
 
 export async function POST(req: Request) {
     try {
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid request payload." }, { status: 400 });
         }
 
-        const existingUser = await prisma.user.findUnique({ where: { email } });
+        const existingUser = await findAuthUserByEmail(email);
         if (existingUser) {
             return NextResponse.json({ error: "This email is already registered." }, { status: 409 });
         }
@@ -34,13 +35,20 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: codeResult.error }, { status: 400 });
         }
 
-        const passwordHash = hashPassword(password);
-        await prisma.user.create({
-            data: {
-                email,
-                passwordHash,
-                emailVerified: new Date()
-            }
+        const authUser = await adminAuth.createUser({
+            email,
+            emailVerified: true,
+            password
+        });
+
+        await upsertUserProfile({
+            uid: authUser.uid,
+            email,
+            name: null,
+            image: null,
+            emailVerified: new Date(),
+            legacyPasswordResetRequired: false,
+            sessionVersion: 0
         });
 
         return NextResponse.json({ ok: true });

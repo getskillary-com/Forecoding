@@ -8,23 +8,24 @@
     "start": "next start",
     "lint": "eslint",
     "secrets:apphosting": "node scripts/apphosting-secrets.mjs",
-    "demo:export": "node scripts/export-demo-workspace.mjs"
+    "demo:export": "node scripts/export-demo-workspace.mjs",
+    "migrate:firebase": "node scripts/migrate-postgres-to-firebase.mjs"
   },
   "engines": {
     "node": "20.x"
   },
   "dependencies": {
-    "@next-auth/prisma-adapter": "^1.0.7",
     "@google/generative-ai": "^0.24.1",
     "clsx": "^2.1.1",
+    "firebase": "^11.6.1",
+    "firebase-admin": "^13.0.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.563.0",
     "mermaid": "^11.12.2",
     "next": "16.1.6",
-    "@prisma/client": "^5.22.0",
-    "next-auth": "^4.24.7",
     "nodemailer": "^7.0.7",
     "openai": "^6.21.0",
+    "pg": "^8.16.3",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
@@ -41,7 +42,6 @@
     "dotenv": "^17.2.4",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
-    "prisma": "^5.22.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

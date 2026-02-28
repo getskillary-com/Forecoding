@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { signOut, useSession } from "next-auth/react";
 import { ChevronDown, Home, LayoutDashboard, LogIn, LogOut, Settings, Shield, UserPlus } from "lucide-react";
+import { useAuth } from "@/lib/auth-client";
 
 type UserCenterProps = {
     className?: string;
@@ -18,15 +18,15 @@ function getInitials(value: string) {
 }
 
 export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterProps) {
-    const { data: session, status } = useSession();
+    const { user, loading, signOutUser } = useAuth();
     const [isOpen, setIsOpen] = useState(false);
     const [isAdmin, setIsAdmin] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
 
-    const displayName = session?.user?.name || session?.user?.email || "User";
-    const displayEmail = session?.user?.email ?? "";
+    const displayName = user?.displayName || user?.email || "User";
+    const displayEmail = user?.email ?? "";
     const initials = useMemo(() => getInitials(displayName), [displayName]);
-    const isAuthed = status === "authenticated";
+    const isAuthed = !loading && Boolean(user);
 
     useEffect(() => {
         const handlePointerDown = (event: MouseEvent) => {
@@ -149,7 +149,7 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
                                 className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                                 onClick={() => {
                                     setIsOpen(false);
-                                    signOut({ callbackUrl: signOutCallbackUrl });
+                                    void signOutUser(signOutCallbackUrl);
                                 }}
                             >
                                 <LogOut className="h-4 w-4" />

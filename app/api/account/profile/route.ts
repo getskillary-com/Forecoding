@@ -1,35 +1,49 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { getServerUser } from "@/lib/server-auth";
+import { adminAuth } from "@/lib/firebase-admin";
+import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 
 async function getUserId() {
-    const session = await getServerSession(authOptions);
-    return (session?.user as { id?: string } | undefined)?.id ?? null;
+    const user = await getServerUser();
+    return user?.uid ?? null;
 }
 
 export async function GET() {
     try {
-        const userId = await getUserId();
+        const serverUser = await getServerUser();
+        const userId = serverUser?.uid ?? null;
         if (!userId) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const user = await prisma.user.findUnique({
-            where: { id: userId },
-            select: {
-                email: true,
-                name: true,
-                image: true,
-                emailVerified: true
-            }
-        });
+        const profile = await getUserProfileByUid(userId);
+        const authUser = await adminAuth.getUser(userId);
 
-        if (!user) {
+        if (!profile && !authUser) {
             return NextResponse.json({ error: "User not found." }, { status: 404 });
         }
 
-        return NextResponse.json({ user });
+        if (!profile && authUser.email) {
+            await upsertUserProfile({
+                uid: userId,
+                email: authUser.email,
+                name: authUser.displayName ?? null,
+                image: authUser.photoURL ?? null,
+                emailVerified: authUser.emailVerified ? new Date() : null,
+                legacyPasswordResetRequired: false
+            });
+        }
+
+        const mergedProfile = (await getUserProfileByUid(userId)) || profile;
+
+        return NextResponse.json({
+            user: {
+                email: mergedProfile?.email || authUser.email || "",
+                name: mergedProfile?.name || authUser.displayName || "",
+                image: mergedProfile?.image || authUser.photoURL || null,
+                emailVerified: mergedProfile?.emailVerified?.toISOString() || null
+            }
+        });
     } catch {
         return NextResponse.json({ error: "Failed to load profile." }, { status: 500 });
     }
@@ -49,20 +63,32 @@ export async function PATCH(req: Request) {
             return NextResponse.json({ error: "Name is too long." }, { status: 400 });
         }
 
-        const updated = await prisma.user.update({
-            where: { id: userId },
-            data: {
-                name: name || null
-            },
-            select: {
-                email: true,
-                name: true,
-                image: true,
-                emailVerified: true
-            }
+        const authUser = await adminAuth.getUser(userId);
+        if (!authUser.email) {
+            return NextResponse.json({ error: "User email missing." }, { status: 400 });
+        }
+
+        await adminAuth.updateUser(userId, {
+            displayName: name || null
+        });
+        const updated = await upsertUserProfile({
+            uid: userId,
+            email: authUser.email,
+            name: name || null,
+            image: authUser.photoURL || null,
+            emailVerified: authUser.emailVerified ? new Date() : null,
+            legacyPasswordResetRequired: false
         });
 
-        return NextResponse.json({ ok: true, user: updated });
+        return NextResponse.json({
+            ok: true,
+            user: {
+                email: updated.email,
+                name: updated.name,
+                image: updated.image,
+                emailVerified: updated.emailVerified?.toISOString() || null
+            }
+        });
     } catch {
         return NextResponse.json({ error: "Failed to update profile." }, { status: 500 });
     }

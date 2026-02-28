@@ -7,13 +7,23 @@ import { spawn } from "node:child_process";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
+const DEFAULT_LOCATION = "us-central1";
+
 const RECOMMENDED_SECRET_KEYS = [
-    "DATABASE_URL",
-    "NEXTAUTH_SECRET",
+    "FIREBASE_PROJECT_ID",
+    "FIREBASE_CLIENT_EMAIL",
+    "FIREBASE_PRIVATE_KEY",
+    "NEXT_PUBLIC_FIREBASE_API_KEY",
+    "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN",
+    "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
+    "NEXT_PUBLIC_FIREBASE_APP_ID",
+    "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
+    "GEMINI_API_KEY",
     "EMAIL_SERVER",
     "EMAIL_FROM",
     "STRIPE_SECRET_KEY",
-    "STRIPE_WEBHOOK_SECRET"
+    "STRIPE_WEBHOOK_SECRET",
+    "FORECODING_ADMIN_EMAILS"
 ];
 
 function firebaseBin() {
@@ -25,20 +35,20 @@ function gcloudBin() {
 }
 
 function printHelp() {
-    console.log("Firebase App Hosting 密钥工具");
+    console.log("Firebase App Hosting secrets helper");
     console.log("");
-    console.log("用法:");
+    console.log("Usage:");
     console.log("  node scripts/apphosting-secrets.mjs");
     console.log("");
-    console.log("功能:");
-    console.log("  - 新增 / 更新密钥");
-    console.log("  - 删除密钥");
-    console.log("  - 查看密钥明文");
-    console.log("  - 批量粘贴 KEY=VALUE");
+    console.log("Features:");
+    console.log("  - Add / update secrets");
+    console.log("  - Delete secrets");
+    console.log("  - View secret values");
+    console.log("  - Batch paste KEY=VALUE");
     console.log("");
-    console.log("新增/更新快捷值:");
-    console.log("  - /env  使用本地 .env 同名值");
-    console.log("  - /gen  自动生成随机密钥");
+    console.log("Shortcuts for value input:");
+    console.log("  - /env  Use same key value from local .env");
+    console.log("  - /gen  Generate random 64-hex string");
 }
 
 function normalizeLineEndings(text) {
@@ -51,11 +61,11 @@ function parseEnvContent(content) {
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#")) continue;
-        const eqIndex = trimmed.indexOf("=");
-        if (eqIndex <= 0) continue;
-        const key = trimmed.slice(0, eqIndex).trim();
+        const idx = trimmed.indexOf("=");
+        if (idx <= 0) continue;
+        const key = trimmed.slice(0, idx).trim();
         if (!/^[A-Z0-9_]+$/.test(key)) continue;
-        let value = trimmed.slice(eqIndex + 1);
+        let value = trimmed.slice(idx + 1);
         if (
             (value.startsWith('"') && value.endsWith('"')) ||
             (value.startsWith("'") && value.endsWith("'"))
@@ -69,15 +79,14 @@ function parseEnvContent(content) {
 
 function loadEnvFile(filePath) {
     if (!fs.existsSync(filePath)) return new Map();
-    const content = fs.readFileSync(filePath, "utf8");
-    return parseEnvContent(content);
+    return parseEnvContent(fs.readFileSync(filePath, "utf8"));
 }
 
 function loadDefaultProjectId(projectRoot) {
     try {
-        const firebasercPath = path.join(projectRoot, ".firebaserc");
-        if (!fs.existsSync(firebasercPath)) return "";
-        const parsed = JSON.parse(fs.readFileSync(firebasercPath, "utf8"));
+        const file = path.join(projectRoot, ".firebaserc");
+        if (!fs.existsSync(file)) return "";
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
         return parsed?.projects?.default || "";
     } catch {
         return "";
@@ -86,9 +95,9 @@ function loadDefaultProjectId(projectRoot) {
 
 function loadDefaultBackendId(projectRoot) {
     try {
-        const firebaseJsonPath = path.join(projectRoot, "firebase.json");
-        if (!fs.existsSync(firebaseJsonPath)) return "";
-        const parsed = JSON.parse(fs.readFileSync(firebaseJsonPath, "utf8"));
+        const file = path.join(projectRoot, "firebase.json");
+        if (!fs.existsSync(file)) return "";
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
         return parsed?.apphosting?.backendId || "";
     } catch {
         return "";
@@ -106,8 +115,8 @@ async function askYesNo(rl, prompt, defaultYes = true) {
     const suffix = defaultYes ? " [Y/n]" : " [y/N]";
     const raw = (await rl.question(`${prompt}${suffix}: `)).trim().toLowerCase();
     if (!raw) return defaultYes;
-    if (["y", "yes", "是", "s"].includes(raw)) return true;
-    if (["n", "no", "否", "f"].includes(raw)) return false;
+    if (["y", "yes"].includes(raw)) return true;
+    if (["n", "no"].includes(raw)) return false;
     return defaultYes;
 }
 
@@ -120,11 +129,11 @@ function splitSecretNames(inputValue) {
 }
 
 function parseSecretAssignment(line) {
-    const index = line.indexOf("=");
-    if (index <= 0) return null;
-    const key = line.slice(0, index).trim();
+    const idx = line.indexOf("=");
+    if (idx <= 0) return null;
+    const key = line.slice(0, idx).trim();
     if (!/^[A-Z0-9_]+$/.test(key)) return null;
-    let value = line.slice(index + 1);
+    let value = line.slice(idx + 1);
     if (
         (value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'"))
@@ -134,14 +143,10 @@ function parseSecretAssignment(line) {
     return { key, value };
 }
 
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function toEnvLiteral(value) {
     if (value === "") return '""';
-    const requiresQuote = /[\s#"'`]/.test(value);
-    if (!requiresQuote) return value;
+    const needsQuote = /[\s#"'`]/.test(value);
+    if (!needsQuote) return value;
     const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     return `"${escaped}"`;
 }
@@ -149,26 +154,25 @@ function toEnvLiteral(value) {
 function upsertEnvFile(envPath, updates) {
     const current = fs.existsSync(envPath) ? normalizeLineEndings(fs.readFileSync(envPath, "utf8")) : "";
     const lines = current ? current.split("\n") : [];
-    const keyLineMap = new Map();
+    const lineByKey = new Map();
 
     for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i];
-        const match = line.match(/^([A-Z0-9_]+)=/);
-        if (!match) continue;
-        keyLineMap.set(match[1], i);
+        const match = lines[i].match(/^([A-Z0-9_]+)=/);
+        if (match) {
+            lineByKey.set(match[1], i);
+        }
     }
 
     for (const update of updates) {
         const line = `${update.key}=${toEnvLiteral(update.value)}`;
-        if (keyLineMap.has(update.key)) {
-            lines[keyLineMap.get(update.key)] = line;
+        if (lineByKey.has(update.key)) {
+            lines[lineByKey.get(update.key)] = line;
         } else {
             lines.push(line);
         }
     }
 
-    const result = `${lines.join("\n").replace(/\n+$/, "")}\n`;
-    fs.writeFileSync(envPath, result, "utf8");
+    fs.writeFileSync(envPath, `${lines.join("\n").replace(/\n+$/, "")}\n`, "utf8");
 }
 
 function removeEnvKeys(envPath, keys) {
@@ -199,25 +203,17 @@ function spawnPortable(command, args, stdio) {
             windowsHide: true
         });
     }
-
-    return spawn(command, args, {
-        stdio
-    });
+    return spawn(command, args, { stdio });
 }
 
 function runCommandWithInput(command, args, inputValue = "") {
     return new Promise((resolve, reject) => {
         const child = spawnPortable(command, args, ["pipe", "inherit", "inherit"]);
         child.on("error", reject);
-        if (inputValue) {
-            child.stdin.write(inputValue);
-        }
+        if (inputValue) child.stdin.write(inputValue);
         child.stdin.end();
         child.on("close", (code) => {
-            if (code === 0) {
-                resolve();
-                return;
-            }
+            if (code === 0) return resolve();
             reject(new Error(`${command} exited with code ${code}`));
         });
     });
@@ -251,7 +247,11 @@ async function commandExists(command, versionArg = "--version") {
     return result.code === 0;
 }
 
-async function runFirebaseSecretSet({ key, value, location, projectId }) {
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runFirebaseSecretSet({ key, value, projectId }) {
     await runCommandWithInput(
         firebaseBin(),
         [
@@ -270,7 +270,6 @@ async function runFirebaseSecretSet({ key, value, location, projectId }) {
 
 async function runFirebaseSecretGrantAccess({ key, projectId, backendId, location }) {
     const maxAttempts = 3;
-
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const args = [
             "--non-interactive",
@@ -281,22 +280,16 @@ async function runFirebaseSecretGrantAccess({ key, projectId, backendId, locatio
             "--backend",
             backendId
         ];
-        if (location) {
-            args.push("--location", location);
-        }
+        if (location) args.push("--location", location);
 
         const result = await runCommandCapture(firebaseBin(), args);
-        if (result.code === 0) {
-            return;
-        }
+        if (result.code === 0) return;
 
-        const message = (result.stderr || result.stdout || `授权失败: ${key}`).trim();
+        const message = (result.stderr || result.stdout || `Grant access failed: ${key}`).trim();
         const retryable = /cannot find secret/i.test(message);
-        const isLastAttempt = attempt >= maxAttempts;
-        if (!retryable || isLastAttempt) {
+        if (!retryable || attempt >= maxAttempts) {
             throw new Error(message);
         }
-
         await sleep(700 * attempt);
     }
 }
@@ -312,15 +305,7 @@ async function secretExists({ key, projectId }) {
 }
 
 async function runGcloudSecretCreate({ key, projectId, location }) {
-    const args = [
-        "secrets",
-        "create",
-        key,
-        "--project",
-        projectId,
-        "--quiet"
-    ];
-
+    const args = ["secrets", "create", key, "--project", projectId, "--quiet"];
     if (location) {
         args.push("--replication-policy=user-managed", "--locations", location);
     } else {
@@ -328,15 +313,11 @@ async function runGcloudSecretCreate({ key, projectId, location }) {
     }
 
     const result = await runCommandCapture(gcloudBin(), args);
-    if (result.code !== 0) {
-        const output = `${result.stderr}\n${result.stdout}`.toLowerCase();
-        if (output.includes("already exists")) {
-            return false;
-        }
-        const message = (result.stderr || result.stdout || `创建失败: ${key}`).trim();
-        throw new Error(message);
-    }
-    return true;
+    if (result.code === 0) return true;
+
+    const output = `${result.stderr}\n${result.stdout}`.toLowerCase();
+    if (output.includes("already exists")) return false;
+    throw new Error((result.stderr || result.stdout || `Create failed: ${key}`).trim());
 }
 
 async function runGcloudSecretDelete({ key, projectId }) {
@@ -349,8 +330,7 @@ async function runGcloudSecretDelete({ key, projectId }) {
         "--quiet"
     ]);
     if (result.code !== 0) {
-        const message = (result.stderr || result.stdout || `删除失败: ${key}`).trim();
-        throw new Error(message);
+        throw new Error((result.stderr || result.stdout || `Delete failed: ${key}`).trim());
     }
 }
 
@@ -362,8 +342,7 @@ async function runFirebaseSecretAccess({ key, projectId }) {
         projectId
     ]);
     if (result.code !== 0) {
-        const message = (result.stderr || result.stdout || `读取失败: ${key}`).trim();
-        throw new Error(message);
+        throw new Error((result.stderr || result.stdout || `Access failed: ${key}`).trim());
     }
     return result.stdout.trim();
 }
@@ -375,22 +354,30 @@ function ensureSecretValue({ inputValue, envValue, key }) {
     }
     if (inputValue === "/gen") {
         const generated = crypto.randomBytes(32).toString("hex");
-        console.log(`  已生成 ${key}: ${generated}`);
+        console.log(`  generated ${key}: ${generated}`);
         return generated;
     }
     return inputValue;
 }
 
+function normalizeUpdates(updates) {
+    const dedup = new Map();
+    for (const item of updates) {
+        dedup.set(item.key, item.value);
+    }
+    return Array.from(dedup.entries()).map(([key, value]) => ({ key, value }));
+}
+
 async function chooseKeys(rl, envMap) {
     console.log("");
-    console.log("选择密钥范围:");
-    console.log("  1) 推荐密钥（DATABASE_URL / NEXTAUTH_SECRET / EMAIL_* / STRIPE_*）");
-    console.log("  2) 自定义（逗号分隔）");
-    console.log("  3) 使用本地 .env 里全部 KEY");
-    const mode = await askText(rl, "范围模式", "1");
+    console.log("Choose key scope:");
+    console.log("  1) Recommended keys (FIREBASE_*, NEXT_PUBLIC_FIREBASE_*, EMAIL_*, STRIPE_*)");
+    console.log("  2) Custom key list (comma separated)");
+    console.log("  3) All keys found in local .env");
+    const mode = await askText(rl, "Scope mode", "1");
 
     if (mode === "2") {
-        const custom = await askText(rl, "请输入密钥名（逗号分隔）", "");
+        const custom = await askText(rl, "Secret names", "");
         return splitSecretNames(custom);
     }
     if (mode === "3") {
@@ -399,21 +386,15 @@ async function chooseKeys(rl, envMap) {
     return [...RECOMMENDED_SECRET_KEYS];
 }
 
-function normalizeUpdates(updates) {
-    const map = new Map();
-    for (const item of updates) {
-        map.set(item.key, item.value);
-    }
-    return Array.from(map.entries()).map(([key, value]) => ({ key, value }));
-}
-
 async function collectBatchUpdates(rl, envMap) {
     console.log("");
-    console.log("请批量粘贴多行 KEY=VALUE");
-    console.log("输入 END（单独一行）结束录入。");
-    console.log("示例：");
-    console.log("DATABASE_URL=postgresql://...");
-    console.log("NEXTAUTH_SECRET=/gen");
+    console.log("Paste KEY=VALUE lines, then type END on a single line.");
+    console.log("Supported value shortcuts: /env, /gen");
+    console.log("Example:");
+    console.log("FIREBASE_PROJECT_ID=your-project-id");
+    console.log("FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@your-project-id.iam.gserviceaccount.com");
+    console.log("FIREBASE_PRIVATE_KEY=/env");
+    console.log("NEXT_PUBLIC_FIREBASE_API_KEY=/env");
     console.log("EMAIL_FROM=/env");
     console.log("END");
     console.log("");
@@ -427,7 +408,7 @@ async function collectBatchUpdates(rl, envMap) {
 
         const parsed = parseSecretAssignment(line);
         if (!parsed) {
-            console.log(`  跳过无效行: ${line}`);
+            console.log(`  skipped invalid line: ${line}`);
             continue;
         }
 
@@ -439,12 +420,12 @@ async function collectBatchUpdates(rl, envMap) {
         });
 
         if (nextValue === null || nextValue === undefined || nextValue === "") {
-            console.log(`  ${parsed.key} 未解析到值，已跳过`);
+            console.log(`  ${parsed.key} has no resolved value; skipped`);
             continue;
         }
 
         updates.push({ key: parsed.key, value: nextValue });
-        console.log(`  已记录 ${parsed.key}`);
+        console.log(`  staged ${parsed.key}`);
     }
 
     return normalizeUpdates(updates);
@@ -453,32 +434,35 @@ async function collectBatchUpdates(rl, envMap) {
 async function collectSingleUpdates(rl, keys, envMap) {
     const updates = [];
     console.log("");
-    console.log("逐个输入密钥值：");
-    console.log("  - 回车跳过");
-    console.log("  - /env 使用本地 .env 同名值");
-    console.log("  - /gen 自动生成随机值");
+    console.log("Input values one by one:");
+    console.log("  - Enter empty value to skip");
+    console.log("  - /env to use local .env value");
+    console.log("  - /gen to auto-generate a value");
     console.log("");
 
     for (const key of keys) {
         const hasLocal = envMap.has(key);
-        console.log(`[${key}] 本地 .env: ${hasLocal ? "有值" : "无值"}`);
-        const typed = await rl.question("值: ");
+        console.log(`[${key}] local .env: ${hasLocal ? "yes" : "no"}`);
+        const typed = await rl.question("value> ");
         const raw = typed.trim();
         if (!raw) {
-            console.log("  已跳过");
+            console.log("  skipped");
             continue;
         }
+
         const nextValue = ensureSecretValue({
             inputValue: raw,
             envValue: hasLocal ? envMap.get(key) : "",
             key
         });
+
         if (nextValue === null || nextValue === undefined || nextValue === "") {
-            console.log("  未解析到值，已跳过");
+            console.log("  no resolved value, skipped");
             continue;
         }
+
         updates.push({ key, value: nextValue });
-        console.log("  已记录");
+        console.log("  staged");
     }
 
     return normalizeUpdates(updates);
@@ -486,16 +470,16 @@ async function collectSingleUpdates(rl, keys, envMap) {
 
 async function handleUpsert({ rl, envPath, envMap, projectId, location, defaultBackendId }) {
     console.log("");
-    console.log("新增 / 更新录入方式：");
-    console.log("  1) 批量粘贴 KEY=VALUE（推荐）");
-    console.log("  2) 逐个输入");
-    const inputMode = await askText(rl, "录入方式", "1");
+    console.log("Input mode:");
+    console.log("  1) Batch paste KEY=VALUE (recommended)");
+    console.log("  2) One by one");
+    const inputMode = await askText(rl, "Input mode", "1");
 
     let updates = [];
     if (inputMode === "2") {
         const keys = await chooseKeys(rl, envMap);
         if (keys.length === 0) {
-            console.log("没有可用密钥。");
+            console.log("No keys selected.");
             return;
         }
         updates = await collectSingleUpdates(rl, keys, envMap);
@@ -505,22 +489,26 @@ async function handleUpsert({ rl, envPath, envMap, projectId, location, defaultB
 
     if (updates.length === 0) {
         console.log("");
-        console.log("没有需要更新的密钥。");
+        console.log("No updates to apply.");
         return;
     }
 
-    const syncEnv = await askYesNo(rl, "是否同步写回本地 .env", false);
-    const backendId = await askText(rl, "后端 ID（新密钥自动授权，留空跳过）", defaultBackendId || "");
+    const syncEnv = await askYesNo(rl, "Sync these values back to local .env", false);
+    const backendId = await askText(
+        rl,
+        "Backend ID (for grant access on newly created secrets, empty to skip)",
+        defaultBackendId || ""
+    );
 
     console.log("");
-    console.log("将新增/更新以下密钥：");
+    console.log("Will set/update these keys:");
     for (const item of updates) {
         console.log(`  - ${item.key}`);
     }
 
-    const confirmed = await askYesNo(rl, "确认继续", true);
+    const confirmed = await askYesNo(rl, "Continue", true);
     if (!confirmed) {
-        console.log("已取消。");
+        console.log("Canceled.");
         return;
     }
 
@@ -533,105 +521,106 @@ async function handleUpsert({ rl, envPath, envMap, projectId, location, defaultB
 
         if (!exists) {
             if (!gcloudOk) {
-                throw new Error(`检测到新密钥 ${item.key}，但当前环境无 gcloud CLI，无法无交互创建。`);
+                throw new Error(
+                    `New secret detected (${item.key}) but gcloud CLI is missing, cannot create it non-interactively.`
+                );
             }
-            console.log(`密钥 ${item.key} 不存在，正在创建 ...`);
+            console.log(`creating secret ${item.key} ...`);
             created = await runGcloudSecretCreate({
                 key: item.key,
                 projectId,
                 location
             });
             if (created) {
-                console.log(`已创建 ${item.key}`);
+                console.log(`created ${item.key}`);
             }
         }
 
-        console.log(`正在设置 ${item.key} ...`);
+        console.log(`setting ${item.key} ...`);
         await runFirebaseSecretSet({
             key: item.key,
             value: item.value,
-            location,
             projectId
         });
-        console.log(`完成: ${item.key}`);
+        console.log(`done ${item.key}`);
 
         if (created && backendId) {
-            console.log(`正在授权后端 ${backendId} 访问 ${item.key} ...`);
+            console.log(`granting backend ${backendId} access to ${item.key} ...`);
             await runFirebaseSecretGrantAccess({
                 key: item.key,
                 projectId,
                 backendId,
                 location
             });
-            console.log(`授权完成: ${item.key}`);
+            console.log(`grant done ${item.key}`);
         } else if (created && !backendId) {
-            console.log(`提示: ${item.key} 是新密钥，未自动授权后端（你留空了 backendId）。`);
+            console.log(`notice: ${item.key} is new and backend access was not granted automatically.`);
         }
     }
 
     if (syncEnv) {
         upsertEnvFile(envPath, updates);
-        console.log("本地 .env 已同步。");
+        console.log("Local .env updated.");
     }
 }
 
 async function handleDelete({ rl, envPath, envMap, projectId }) {
     const gcloudOk = await commandExists(gcloudBin());
     if (!gcloudOk) {
-        console.log("删除功能需要 gcloud CLI。");
-        console.log("请先安装 Google Cloud SDK。");
+        console.log("Delete requires gcloud CLI.");
+        console.log("Install Google Cloud SDK first.");
         return;
     }
 
     const keys = await chooseKeys(rl, envMap);
     if (keys.length === 0) {
-        console.log("没有可用密钥。");
+        console.log("No keys selected.");
         return;
     }
 
     console.log("");
-    console.log("将删除以下密钥（Google Secret Manager）：");
+    console.log("Will DELETE these secrets from Google Secret Manager:");
     for (const key of keys) {
         console.log(`  - ${key}`);
     }
-    console.log("注意：若 apphosting.yaml 仍引用已删密钥，部署会失败。");
+    console.log("Warning: if apphosting.yaml still references deleted secrets, deployment will fail.");
 
-    const confirmed = await askYesNo(rl, "确认删除", false);
+    const confirmed = await askYesNo(rl, "Confirm delete", false);
     if (!confirmed) {
-        console.log("已取消。");
+        console.log("Canceled.");
         return;
     }
 
-    const finalCode = await askText(rl, "请输入 DELETE 继续", "");
+    const finalCode = await askText(rl, "Type DELETE to continue", "");
     if (finalCode !== "DELETE") {
-        console.log("已取消删除。");
+        console.log("Canceled.");
         return;
     }
 
     console.log("");
     for (const key of keys) {
-        console.log(`正在删除 ${key} ...`);
+        console.log(`deleting ${key} ...`);
         await runGcloudSecretDelete({ key, projectId });
-        console.log(`完成: ${key}`);
+        console.log(`done ${key}`);
     }
 
-    const removeLocal = await askYesNo(rl, "是否同时从本地 .env 删除这些键", false);
+    const removeLocal = await askYesNo(rl, "Also remove these keys from local .env", false);
     if (removeLocal) {
         removeEnvKeys(envPath, keys);
-        console.log("本地 .env 已清理。");
+        console.log("Local .env cleaned.");
     }
 }
 
 async function handleView({ rl, envMap, projectId }) {
     const keys = await chooseKeys(rl, envMap);
     if (keys.length === 0) {
-        console.log("没有可用密钥。");
+        console.log("No keys selected.");
         return;
     }
 
-    const confirmed = await askYesNo(rl, "将以明文显示密钥值，是否继续", false);
+    const confirmed = await askYesNo(rl, "Values will be shown in plain text, continue", false);
     if (!confirmed) {
-        console.log("已取消。");
+        console.log("Canceled.");
         return;
     }
 
@@ -642,7 +631,7 @@ async function handleView({ rl, envMap, projectId }) {
             console.log(`${key}=${value}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            console.log(`${key}=<读取失败: ${message}>`);
+            console.log(`${key}=<read failed: ${message}>`);
         }
     }
 }
@@ -662,42 +651,42 @@ async function main() {
     const rl = readline.createInterface({ input, output });
     try {
         console.log("==============================================");
-        console.log(" Firebase App Hosting 本地密钥工具");
+        console.log(" Firebase App Hosting local secrets helper");
         console.log("==============================================");
-        console.log("提示：输入是可见的。");
+        console.log("Input is visible in terminal.");
         console.log("");
 
-        const projectId = await askText(rl, "Firebase 项目 ID", defaultProjectId || "");
+        const projectId = await askText(rl, "Firebase project ID", defaultProjectId || "");
         if (!projectId) {
-            console.log("项目 ID 不能为空。");
+            console.log("Project ID cannot be empty.");
             return;
         }
 
         console.log("");
-        console.log("请选择操作：");
-        console.log("  1) 新增 / 更新密钥");
-        console.log("  2) 删除密钥");
-        console.log("  3) 查看密钥明文");
-        const action = await askText(rl, "操作", "1");
+        console.log("Choose action:");
+        console.log("  1) Add / update secrets");
+        console.log("  2) Delete secrets");
+        console.log("  3) View secret values");
+        const action = await askText(rl, "Action", "1");
 
         if (action === "2") {
             await handleDelete({ rl, envPath, envMap, projectId });
             console.log("");
-            console.log("执行完成。");
+            console.log("Done.");
             return;
         }
 
         if (action === "3") {
             await handleView({ rl, envMap, projectId });
             console.log("");
-            console.log("执行完成。");
+            console.log("Done.");
             return;
         }
 
-        const location = await askText(rl, "Secret 区域", "us-central1");
+        const location = await askText(rl, "Secret location", DEFAULT_LOCATION);
         await handleUpsert({ rl, envPath, envMap, projectId, location, defaultBackendId });
         console.log("");
-        console.log("执行完成。");
+        console.log("Done.");
     } finally {
         rl.close();
     }
@@ -705,6 +694,6 @@ async function main() {
 
 main().catch((error) => {
     console.error("");
-    console.error("执行失败:", error instanceof Error ? error.message : String(error));
+    console.error("Failed:", error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
 });

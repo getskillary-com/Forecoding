@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { adminAuth } from "@/lib/firebase-admin";
+import { getServerUser, clearSessionCookie } from "@/lib/server-auth";
+import { bumpUserSessionVersion } from "@/lib/data/users";
 
 async function getUserId() {
-    const session = await getServerSession(authOptions);
-    return (session?.user as { id?: string } | undefined)?.id ?? null;
+    const user = await getServerUser();
+    return user?.uid ?? null;
 }
 
 export async function POST() {
@@ -15,14 +15,12 @@ export async function POST() {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        await prisma.user.update({
-            where: { id: userId },
-            data: {
-                sessionVersion: { increment: 1 }
-            }
-        });
+        await adminAuth.revokeRefreshTokens(userId);
+        await bumpUserSessionVersion(userId);
 
-        return NextResponse.json({ ok: true });
+        const res = NextResponse.json({ ok: true });
+        clearSessionCookie(res);
+        return res;
     } catch {
         return NextResponse.json({ error: "Failed to sign out all devices." }, { status: 500 });
     }

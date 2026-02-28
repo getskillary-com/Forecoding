@@ -1,10 +1,9 @@
 import Link from "next/link";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getServerUser } from "@/lib/server-auth";
 
 export default async function AdminPage() {
-    const session = await getServerSession(authOptions);
-    const email = session?.user?.email || "admin";
+    const user = await getServerUser();
+    const email = user?.email || "admin";
 
     return (
         <main className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">

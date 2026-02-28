@@ -4,7 +4,7 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXTAUTH_URL || "https://forecoding.com"),
+  metadataBase: new URL(process.env.APP_BASE_URL || "https://forecoding.com"),
   title: "Forecoding",
   description: "AI-powered product blueprint studio for your next big idea.",
   manifest: "/site.webmanifest",

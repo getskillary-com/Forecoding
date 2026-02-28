@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import type { AuthCodePurpose } from "@prisma/client";
+import type { AuthCodePurpose } from "@/lib/auth-types";
 
 const purposeTitle: Record<AuthCodePurpose, string> = {
     REGISTER: "Account registration",

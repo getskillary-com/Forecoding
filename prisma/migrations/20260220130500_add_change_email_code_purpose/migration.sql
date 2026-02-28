@@ -1,2 +1,0 @@
--- AlterEnum
-ALTER TYPE "AuthCodePurpose" ADD VALUE IF NOT EXISTS 'CHANGE_EMAIL';

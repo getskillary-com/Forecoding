@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { prisma } from "@/lib/prisma";
 import { AuthCodePurposes, AUTH_CODE_TTL_SECONDS, issueAuthCode } from "@/lib/auth-code";
-import { authOptions } from "@/lib/auth";
+import { findAuthUserByEmail } from "@/lib/firebase-admin";
+import { getServerUser } from "@/lib/server-auth";
 import { isValidEmail, sanitizeEmail } from "@/lib/security";
 
 type SendCodePurpose = "register" | "login" | "reset_password" | "change_email";
@@ -31,15 +30,17 @@ export async function POST(req: Request) {
         }
 
         let sessionUserId: string | null = null;
+        let sessionUserEmail: string | null = null;
         if (purpose === "change_email") {
-            const session = await getServerSession(authOptions);
-            sessionUserId = (session?.user as { id?: string } | undefined)?.id ?? null;
+            const sessionUser = await getServerUser();
+            sessionUserId = sessionUser?.uid ?? null;
+            sessionUserEmail = sessionUser?.email ?? null;
             if (!sessionUserId) {
                 return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
             }
         }
 
-        const user = await prisma.user.findUnique({ where: { email } });
+        const user = await findAuthUserByEmail(email);
 
         if (purpose === "register" && user) {
             return NextResponse.json({ error: "This email is already registered." }, { status: 409 });
@@ -50,20 +51,11 @@ export async function POST(req: Request) {
         }
 
         if (purpose === "change_email") {
-            const currentUser = await prisma.user.findUnique({
-                where: { id: sessionUserId! },
-                select: { email: true }
-            });
-
-            if (!currentUser) {
-                return NextResponse.json({ error: "Account not found." }, { status: 404 });
-            }
-
-            if (currentUser.email && sanitizeEmail(currentUser.email) === email) {
+            if (sessionUserEmail && sanitizeEmail(sessionUserEmail) === email) {
                 return NextResponse.json({ error: "New email must be different from current email." }, { status: 400 });
             }
 
-            if (user && user.id !== sessionUserId) {
+            if (user && user.uid !== sessionUserId) {
                 return NextResponse.json({ error: "This email is already registered." }, { status: 409 });
             }
         }

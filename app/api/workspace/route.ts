@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import type { Prisma } from "@prisma/client";
-import { authOptions } from "@/lib/auth";
-import { prisma, withPrismaRetry } from "@/lib/prisma";
+import { getServerUser } from "@/lib/server-auth";
+import { getWorkspaceByUserId, saveWorkspaceByUserId } from "@/lib/data/workspaces";
 import type { Project } from "@/types";
 
 function parseProjects(raw: unknown): Project[] {
@@ -11,9 +9,8 @@ function parseProjects(raw: unknown): Project[] {
 }
 
 async function requireUserId() {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as { id?: string } | undefined)?.id;
-    return userId ?? null;
+    const user = await getServerUser();
+    return user?.uid ?? null;
 }
 
 export async function GET(req: Request) {
@@ -23,21 +20,16 @@ export async function GET(req: Request) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const workspace = await withPrismaRetry(() =>
-            prisma.workspaceState.findUnique({
-                where: { userId },
-                select: { data: true, updatedAt: true }
-            })
-        );
+        const workspace = await getWorkspaceByUserId(userId);
 
         const url = new URL(req.url);
         const projectId = url.searchParams.get("projectId");
-        const parsed = parseProjects(workspace?.data);
+        const parsed = parseProjects(workspace?.projects);
         const projects = projectId ? parsed.filter((p) => p.id === projectId) : parsed;
 
         return NextResponse.json({
             projects,
-            updatedAt: workspace?.updatedAt ?? null
+            updatedAt: workspace?.updatedAt?.toISOString() ?? null
         });
     } catch {
         return NextResponse.json({ error: "Failed to load workspace." }, { status: 500 });
@@ -54,18 +46,7 @@ export async function PUT(req: Request) {
         const body = (await req.json()) as { projects?: unknown };
         const projects = parseProjects(body.projects);
 
-        await withPrismaRetry(() =>
-            prisma.workspaceState.upsert({
-                where: { userId },
-                create: {
-                    userId,
-                    data: projects as unknown as Prisma.InputJsonValue
-                },
-                update: {
-                    data: projects as unknown as Prisma.InputJsonValue
-                }
-            })
-        );
+        await saveWorkspaceByUserId(userId, projects);
 
         return NextResponse.json({ ok: true });
     } catch {

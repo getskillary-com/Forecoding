@@ -3,9 +3,13 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { signIn } from "next-auth/react";
+import {
+    signInWithCustomToken,
+    signInWithEmailAndPassword
+} from "firebase/auth";
 import { ArrowLeft, Loader2, Mail, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
+import { getFirebaseAuth } from "@/lib/firebase-client";
 
 type AuthFlow = "login" | "register" | "forgot";
 type LoginMethod = "password" | "code";
@@ -98,32 +102,56 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         }
     };
 
-    const loginWithPassword = async () => {
-        const result = await signIn("credentials-password", {
-            email,
-            password,
-            callbackUrl,
-            redirect: false
-        });
-        if (result?.error) {
-            setError("Invalid email or password.");
-            return;
+    const establishSessionFromCurrentUser = async () => {
+        const auth = getFirebaseAuth();
+        const currentUser = auth.currentUser;
+        if (!currentUser) {
+            throw new Error("No authenticated user.");
         }
-        router.push(result?.url || callbackUrl);
+
+        const idToken = await currentUser.getIdToken(true);
+        const res = await fetch("/api/auth/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken })
+        });
+        if (!res.ok) {
+            const payload = (await res.json().catch(() => ({}))) as { error?: string };
+            throw new Error(payload.error || "Failed to establish session.");
+        }
+    };
+
+    const loginWithPassword = async () => {
+        const auth = getFirebaseAuth();
+        try {
+            await signInWithEmailAndPassword(auth, email, password);
+            await establishSessionFromCurrentUser();
+            router.push(callbackUrl);
+        } catch {
+            setError("Invalid email or password.");
+        }
     };
 
     const loginWithCode = async () => {
-        const result = await signIn("credentials-code", {
-            email,
-            code,
-            callbackUrl,
-            redirect: false
-        });
-        if (result?.error) {
-            setError("Invalid or expired verification code.");
-            return;
+        try {
+            const auth = getFirebaseAuth();
+            const res = await fetch("/api/auth/code-login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email, code })
+            });
+            const data = (await res.json()) as { error?: string; customToken?: string };
+            if (!res.ok || !data.customToken) {
+                setError(data.error || "Invalid or expired verification code.");
+                return;
+            }
+
+            await signInWithCustomToken(auth, data.customToken);
+            await establishSessionFromCurrentUser();
+            router.push(callbackUrl);
+        } catch {
+            setError("Failed to sign in with verification code.");
         }
-        router.push(result?.url || callbackUrl);
     };
 
     const registerWithCode = async () => {
@@ -152,18 +180,37 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
             return;
         }
         setPassword(newPassword);
-        const signInResult = await signIn("credentials-password", {
-            email,
-            password: newPassword,
-            callbackUrl,
-            redirect: false
-        });
-        if (signInResult?.error) {
+        try {
+            const auth = getFirebaseAuth();
+            await signInWithEmailAndPassword(auth, email, newPassword);
+            await establishSessionFromCurrentUser();
+            router.push(callbackUrl);
+        } catch {
             setError("Password reset succeeded, but auto sign-in failed. Please sign in manually.");
             router.push(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
-            return;
         }
-        router.push(callbackUrl);
+    };
+
+    const loginWithDevBypass = async () => {
+        try {
+            const auth = getFirebaseAuth();
+            const res = await fetch("/api/auth/dev-login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: "dev@local" })
+            });
+            const data = (await res.json()) as { error?: string; customToken?: string };
+            if (!res.ok || !data.customToken) {
+                setError(data.error || "Dev login is unavailable.");
+                return;
+            }
+
+            await signInWithCustomToken(auth, data.customToken);
+            await establishSessionFromCurrentUser();
+            router.push(callbackUrl);
+        } catch {
+            setError("Dev login is unavailable.");
+        }
     };
 
     const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -394,7 +441,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                     {showDevLogin && (
                         <button
                             type="button"
-                            onClick={() => signIn("dev-login", { email: "dev@local", callbackUrl })}
+                            onClick={() => void loginWithDevBypass()}
                             className="w-full px-4 py-2 rounded-xl bg-gray-900 hover:bg-black text-white font-semibold transition-all"
                         >
                             Dev Login

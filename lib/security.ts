@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "crypto";
-import type { AuthCodePurpose } from "@prisma/client";
+import type { AuthCodePurpose } from "@/lib/auth-types";
 
 const PASSWORD_KEYLEN = 64;
 const PASSWORD_SALT_BYTES = 16;
@@ -42,7 +42,11 @@ export function hashVerificationCode(input: {
     purpose: AuthCodePurpose;
     code: string;
 }): string {
-    const secret = process.env.AUTH_CODE_SECRET || process.env.NEXTAUTH_SECRET || "dev-code-secret";
+    const secret =
+        process.env.AUTH_CODE_SECRET ||
+        process.env.FIREBASE_PROJECT_ID ||
+        process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ||
+        "dev-code-secret";
     const payload = [
         secret,
         normalizeEmail(input.email),

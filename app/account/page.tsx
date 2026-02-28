@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { signOut, useSession } from "next-auth/react";
 import { ArrowLeft, Loader2, Save, Shield, User, LogOut, Mail, Eye, EyeOff } from "lucide-react";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
+import { useAuth } from "@/lib/auth-client";
 
 const CODE_TTL_SECONDS = 120;
 
@@ -16,10 +16,10 @@ type ProfileState = {
 };
 
 export default function AccountPage() {
-    const { data: session } = useSession();
+    const { user, signOutUser } = useAuth();
     const [profile, setProfile] = useState<ProfileState>({
-        email: session?.user?.email ?? "",
-        name: session?.user?.name ?? "",
+        email: user?.email ?? "",
+        name: user?.displayName ?? "",
         emailVerified: null
     });
     const [isProfileLoading, setIsProfileLoading] = useState(true);
@@ -234,7 +234,7 @@ export default function AccountPage() {
                 setSecurityError(data.error || "Failed to sign out all devices.");
                 return;
             }
-            await signOut({ callbackUrl: "/login?callbackUrl=/dashboard" });
+            await signOutUser("/login?callbackUrl=/dashboard");
         } catch {
             setSecurityError("Failed to sign out all devices.");
         } finally {

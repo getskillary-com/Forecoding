@@ -840,8 +840,8 @@ function ensureDefaultToolStack(toolStack: string | undefined) {
         "| State | Zustand | Simple global state management |",
         "| Forms | React Hook Form + Zod | Reliable forms with validation |",
         "| Data Fetching | SWR | Simple caching and revalidation |",
-        "| Auth | NextAuth | Turnkey authentication |",
-        "| Database | Prisma + SQLite | Fast local dev and easy schema |"
+        "| Auth | Firebase Auth | Managed authentication with session support |",
+        "| Database | Cloud Firestore | Scalable document database for app data |"
     ].join("\n");
 }
 
@@ -895,7 +895,6 @@ function ensureCoreConfigFiles(
     const context = `${toolStack || ""}\n${history || ""}\n${treeText}`;
     const usesNext = /next\.js|nextjs|\bnext\b/i.test(context) || existingNames.has("next.config.ts");
     const usesPhaser = /phaser/i.test(context);
-    const usesPrisma = /prisma/i.test(context);
 
     const coreFiles: { name: string; content: string }[] = [];
 
@@ -926,21 +925,7 @@ function ensureCoreConfigFiles(
         });
     }
 
-    if (usesPrisma) {
-        const schemaContent = generatePrismaSchema();
-        upsertFileByPath(tree, "prisma/schema.prisma", schemaContent);
-        upsertFileByPath(tree, ".env.example", generateEnvExample({ usesNextAuth: /nextauth|next-auth/i.test(context) }));
-    }
-
-    if (/nextauth|next-auth/i.test(context)) {
-        upsertFileByPath(tree, "app/api/auth/[...nextauth]/route.ts", generateNextAuthRouteSpec());
-    }
-
-    if (usesPrisma) {
-        upsertFileByPath(tree, "prisma/seed.ts", generatePrismaSeedSpec());
-    }
-
-    upsertReadmeSetup(tree, { usesPrisma, usesNextAuth: /nextauth|next-auth/i.test(context) });
+    upsertReadmeSetup(tree);
 
     if (coreFiles.length === 0) return tree;
 
@@ -972,8 +957,6 @@ function generatePackageJson(input: {
     const usesReactHookForm = /react\s*hook\s*form/.test(stack);
     const usesZod = /\bzod\b/.test(stack);
     const usesSWR = /\bswr\b/.test(stack);
-    const usesNextAuth = /nextauth|next-auth/.test(stack);
-    const usesPrisma = /prisma/.test(stack);
     const usesSupabase = /supabase|@supabase\/ssr|@supabase\/supabase-js/.test(stack);
     const usesVercelAiSdk = /vercel ai sdk|\bgenerateobject\b|\bfrom\s+["']ai["']|@ai-sdk\/openai/.test(stack);
     const usesOpenAiSdk = /openai|@ai-sdk\/openai/.test(stack);
@@ -993,9 +976,6 @@ function generatePackageJson(input: {
     if (usesReactHookForm && usesZod) extraDeps["@hookform/resolvers"] = "^3.9.0";
     if (usesZod) extraDeps["zod"] = "^3.23.8";
     if (usesSWR) extraDeps["swr"] = "^2.2.5";
-    if (usesNextAuth) extraDeps["next-auth"] = "^4.24.7";
-    if (usesPrisma) extraDeps["@prisma/client"] = "^5.16.2";
-    if (usesPrisma && usesNextAuth) extraDeps["@auth/prisma-adapter"] = "^1.4.1";
     if (usesSupabase) extraDeps["@supabase/supabase-js"] = "^2.49.1";
     if (usesSupabase) extraDeps["@supabase/ssr"] = "^0.5.2";
     if (usesVercelAiSdk) extraDeps["ai"] = "^4.3.16";
@@ -1039,8 +1019,7 @@ function generatePackageJson(input: {
             "@types/node": "^20",
             "@types/react": "^18",
             "@types/react-dom": "^18",
-            ...(usesTailwind ? { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } : {}),
-            ...(usesPrisma ? { prisma: "^5.16.2" } : {})
+            ...(usesTailwind ? { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } : {})
         },
         engines: {
             node: ">=18.17.0",
@@ -1140,132 +1119,7 @@ function upsertFileByPath(tree: any[], filePath: string, content: string) {
     }
 }
 
-function generatePrismaSchema() {
-    return [
-        `generator client {`,
-        `  provider = "prisma-client-js"`,
-        `}`,
-        ``,
-        `datasource db {`,
-        `  provider = "sqlite"`,
-        `  url      = env("DATABASE_URL")`,
-        `}`,
-        ``,
-        `model User {`,
-        `  id            String    @id @default(cuid())`,
-        `  name          String?`,
-        `  email         String?   @unique`,
-        `  emailVerified DateTime?`,
-        `  image         String?`,
-        `  createdAt     DateTime  @default(now())`,
-        `  updatedAt     DateTime  @updatedAt`,
-        `  accounts      Account[]`,
-        `  sessions      Session[]`,
-        `}`,
-        ``,
-        `model Account {`,
-        `  id                String  @id @default(cuid())`,
-        `  userId            String`,
-        `  type              String`,
-        `  provider          String`,
-        `  providerAccountId String`,
-        `  refresh_token     String?`,
-        `  access_token      String?`,
-        `  expires_at        Int?`,
-        `  token_type        String?`,
-        `  scope             String?`,
-        `  id_token          String?`,
-        `  session_state     String?`,
-        `  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)`,
-        ``,
-        `  @@unique([provider, providerAccountId])`,
-        `}`,
-        ``,
-        `model Session {`,
-        `  id           String   @id @default(cuid())`,
-        `  sessionToken String   @unique`,
-        `  userId       String`,
-        `  expires      DateTime`,
-        `  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)`,
-        `}`,
-        ``,
-        `model VerificationToken {`,
-        `  identifier String`,
-        `  token      String   @unique`,
-        `  expires    DateTime`,
-        ``,
-        `  @@unique([identifier, token])`,
-        `}`,
-        ``
-    ].join("\n");
-}
-
-function generateEnvExample(input: { usesNextAuth: boolean }) {
-    const lines: string[] = [];
-    lines.push("# Database");
-    lines.push('DATABASE_URL="file:./dev.db"');
-
-    if (input.usesNextAuth) {
-        lines.push("");
-        lines.push("# Auth");
-        lines.push('NEXTAUTH_URL="http://localhost:3000"');
-        lines.push('NEXTAUTH_SECRET="your-secret-here"');
-    }
-
-    lines.push("");
-    return lines.join("\n");
-}
-
-function generateNextAuthRouteSpec() {
-    return [
-        "# NextAuth API Route Spec",
-        "",
-        "## Responsibility",
-        "Configure NextAuth with Prisma adapter and at least one provider.",
-        "",
-        "## Requirements",
-        "- Use `PrismaAdapter` with the Prisma client instance.",
-        "- Include one OAuth provider (e.g., GitHub) and a fallback Email provider if possible.",
-        "- Export `authOptions` for reuse in server components.",
-        "",
-        "## Env",
-        "- `NEXTAUTH_URL`",
-        "- `NEXTAUTH_SECRET`",
-        "- Provider-specific keys (e.g., `GITHUB_ID`, `GITHUB_SECRET`)",
-        "",
-        "## Exports",
-        "- `handlers` or `GET/POST` handlers required by NextAuth v4 app router.",
-        "- `authOptions`",
-        "",
-        "## Notes",
-        "- Keep secrets out of the repository; use `.env.local`.",
-        "- Ensure session strategy is compatible with Prisma adapter."
-    ].join("\n");
-}
-
-function generatePrismaSeedSpec() {
-    return [
-        "# Prisma Seed Spec",
-        "",
-        "## Responsibility",
-        "Provide initial seed data for development.",
-        "",
-        "## Requirements",
-        "- Create a Prisma client instance.",
-        "- Insert at least one `User` record (and related data if needed).",
-        "- Ensure seed is idempotent (safe to run multiple times).",
-        "",
-        "## Script",
-        "- Export a main function and call it at the bottom.",
-        "- Use `process.exit(1)` on error.",
-        "",
-        "## Notes",
-        "- Keep the seed minimal to avoid test pollution.",
-        "- Use environment variables where appropriate."
-    ].join("\n");
-}
-
-function upsertReadmeSetup(tree: any[], input: { usesPrisma: boolean; usesNextAuth: boolean }) {
+function upsertReadmeSetup(tree: any[]) {
     const lines: string[] = [];
     lines.push("# Getting Started");
     lines.push("");
@@ -1273,26 +1127,6 @@ function upsertReadmeSetup(tree: any[], input: { usesPrisma: boolean; usesNextAu
     lines.push("```bash");
     lines.push("npm install");
     lines.push("```");
-
-    if (input.usesPrisma) {
-        lines.push("");
-        lines.push("## Database");
-        lines.push("```bash");
-        lines.push("cp .env.example .env.local");
-        lines.push("npx prisma migrate dev --name init");
-        lines.push("```");
-        lines.push("");
-        lines.push("## Seed (optional)");
-        lines.push("```bash");
-        lines.push("npx prisma db seed");
-        lines.push("```");
-    }
-
-    if (input.usesNextAuth) {
-        lines.push("");
-        lines.push("## Auth");
-        lines.push("Set provider env vars in `.env.local`.");
-    }
 
     lines.push("");
     lines.push("## Run");
@@ -1307,8 +1141,6 @@ function upsertReadmeSetup(tree: any[], input: { usesPrisma: boolean; usesNextAu
 function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
     const stack = (toolStack || "").toLowerCase();
     const usesZod = /\bzod\b/.test(stack);
-    const usesNextAuth = /nextauth|next-auth/.test(stack);
-    const usesPrisma = /prisma/.test(stack);
 
     const codeFilePattern = /\.(ts|tsx|js|jsx)$/i;
 
@@ -1324,8 +1156,8 @@ function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
             if (!codeFilePattern.test(node.name)) continue;
 
             const existing = node.content || "";
-            const qualitySection = buildQualitySection(filePath, { usesZod, usesNextAuth, usesPrisma });
-            const templateSection = buildTemplateSection(filePath, { usesZod, usesNextAuth, usesPrisma });
+            const qualitySection = buildQualitySection(filePath, { usesZod });
+            const templateSection = buildTemplateSection(filePath, { usesZod });
             const antiPatternSection = buildAntiPatternSection(filePath);
             const goodBadSection = buildGoodBadSection(filePath);
 
@@ -1345,7 +1177,7 @@ function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
     return projectTree;
 }
 
-function buildQualitySection(filePath: string, input: { usesZod: boolean; usesNextAuth: boolean; usesPrisma: boolean }) {
+function buildQualitySection(filePath: string, input: { usesZod: boolean }) {
     const lines: string[] = [];
     lines.push("## Quality Constraints");
     lines.push("- Type Safety: Avoid `any`; prefer strict types and interfaces.");
@@ -1363,18 +1195,10 @@ function buildQualitySection(filePath: string, input: { usesZod: boolean; usesNe
         }
     }
 
-    if (input.usesPrisma && (filePath.includes("lib/") || filePath.includes("app/api/"))) {
-        lines.push("- Data: Use a single Prisma client instance; avoid re-instantiation.");
-    }
-
-    if (input.usesNextAuth && filePath.includes("auth")) {
-        lines.push("- Auth: Keep secrets in env; never log tokens.");
-    }
-
     return lines.join("\n");
 }
 
-function buildTemplateSection(filePath: string, input: { usesZod: boolean; usesNextAuth: boolean; usesPrisma: boolean }) {
+function buildTemplateSection(filePath: string, input: { usesZod: boolean }) {
     const lines: string[] = [];
     lines.push("## Template Guidance");
 
@@ -1387,18 +1211,11 @@ function buildTemplateSection(filePath: string, input: { usesZod: boolean; usesN
         if (input.usesZod) {
             lines.push("- Parse: `const body = schema.parse(await req.json())`.");
         }
-        if (input.usesPrisma) {
-            lines.push("- Data: call Prisma client; map DB errors to 4xx/5xx.");
-        }
     } else if (filePath.startsWith("lib/")) {
         lines.push("- Module: pure functions where possible; avoid side effects.");
         lines.push("- Exports: named exports with clear typing.");
     } else if (filePath.endsWith(".tsx")) {
         lines.push("- Page: fetch data via server actions or API; render loading/error states.");
-    }
-
-    if (input.usesNextAuth && filePath.includes("auth")) {
-        lines.push("- Auth: expose `authOptions` and route handlers.");
     }
 
     return lines.join("\n");

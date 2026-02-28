@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { getStripeWebhookSecret } from "@/lib/stripe";
 import { StripeEvent, verifyStripeWebhookSignature } from "@/lib/stripe-webhook";
-import type { Project } from "@/types";
-import type { Prisma } from "@prisma/client";
-import { prisma, withPrismaRetry } from "@/lib/prisma";
 import { sendProjectOrderEmail } from "@/lib/mailer";
+import { recordWebhookEventIfNew } from "@/lib/data/webhook-events";
+import { upsertProjectPurchase } from "@/lib/data/purchases";
+import { markProjectPaidInWorkspace } from "@/lib/data/workspaces";
+import { getUserProfileByUid } from "@/lib/data/users";
 
 export const runtime = "nodejs";
 
@@ -19,11 +20,6 @@ function getNumber(value: unknown) {
 function getObject(value: unknown): Record<string, unknown> {
     if (!value || typeof value !== "object") return {};
     return value as Record<string, unknown>;
-}
-
-function parseWorkspaceProjects(raw: unknown): Project[] {
-    if (!Array.isArray(raw)) return [];
-    return raw as Project[];
 }
 
 function resolvePurchaseContext(input: {
@@ -45,151 +41,6 @@ function resolvePurchaseContext(input: {
         userId: metadataUserId || clientRefUserId,
         projectId: metadataProjectId || clientRefProjectId
     };
-}
-
-async function markProjectPaidInWorkspace(userId: string, projectId: string) {
-    const workspace = await withPrismaRetry(() =>
-        prisma.workspaceState.findUnique({
-            where: { userId },
-            select: { data: true }
-        })
-    );
-
-    if (!workspace) return false;
-
-    const projects = parseWorkspaceProjects(workspace.data);
-    let touched = false;
-
-    const updatedProjects = projects.map((project) => {
-        if (project.id !== projectId) return project;
-        touched = true;
-        return {
-            ...project,
-            updatedAt: Date.now(),
-            versions: project.versions.map((version) => ({
-                ...version,
-                data: {
-                    ...version.data,
-                    paymentStatus: "paid"
-                }
-            }))
-        };
-    });
-
-    if (!touched) return false;
-
-    await withPrismaRetry(() =>
-        prisma.workspaceState.update({
-            where: { userId },
-            data: {
-                data: updatedProjects as unknown as Prisma.InputJsonValue
-            }
-        })
-    );
-
-    return true;
-}
-
-async function recordStripeWebhookEvent(eventId: string, eventName: string, payload: string) {
-    if (!eventId) return true;
-
-    try {
-        const inserted = await withPrismaRetry(() =>
-            prisma.$executeRaw`
-                INSERT INTO "WebhookEventLog" ("id", "provider", "eventId", "eventName", "payload")
-                VALUES (${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}, ${"stripe"}, ${eventId}, ${eventName}, (${payload}::jsonb))
-                ON CONFLICT ("provider", "eventId") DO NOTHING
-            `
-        );
-
-        return inserted > 0;
-    } catch (error) {
-        console.warn("[stripe] Failed to persist webhook event log. Continuing without dedupe.", error);
-        return true;
-    }
-}
-
-async function upsertProjectPurchase(input: {
-    userId: string;
-    projectId: string;
-    sessionId: string;
-    paymentIntentId: string;
-    amountCents: number;
-    currency: string;
-    paid: boolean;
-}) {
-    const now = new Date();
-    const status = input.paid ? "SUCCEEDED" : "PENDING";
-    const paidAt = input.paid ? now : null;
-    let alreadySucceeded = false;
-
-    try {
-        const existing = await withPrismaRetry(() =>
-            prisma.$queryRaw<Array<{ status: string }>>`
-                SELECT "status"
-                FROM "ProjectPurchase"
-                WHERE "userId" = ${input.userId}
-                  AND "projectId" = ${input.projectId}
-                LIMIT 1
-            `
-        );
-        alreadySucceeded = existing[0]?.status === "SUCCEEDED";
-
-        await withPrismaRetry(() =>
-            prisma.$executeRaw`
-                INSERT INTO "ProjectPurchase" (
-                    "id",
-                    "userId",
-                    "projectId",
-                    "provider",
-                    "status",
-                    "amount",
-                    "currency",
-                    "requestId",
-                    "merchantOrderId",
-                    "paymentIntentId",
-                    "paidAt",
-                    "createdAt",
-                    "updatedAt"
-                )
-                VALUES (
-                    ${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`},
-                    ${input.userId},
-                    ${input.projectId},
-                    ${"stripe"},
-                    ${status},
-                    ${Math.max(0, Math.round(input.amountCents))},
-                    ${input.currency || "usd"},
-                    ${input.sessionId || `${input.userId}:${input.projectId}`},
-                    ${input.sessionId || `${input.userId}:${input.projectId}`},
-                    ${input.paymentIntentId || null},
-                    ${paidAt},
-                    ${now},
-                    ${now}
-                )
-                ON CONFLICT ("userId", "projectId")
-                DO UPDATE SET
-                    "provider" = EXCLUDED."provider",
-                    "status" = EXCLUDED."status",
-                    "amount" = EXCLUDED."amount",
-                    "currency" = EXCLUDED."currency",
-                    "requestId" = EXCLUDED."requestId",
-                    "merchantOrderId" = EXCLUDED."merchantOrderId",
-                    "paymentIntentId" = COALESCE(EXCLUDED."paymentIntentId", "ProjectPurchase"."paymentIntentId"),
-                    "paidAt" = EXCLUDED."paidAt",
-                    "updatedAt" = EXCLUDED."updatedAt"
-            `
-        );
-
-        return {
-            alreadySucceeded
-        };
-    } catch (error) {
-        console.warn("[stripe] Failed to upsert ProjectPurchase. Continuing.", error);
-        return {
-            alreadySucceeded: false
-        };
-    }
 }
 
 export async function POST(req: Request) {
@@ -225,7 +76,12 @@ export async function POST(req: Request) {
     const eventId = getString(event.id);
     const payloadText = JSON.stringify(event);
 
-    const shouldProcess = await recordStripeWebhookEvent(eventId, type || "unknown", payloadText);
+    const shouldProcess = await recordWebhookEventIfNew({
+        provider: "stripe",
+        eventId,
+        eventName: type || "unknown",
+        payload: payloadText
+    });
     if (!shouldProcess) {
         return NextResponse.json({ received: true, duplicate: true });
     }
@@ -266,11 +122,14 @@ export async function POST(req: Request) {
         const purchaseWrite = await upsertProjectPurchase({
             userId,
             projectId,
-            sessionId,
-            paymentIntentId,
-            amountCents: amountTotal,
+            provider: "stripe",
+            status: paid ? "SUCCEEDED" : "PENDING",
+            amount: amountTotal,
             currency,
-            paid
+            requestId: sessionId || `${userId}:${projectId}`,
+            merchantOrderId: sessionId || `${userId}:${projectId}`,
+            paymentIntentId: paymentIntentId || null,
+            paidAt: paid ? new Date() : null
         });
 
         if (paid) {
@@ -278,17 +137,8 @@ export async function POST(req: Request) {
 
             let emailToSend = customerEmail;
             if (!emailToSend) {
-                try {
-                    const user = await withPrismaRetry(() =>
-                        prisma.user.findUnique({
-                            where: { id: userId },
-                            select: { email: true }
-                        })
-                    );
-                    emailToSend = getString(user?.email);
-                } catch {
-                    emailToSend = "";
-                }
+                const profile = await getUserProfileByUid(userId);
+                emailToSend = profile?.email || "";
             }
 
             if (emailToSend && !purchaseWrite.alreadySucceeded) {
@@ -336,3 +186,4 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ received: true });
 }
+

@@ -131,11 +131,16 @@ CLI equivalent:
 npm run secrets:apphosting
 ```
 
-### Database Migration
+### Historical Data Migration (PostgreSQL -> Firebase)
 
-Apply migrations before running the app:
+Run a dry-run first:
 
 ```bash
-npx prisma migrate deploy
-npx prisma generate
+MIGRATION_SOURCE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB_NAME?sslmode=require npm run migrate:firebase -- --dry-run
+```
+
+Then run the actual migration:
+
+```bash
+npm run migrate:firebase -- --resume
 ```

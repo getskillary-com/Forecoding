@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
 import type { Project } from "@/types";
-import { authOptions } from "@/lib/auth";
 import { isAdminUser } from "@/lib/admin";
+import { getServerUser } from "@/lib/server-auth";
 import {
     createStripeCheckoutSession,
     getStripeMaxUnitAmountCents,
@@ -13,7 +12,7 @@ import {
     isStripeDynamicPricingEnabled
 } from "@/lib/stripe";
 import { formatCurrencyCents, quoteProjectCreditPrice } from "@/lib/pricing";
-import { prisma, withPrismaRetry } from "@/lib/prisma";
+import { getWorkspaceByUserId } from "@/lib/data/workspaces";
 
 export const runtime = "nodejs";
 
@@ -29,8 +28,8 @@ function resolveBaseUrl(req: Request) {
     const origin = req.headers.get("origin") || "";
     if (origin) return origin;
 
-    const nextAuthUrl = (process.env.NEXTAUTH_URL || "").trim();
-    if (nextAuthUrl) return nextAuthUrl;
+    const appBaseUrl = (process.env.APP_BASE_URL || "").trim();
+    if (appBaseUrl) return appBaseUrl;
 
     return "";
 }
@@ -67,25 +66,18 @@ function parseProjectSnapshot(raw: unknown, projectId: string): Project | null {
 }
 
 async function loadProjectForUser(userId: string, projectId: string) {
-    const workspace = await withPrismaRetry(() =>
-        prisma.workspaceState.findUnique({
-            where: { userId },
-            select: { data: true }
-        })
-    );
-
-    const projects = parseProjects(workspace?.data);
+    const workspace = await getWorkspaceByUserId(userId);
+    const projects = parseProjects(workspace?.projects);
     return projects.find((project) => project.id === projectId) || null;
 }
 
 export async function POST(req: Request) {
     try {
-        const session = await getServerSession(authOptions);
-        const user = session?.user as { id?: string; email?: string | null } | undefined;
-        if (!user?.id) {
+        const user = await getServerUser();
+        if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
-        if (isAdminUser(user)) {
+        if (isAdminUser({ email: user.email })) {
             return NextResponse.json(
                 {
                     error: "Admin users bypass Stripe checkout. Generate directly in wizard.",
@@ -106,7 +98,7 @@ export async function POST(req: Request) {
         const body = (await req.json()) as CheckoutRequestBody;
         const projectId = sanitizeText(body.projectId, "project-credit");
         const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
-        const projectFromWorkspace = await loadProjectForUser(user.id, projectId);
+        const projectFromWorkspace = await loadProjectForUser(user.uid, projectId);
         const project = projectFromSnapshot || projectFromWorkspace;
         const projectName = sanitizeText(project?.name || body.projectName, "Project Credit");
         const currency = getStripeCurrency();
@@ -145,9 +137,9 @@ export async function POST(req: Request) {
                 quantity: 1
             },
             customerEmail: user.email || undefined,
-            clientReferenceId: `${user.id}:${projectId}`,
+            clientReferenceId: `${user.uid}:${projectId}`,
             metadata: {
-                userId: user.id,
+                userId: user.uid,
                 projectId,
                 projectName,
                 complexityScore: String(quote.complexityScore),

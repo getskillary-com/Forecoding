@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
 import type { Project } from "@/types";
-import { authOptions } from "@/lib/auth";
 import { isAdminUser } from "@/lib/admin";
-import { prisma, withPrismaRetry } from "@/lib/prisma";
+import { getServerUser } from "@/lib/server-auth";
 import {
     getStripeCurrency,
     getStripeMaxUnitAmountCents,
@@ -11,6 +9,7 @@ import {
     isStripeDynamicPricingEnabled
 } from "@/lib/stripe";
 import { formatCurrencyCents, quoteProjectCreditPrice } from "@/lib/pricing";
+import { getWorkspaceByUserId } from "@/lib/data/workspaces";
 
 export const runtime = "nodejs";
 
@@ -42,25 +41,18 @@ function parseProjectSnapshot(raw: unknown, projectId: string): Project | null {
 }
 
 async function loadProjectForUser(userId: string, projectId: string) {
-    const workspace = await withPrismaRetry(() =>
-        prisma.workspaceState.findUnique({
-            where: { userId },
-            select: { data: true }
-        })
-    );
-
-    const projects = parseProjects(workspace?.data);
+    const workspace = await getWorkspaceByUserId(userId);
+    const projects = parseProjects(workspace?.projects);
     return projects.find((project) => project.id === projectId) || null;
 }
 
 export async function POST(req: Request) {
     try {
-        const session = await getServerSession(authOptions);
-        const user = session?.user as { id?: string; email?: string | null } | undefined;
-        if (!user?.id) {
+        const user = await getServerUser();
+        if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
-        if (isAdminUser(user)) {
+        if (isAdminUser({ email: user.email })) {
             const currency = getStripeCurrency();
             return NextResponse.json({
                 ok: true,
@@ -83,7 +75,7 @@ export async function POST(req: Request) {
         }
 
         const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
-        const projectFromWorkspace = await loadProjectForUser(user.id, projectId);
+        const projectFromWorkspace = await loadProjectForUser(user.uid, projectId);
         const project = projectFromSnapshot || projectFromWorkspace;
         const currency = getStripeCurrency();
         const quote = quoteProjectCreditPrice(project, {
