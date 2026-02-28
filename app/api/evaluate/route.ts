@@ -66,6 +66,11 @@ function isErrorWithMessage(error: unknown, message: string) {
     return error instanceof Error && error.message === message;
 }
 
+function isGeminiStreamParseError(error: unknown) {
+    const details = getErrorDetails(error).toLowerCase();
+    return details.includes("failed to parse stream") || details.includes("parse stream");
+}
+
 function isUpstreamOverloadError(error: unknown) {
     const details = getErrorDetails(error).toLowerCase();
     return (
@@ -209,15 +214,33 @@ async function* streamWithTimeGuards(
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const guardedPromise: Promise<
+        { status: "resolved"; value: T } | { status: "rejected"; error: unknown }
+    > = promise
+        .then((value) => ({ status: "resolved" as const, value }))
+        .catch((error) => ({ status: "rejected" as const, error }));
+
     try {
-        return await Promise.race([
-            promise,
-            new Promise<T>((_, reject) => {
+        const outcome = await Promise.race([
+            guardedPromise,
+            new Promise<{ status: "timeout" }>((resolve) => {
                 timer = setTimeout(() => {
-                    reject(new Error(timeoutMessage));
+                    resolve({ status: "timeout" });
                 }, timeoutMs);
             })
         ]);
+
+        if (outcome.status === "resolved") {
+            return outcome.value;
+        }
+
+        if (outcome.status === "rejected") {
+            throw outcome.error;
+        }
+
+        // Keep observing the original promise so late failures stay handled after timeout.
+        void guardedPromise;
+        throw new Error(timeoutMessage);
     } finally {
         if (timer) clearTimeout(timer);
     }
@@ -319,10 +342,11 @@ export async function POST(req: Request) {
                     if (
                         !emittedMeaningfulChunk &&
                         (isErrorWithMessage(e, "EVALUATE_MODEL_IDLE_TIMEOUT") ||
-                            isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT"))
+                            isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT") ||
+                            isGeminiStreamParseError(e))
                     ) {
                         console.warn(
-                            `[evaluate][${requestId}] primaryTimeout type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}; retrying compact payload`
+                            `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}; retrying compact payload`
                         );
                         try {
                             const retryMessages = buildRetryMessages(messages);
