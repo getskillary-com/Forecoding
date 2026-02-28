@@ -7,7 +7,6 @@
         { "fieldPath": "emailLower", "order": "ASCENDING" },
         { "fieldPath": "purpose", "order": "ASCENDING" },
         { "fieldPath": "usedAt", "order": "ASCENDING" },
-        { "fieldPath": "expiresAt", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
@@ -30,4 +29,3 @@
   ],
   "fieldOverrides": []
 }
-
