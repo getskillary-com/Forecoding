@@ -3,10 +3,6 @@ env:
     value: "https://forecoding.com"
     availability:
       - RUNTIME
-  - variable: DATA_BACKEND_MODE
-    value: "firebase_only"
-    availability:
-      - RUNTIME
   - variable: FIREBASE_PROJECT_ID
     secret: FIREBASE_PROJECT_ID
     availability:
@@ -58,10 +54,6 @@ env:
       - RUNTIME
   - variable: EMAIL_FROM
     secret: EMAIL_FROM
-    availability:
-      - RUNTIME
-  - variable: NEXT_PUBLIC_DEV_AUTH_BYPASS
-    value: "0"
     availability:
       - RUNTIME
   - variable: STRIPE_SECRET_KEY
