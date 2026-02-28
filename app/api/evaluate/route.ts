@@ -15,6 +15,10 @@ const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
 const EVALUATE_RETRY_TEXT_ATTACHMENT_CHARS = 2_000;
+const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
+const EVALUATE_RETRY_DESIGN_MEMORY_CHARS = 5_000;
+const EVALUATE_DIAGRAM_POLICY_MAX_CHARS = 120;
+const DEFAULT_DIAGRAM_POLICY = "incremental_manual_review_v1";
 
 export const runtime = "nodejs";
 
@@ -22,6 +26,8 @@ type EvaluateRequestBody = {
     messages?: unknown;
     context?: unknown;
     generationReady?: unknown;
+    designMemory?: unknown;
+    diagramPolicy?: unknown;
 };
 
 class RequestPayloadError extends Error {
@@ -175,12 +181,14 @@ async function* streamWithTimeGuards(
     messages: Message[],
     contextText: string | undefined,
     generationReady: boolean,
-    options?: { preferBackupModel?: boolean }
+    options?: { preferBackupModel?: boolean; designMemory?: string; diagramPolicy?: string }
 ) {
     const startedAt = Date.now();
     const iterator = streamEvaluateInput(messages, contextText, {
         generationReady,
-        preferBackupModel: options?.preferBackupModel === true
+        preferBackupModel: options?.preferBackupModel === true,
+        designMemory: options?.designMemory,
+        diagramPolicy: options?.diagramPolicy
     })[Symbol.asyncIterator]();
     try {
         while (true) {
@@ -270,15 +278,27 @@ export async function POST(req: Request) {
     const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).slice(0, 12);
     const requestStartedAt = Date.now();
     try {
-        const { messages, context, generationReady } = await parseEvaluateRequest(req);
+        const { messages, context, generationReady, designMemory, diagramPolicy } = await parseEvaluateRequest(req);
         const contextText = typeof context === "string" ? context : undefined;
+        const designMemoryText =
+            typeof designMemory === "string" && designMemory.trim()
+                ? clipText(designMemory.trim(), EVALUATE_DESIGN_MEMORY_CHARS)
+                : undefined;
+        const incomingDiagramPolicy =
+            typeof diagramPolicy === "string" && diagramPolicy.trim()
+                ? clipText(diagramPolicy.trim(), EVALUATE_DIAGRAM_POLICY_MAX_CHARS)
+                : DEFAULT_DIAGRAM_POLICY;
+        const normalizedDiagramPolicy =
+            incomingDiagramPolicy === DEFAULT_DIAGRAM_POLICY
+                ? incomingDiagramPolicy
+                : DEFAULT_DIAGRAM_POLICY;
         if (!Array.isArray(messages) || messages.length === 0) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
         const provider = getActiveAiProvider();
         const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
+            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
         );
 
         const stream = new ReadableStream({
@@ -317,7 +337,11 @@ export async function POST(req: Request) {
                     for await (const chunk of streamWithTimeGuards(
                         messages as Message[],
                         contextText,
-                        generationReady === true
+                        generationReady === true,
+                        {
+                            designMemory: designMemoryText,
+                            diagramPolicy: normalizedDiagramPolicy
+                        }
                     )) {
                         tagScanBuffer = (tagScanBuffer + chunk).slice(-8192);
                         if (!sawQuestionTag && /<question>/i.test(tagScanBuffer)) {
@@ -353,12 +377,19 @@ export async function POST(req: Request) {
                             const retryContext = contextText
                                 ? clipText(contextText, EVALUATE_RETRY_CONTEXT_CHARS)
                                 : undefined;
+                            const retryDesignMemory = designMemoryText
+                                ? clipText(designMemoryText, EVALUATE_RETRY_DESIGN_MEMORY_CHARS)
+                                : undefined;
 
                             for await (const retryChunk of streamWithTimeGuards(
                                 retryMessages,
                                 retryContext,
                                 generationReady === true,
-                                { preferBackupModel: true }
+                                {
+                                    preferBackupModel: true,
+                                    designMemory: retryDesignMemory,
+                                    diagramPolicy: normalizedDiagramPolicy
+                                }
                             )) {
                                 if (retryChunk.trim().length > 0) {
                                     emittedMeaningfulChunk = true;

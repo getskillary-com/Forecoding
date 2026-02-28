@@ -6,6 +6,7 @@ import {
     Message,
     EvaluationResponse,
     GenerationResponse,
+    DiagramGovernance,
     Project,
     Task,
     ProjectVersion,
@@ -62,7 +63,10 @@ const EVALUATE_COMPACT_HISTORY_MESSAGES = 10;
 const EVALUATE_COMPACT_MESSAGE_CONTENT_CHARS = 2400;
 const EVALUATE_COMPACT_TEXT_ATTACHMENT_CHARS = 6000;
 const EVALUATE_COMPACT_CONTEXT_CHARS = 4000;
+const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
+const EVALUATE_COMPACT_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
+const DIAGRAM_POLICY = "incremental_manual_review_v1" as const;
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -111,6 +115,53 @@ function buildProjectStructureContext(tree?: FileNode[]): string | null {
     }
 
     return result || null;
+}
+
+function buildDefaultDiagramGovernance(): DiagramGovernance {
+    return {
+        pendingDiagram: null,
+        pendingSourceRequestId: null,
+        pendingUpdatedAt: null,
+        lastDecision: "none",
+        lastDecisionNote: null,
+        lastDecisionAt: null
+    };
+}
+
+function normalizeDiagramGovernance(value: DiagramGovernance | null | undefined): DiagramGovernance {
+    const fallback = buildDefaultDiagramGovernance();
+    if (!value || typeof value !== "object") return fallback;
+
+    return {
+        pendingDiagram: typeof value.pendingDiagram === "string" ? value.pendingDiagram : null,
+        pendingSourceRequestId: typeof value.pendingSourceRequestId === "string" ? value.pendingSourceRequestId : null,
+        pendingUpdatedAt: typeof value.pendingUpdatedAt === "number" ? value.pendingUpdatedAt : null,
+        lastDecision:
+            value.lastDecision === "applied" || value.lastDecision === "rejected" || value.lastDecision === "none"
+                ? value.lastDecision
+                : "none",
+        lastDecisionNote: typeof value.lastDecisionNote === "string" ? value.lastDecisionNote : null,
+        lastDecisionAt: typeof value.lastDecisionAt === "number" ? value.lastDecisionAt : null
+    };
+}
+
+function normalizeMermaidForComparison(raw: string | null | undefined): string {
+    if (!raw) return "";
+
+    return raw
+        .replace(/```mermaid\s*/gi, "")
+        .replace(/```/g, "")
+        .replace(/\r/g, "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/[ \t]+/g, " "))
+        .join("\n")
+        .trim();
+}
+
+function hasMeaningfulDiagramChange(current: string, candidate: string): boolean {
+    return normalizeMermaidForComparison(current) !== normalizeMermaidForComparison(candidate);
 }
 
 function yieldToBrowser(): Promise<void> {
@@ -258,6 +309,48 @@ function clipText(text: string, maxChars: number) {
     return text.slice(0, maxChars) + "\n... [truncated]";
 }
 
+function buildDesignMemory(
+    baselineDiagram: string,
+    evaluation: EvaluationResponse | null,
+    diagramGovernance: DiagramGovernance,
+    maxChars: number = EVALUATE_DESIGN_MEMORY_CHARS
+) {
+    const clarified = evaluation?.analysis.clarified || [];
+    const missing = evaluation?.analysis.missing || [];
+    const lastDecisionAt = diagramGovernance.lastDecisionAt
+        ? new Date(diagramGovernance.lastDecisionAt).toISOString()
+        : null;
+
+    const sections = [
+        "# Stable Baseline Architecture",
+        "Treat this as source of truth unless user explicitly requests structural changes.",
+        "```mermaid",
+        baselineDiagram || "graph TD\nStart[No baseline architecture yet]",
+        "```",
+        "",
+        "# Confirmed Requirements",
+        clarified.length > 0
+            ? clarified.slice(0, 30).map((item) => `- ${clipText(item, 300)}`).join("\n")
+            : "- None",
+        "",
+        "# Outstanding Ambiguities",
+        missing.length > 0
+            ? missing.slice(0, 20).map((item) => `- ${clipText(item, 300)}`).join("\n")
+            : "- None",
+        "",
+        "# Diagram Governance",
+        `- Policy: ${DIAGRAM_POLICY}`,
+        `- Last Decision: ${diagramGovernance.lastDecision || "none"}`,
+        `- Last Decision Time: ${lastDecisionAt || "N/A"}`,
+        `- Last Decision Note: ${clipText(diagramGovernance.lastDecisionNote || "N/A", 500)}`,
+        diagramGovernance.pendingDiagram
+            ? "- Pending Diagram: Exists (awaiting manual review)"
+            : "- Pending Diagram: None"
+    ];
+
+    return clipText(sections.join("\n").trim(), maxChars);
+}
+
 function summarizeHtmlErrorBody(html: string) {
     const source = (html || "").trim();
     if (!source) return "";
@@ -381,7 +474,9 @@ function buildEvaluateRequestBody(
     messages: Message[],
     structureContext: string | null,
     generationReady: boolean,
-    compactMode: boolean
+    compactMode: boolean,
+    designMemory: string | null,
+    diagramPolicy: string
 ) {
     const compactOptions: EvaluateMessageBuildOptions = compactMode
         ? {
@@ -398,11 +493,19 @@ function buildEvaluateRequestBody(
     const context = compactMode && structureContext
         ? clipText(structureContext, EVALUATE_COMPACT_CONTEXT_CHARS)
         : structureContext;
+    const designMemoryText = designMemory
+        ? clipText(
+            designMemory,
+            compactMode ? EVALUATE_COMPACT_DESIGN_MEMORY_CHARS : EVALUATE_DESIGN_MEMORY_CHARS
+        )
+        : null;
 
     return JSON.stringify({
         messages: evaluateMessages,
         context,
-        generationReady
+        generationReady,
+        designMemory: designMemoryText,
+        diagramPolicy
     });
 }
 
@@ -432,6 +535,7 @@ function buildPricingProjectSnapshot(
     evaluation: EvaluationResponse | null,
     generation: GenerationResponse | null,
     currentDiagram: string,
+    diagramGovernance: DiagramGovernance,
     tasks: Task[]
 ): Project | null {
     if (!project || !currentVersion) return null;
@@ -462,6 +566,7 @@ function buildPricingProjectSnapshot(
             evaluation,
             generation: compactGeneration,
             currentDiagram,
+            diagramGovernance,
             tasks,
             paymentStatus: currentVersion.data.paymentStatus
         }
@@ -527,6 +632,9 @@ function WizardContent() {
     const [currentDiagram, setCurrentDiagram] = useState(
         cachedSnapshot?.data.currentDiagram || "graph TD\nStart[Waiting for input...]"
     );
+    const [diagramGovernance, setDiagramGovernance] = useState<DiagramGovernance>(
+        normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
+    );
 
     const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
@@ -538,6 +646,11 @@ function WizardContent() {
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
+    const pendingDiagram = diagramGovernance.pendingDiagram;
+    const hasPendingDiagram = Boolean(pendingDiagram);
+    const pendingUpdatedLabel = diagramGovernance.pendingUpdatedAt
+        ? new Date(diagramGovernance.pendingUpdatedAt).toLocaleString()
+        : null;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -607,6 +720,7 @@ function WizardContent() {
             setEvaluation(data.evaluation);
             setGeneration(data.generation);
             setCurrentDiagram(data.currentDiagram);
+            setDiagramGovernance(normalizeDiagramGovernance(data.diagramGovernance));
             setTasks(data.tasks);
 
             if (data.generation) setActiveTab("files");
@@ -722,6 +836,7 @@ function WizardContent() {
                             evaluation,
                             generation,
                             currentDiagram,
+                            diagramGovernance,
                             tasks
                         )
                     }),
@@ -773,6 +888,7 @@ function WizardContent() {
         evaluation,
         generation,
         currentDiagram,
+        diagramGovernance,
         tasks
     ]);
 
@@ -852,6 +968,7 @@ function WizardContent() {
                 evaluation,
                 generation,
                 currentDiagram,
+                diagramGovernance,
                 tasks,
                 paymentStatus: currentVersion.data.paymentStatus
             }
@@ -892,6 +1009,7 @@ function WizardContent() {
         evaluation,
         generation,
         currentDiagram,
+        diagramGovernance,
         tasks,
         project,
         currentVersion,
@@ -1005,6 +1123,38 @@ function WizardContent() {
         if (message) updateAssistantPlaceholder(message);
     };
 
+    const applyPendingDiagram = () => {
+        const pendingDiagram = diagramGovernance.pendingDiagram;
+        if (!pendingDiagram) return;
+
+        setHasUserEdited(true);
+        setCurrentDiagram(pendingDiagram);
+        setDiagramGovernance((prev) => ({
+            ...prev,
+            pendingDiagram: null,
+            pendingSourceRequestId: null,
+            pendingUpdatedAt: null,
+            lastDecision: "applied",
+            lastDecisionNote: "User applied pending diagram update.",
+            lastDecisionAt: Date.now()
+        }));
+    };
+
+    const keepCurrentDiagram = () => {
+        if (!diagramGovernance.pendingDiagram) return;
+
+        setHasUserEdited(true);
+        setDiagramGovernance((prev) => ({
+            ...prev,
+            pendingDiagram: null,
+            pendingSourceRequestId: null,
+            pendingUpdatedAt: null,
+            lastDecision: "rejected",
+            lastDecisionNote: "User rejected pending update and kept current baseline architecture.",
+            lastDecisionAt: Date.now()
+        }));
+    };
+
     const handleSend = async (overrideInput?: string) => {
         const textToSend = overrideInput || input;
 
@@ -1045,6 +1195,12 @@ function WizardContent() {
         try {
             await yieldToBrowser();
             const structureContext = buildProjectStructureContext(generation?.projectTree);
+            const designMemory = buildDesignMemory(
+                currentDiagram,
+                evaluation,
+                diagramGovernance,
+                EVALUATE_DESIGN_MEMORY_CHARS
+            );
             const controller = new AbortController();
             evaluateAbortRef.current = controller;
 
@@ -1052,7 +1208,9 @@ function WizardContent() {
                 newMessages,
                 structureContext,
                 Boolean(generation),
-                false
+                false,
+                designMemory,
+                DIAGRAM_POLICY
             );
 
             if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
@@ -1077,7 +1235,9 @@ function WizardContent() {
                     newMessages,
                     structureContext,
                     Boolean(generation),
-                    true
+                    true,
+                    designMemory,
+                    DIAGRAM_POLICY
                 );
 
                 if (compactRequestBody.length <= EVALUATE_MAX_REQUEST_CHARS) {
@@ -1126,9 +1286,13 @@ function WizardContent() {
                 throw new Error("Failed to evaluate: empty response body");
             }
 
+            const serverRequestId = res.headers.get("x-evaluate-request-id") || "";
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
+            const baselineDiagramForRequest = currentDiagram;
+            const baselineDiagramNormalized = normalizeMermaidForComparison(baselineDiagramForRequest);
+            let latestPendingDiagramNormalized = normalizeMermaidForComparison(diagramGovernance.pendingDiagram || "");
             const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
@@ -1160,9 +1324,26 @@ function WizardContent() {
                         code = code.replace(/```mermaid\n?|```\n?/g, "").replace(/```$/g, "").trim();
                     }
 
-                    if (code && code !== currentEval.current_diagram) {
-                        currentEval.current_diagram = code;
-                        setCurrentDiagram(code);
+                    const normalizedCandidate = normalizeMermaidForComparison(code);
+                    if (
+                        normalizedCandidate &&
+                        normalizedCandidate !== baselineDiagramNormalized &&
+                        hasMeaningfulDiagramChange(baselineDiagramForRequest, code) &&
+                        normalizedCandidate !== latestPendingDiagramNormalized
+                    ) {
+                        latestPendingDiagramNormalized = normalizedCandidate;
+                        setDiagramGovernance((prev) => {
+                            const prevNormalized = normalizeMermaidForComparison(prev.pendingDiagram || "");
+                            if (prevNormalized === normalizedCandidate) {
+                                return prev;
+                            }
+                            return {
+                                ...prev,
+                                pendingDiagram: code,
+                                pendingSourceRequestId: serverRequestId || String(requestId),
+                                pendingUpdatedAt: Date.now()
+                            };
+                        });
                     }
                 }
 
@@ -1377,6 +1558,7 @@ function WizardContent() {
                         evaluation,
                         generation,
                         currentDiagram,
+                        diagramGovernance,
                         tasks
                     )
                 })
@@ -1668,12 +1850,59 @@ function WizardContent() {
                     {activeTab === 'architecture' && (
                         <div className="absolute inset-0 p-4 flex flex-col">
                             <div className="mb-2 flex justify-between items-center text-xs text-gray-500 uppercase font-semibold tracking-wider">
-                                <span>Live System Diagram</span>
-                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Syncing</span>
+                                <span>{hasPendingDiagram ? "Architecture Review Required" : "Live System Diagram"}</span>
+                                <span className="flex items-center gap-1">
+                                    <span className={`w-2 h-2 rounded-full ${hasPendingDiagram ? "bg-amber-500" : "bg-green-500 animate-pulse"}`} />
+                                    {hasPendingDiagram ? "Pending Update" : "Stable Baseline"}
+                                </span>
                             </div>
-                            <div className="flex-1 border-2 border-dashed border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden relative bg-gray-50/50 dark:bg-black/20">
-                                <ArchitectureViewer code={currentDiagram} />
-                            </div>
+
+                            {hasPendingDiagram ? (
+                                <div className="flex-1 min-h-0 flex flex-col gap-3">
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-0">
+                                        <div className="min-h-0 rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-black/20 p-3 flex flex-col">
+                                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Current Baseline</div>
+                                            <div className="flex-1 min-h-0 border border-gray-100 dark:border-gray-800 rounded-lg overflow-hidden">
+                                                <ArchitectureViewer code={currentDiagram} />
+                                            </div>
+                                        </div>
+                                        <div className="min-h-0 rounded-xl border border-amber-300/70 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10 p-3 flex flex-col">
+                                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">Proposed Update</div>
+                                            <div className="flex-1 min-h-0 border border-amber-200/70 dark:border-amber-800 rounded-lg overflow-hidden">
+                                                <ArchitectureViewer code={pendingDiagram || currentDiagram} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-900/10 px-4 py-3">
+                                        <div className="text-sm text-amber-800 dark:text-amber-200">
+                                            <p className="font-semibold">Review proposed architecture changes before applying.</p>
+                                            <p className="text-xs mt-1 text-amber-700/80 dark:text-amber-300/80">
+                                                {pendingUpdatedLabel ? `Detected at ${pendingUpdatedLabel}.` : "Detected in latest assistant response."}
+                                            </p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={applyPendingDiagram}
+                                                className="px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+                                            >
+                                                Apply Update
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={keepCurrentDiagram}
+                                                className="px-3 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                            >
+                                                Keep Current
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex-1 border-2 border-dashed border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden relative bg-gray-50/50 dark:bg-black/20">
+                                    <ArchitectureViewer code={currentDiagram} />
+                                </div>
+                            )}
                         </div>
                     )}
 

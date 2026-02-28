@@ -10,6 +10,15 @@ export interface NextStep {
     options?: { label: string; value: string }[];
 }
 
+export interface DiagramGovernance {
+    pendingDiagram?: string | null;
+    pendingSourceRequestId?: string | null;
+    pendingUpdatedAt?: number | null;
+    lastDecision?: "none" | "applied" | "rejected";
+    lastDecisionNote?: string | null;
+    lastDecisionAt?: number | null;
+}
+
 export interface EvaluationResponse {
     density_score: number;
     is_ready: boolean;
@@ -61,6 +70,7 @@ export interface ProjectVersionData {
     currentDiagram: string;
     tasks: Task[];
     paymentStatus?: "paid" | "unpaid";
+    diagramGovernance?: DiagramGovernance;
 }
 
 // Represents a specific snapshot/iteration of a project

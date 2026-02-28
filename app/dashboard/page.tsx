@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Plus, Folder, Clock, Trash2, Edit2, X, Copy, Check } from "lucide-react";
-import { Project, ProjectVersion } from "@/types";
+import { DiagramGovernance, Project, ProjectVersion } from "@/types";
 import { useRouter } from "next/navigation";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -22,6 +22,17 @@ function yieldToBrowser(): Promise<void> {
         }
         requestAnimationFrame(() => resolve());
     });
+}
+
+function buildDefaultDiagramGovernance(): DiagramGovernance {
+    return {
+        pendingDiagram: null,
+        pendingSourceRequestId: null,
+        pendingUpdatedAt: null,
+        lastDecision: "none",
+        lastDecisionNote: null,
+        lastDecisionAt: null
+    };
 }
 
 export default function DashboardPage() {
@@ -160,7 +171,8 @@ export default function DashboardPage() {
                     evaluation: null,
                     generation: null,
                     currentDiagram: "graph TD\nStart[Start Here]",
-                    tasks: []
+                    tasks: [],
+                    diagramGovernance: buildDefaultDiagramGovernance()
                 }
             };
 
