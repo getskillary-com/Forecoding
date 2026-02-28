@@ -1,27 +1,76 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Folder, FileCode, Download, ChevronRight, ChevronDown } from "lucide-react";
 import { FileNode } from "@/types";
 
 interface Props {
     content: FileNode[] | string;
-    globalPrompt?: string;
     projectName?: string;
 }
 
-type ExportMode = "blueprint" | "scaffold";
+type PreviewFile = {
+    path: string;
+    content: string;
+};
 
-function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
+function collectFiles(nodes: FileNode[], currentPath: string = ""): PreviewFile[] {
+    const files: PreviewFile[] = [];
+
+    nodes.forEach((node) => {
+        const nodePath = currentPath ? `${currentPath}/${node.name}` : node.name;
+        if (node.type === "folder") {
+            if (node.children?.length) {
+                files.push(...collectFiles(node.children, nodePath));
+            }
+            return;
+        }
+
+        files.push({
+            path: nodePath,
+            content: node.content || ""
+        });
+    });
+
+    return files;
+}
+
+function TreeNode({
+    node,
+    depth = 0,
+    currentPath = "",
+    selectedPath,
+    onSelectFile
+}: {
+    node: FileNode;
+    depth?: number;
+    currentPath?: string;
+    selectedPath: string | null;
+    onSelectFile: (path: string) => void;
+}) {
     const [isOpen, setIsOpen] = useState(true);
     const isFolder = node.type === "folder";
+    const nodePath = currentPath ? `${currentPath}/${node.name}` : node.name;
+    const isSelected = !isFolder && selectedPath === nodePath;
+
+    const handleClick = () => {
+        if (isFolder) {
+            setIsOpen((prev) => !prev);
+            return;
+        }
+        onSelectFile(nodePath);
+    };
 
     return (
         <div className="select-none">
             <div
-                className="flex items-center gap-2 py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors cursor-pointer text-sm"
+                className={`flex items-center gap-2 py-1 px-2 rounded transition-colors cursor-pointer text-sm ${
+                    isSelected
+                        ? "bg-blue-100 dark:bg-blue-900/30"
+                        : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                }`}
                 style={{ marginLeft: `${depth * 16}px` }}
-                onClick={() => isFolder && setIsOpen(!isOpen)}
+                onClick={handleClick}
             >
                 {isFolder ? (
                     isOpen ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />
@@ -36,13 +85,20 @@ function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
                 )}
 
                 <span className="font-mono text-gray-700 dark:text-gray-300">{node.name}</span>
-                {!isFolder && <span className="text-xs text-gray-400 ml-auto italic">Prompt Included</span>}
+                {!isFolder && <span className="text-xs text-gray-400 ml-auto italic">Spec Included</span>}
             </div>
 
             {isFolder && isOpen && node.children && (
                 <div>
                     {node.children.map((child, i) => (
-                        <TreeNode key={i} node={child} depth={depth + 1} />
+                        <TreeNode
+                            key={`${nodePath}-${child.name}-${i}`}
+                            node={child}
+                            depth={depth + 1}
+                            currentPath={nodePath}
+                            selectedPath={selectedPath}
+                            onSelectFile={onSelectFile}
+                        />
                     ))}
                 </div>
             )}
@@ -50,17 +106,38 @@ function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
     );
 }
 
-export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
+export function FileTreeDisplay({ content, projectName }: Props) {
     const [isZipping, setIsZipping] = useState(false);
-    const [exportMode, setExportMode] = useState<ExportMode>("blueprint");
+    const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
     const AUTO_GENERATED_FILES = new Set(["package.json", "tsconfig.json", "next.config.ts"]);
     const resolvedProjectName = projectName?.trim();
-    const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-blueprint")
+    const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-scaffold")
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
         .replace(/\s+/g, " ")
         .replace(/[. ]+$/g, "");
-    const zipFileName = `${zipFileNameBase || "founder-blueprint"}-${exportMode}.zip`;
+    const zipFileName = `${zipFileNameBase || "founder-scaffold"}-scaffold.zip`;
     const SCAFFOLD_HINT_MAX_CHARS = 1200;
+    const filesForPreview = useMemo(
+        () => (typeof content === "string" ? [] : collectFiles(content)),
+        [content]
+    );
+    const selectedPreviewFile = useMemo(
+        () => filesForPreview.find((file) => file.path === selectedFilePath) || null,
+        [filesForPreview, selectedFilePath]
+    );
+
+    useEffect(() => {
+        if (filesForPreview.length === 0) {
+            setSelectedFilePath(null);
+            return;
+        }
+
+        setSelectedFilePath((prev) => (
+            prev && filesForPreview.some((file) => file.path === prev)
+                ? prev
+                : filesForPreview[0].path
+        ));
+    }, [filesForPreview]);
 
     const toScaffoldPlaceholder = (promptPath: string, fileContent?: string) => {
         const hint = (fileContent || "").slice(0, SCAFFOLD_HINT_MAX_CHARS);
@@ -68,7 +145,6 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
     };
 
     const shouldWriteRealContent = (path: string, fileName: string) => {
-        if (exportMode === "blueprint") return true;
         if (AUTO_GENERATED_FILES.has(fileName)) return true;
         if (path === ".env.example") return true;
         if (path.startsWith("docs/")) return true;
@@ -81,14 +157,8 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
         setIsZipping(true);
 
         try {
-        const { default: JSZip } = await import("jszip");
-        const zip = new JSZip();
-            const reservedPaths = new Set<string>();
-
-            if (globalPrompt) {
-                zip.file(".cursorrules", globalPrompt);
-                reservedPaths.add(".cursorrules");
-            }
+            const { default: JSZip } = await import("jszip");
+            const zip = new JSZip();
 
             const addToZip = (nodes: FileNode[], currentPath: string) => {
                 const folderFiles: FileNode[] = [];
@@ -107,12 +177,6 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
 
                     folderFiles.forEach((file) => {
                         const relativePath = `${currentPath}${file.name}`;
-
-                        // Preserve globally generated rules file and avoid overwriting with scaffold placeholders.
-                        if (reservedPaths.has(relativePath)) {
-                            return;
-                        }
-
                         const includeRawContent = shouldWriteRealContent(relativePath, file.name);
                         const promptPath = `${currentPath}_AI_PROMPT.md`;
 
@@ -175,48 +239,47 @@ export function FileTreeDisplay({ content, globalPrompt, projectName }: Props) {
             <div className="flex justify-between items-center mb-4 px-2">
                 <h3 className="text-lg font-semibold flex items-center gap-2">
                     <Folder className="w-5 h-5 text-purple-500" />
-                    Project Structure
+                    Scaffold Structure
                 </h3>
                 <div className="flex items-center gap-2">
-                    <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-                        <button
-                            type="button"
-                            onClick={() => setExportMode("blueprint")}
-                            className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                                exportMode === "blueprint"
-                                    ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                                    : "bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
-                            }`}
-                        >
-                            Blueprint
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => setExportMode("scaffold")}
-                            className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                                exportMode === "scaffold"
-                                    ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                                    : "bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
-                            }`}
-                        >
-                            Scaffold
-                        </button>
-                    </div>
                     <button
                         onClick={handleDownload}
                         disabled={isZipping}
                         className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                     >
                         <Download className="w-4 h-4" />
-                        {isZipping ? "Zipping..." : `Download ${exportMode === "blueprint" ? "Blueprint" : "Scaffold"} ZIP`}
+                        {isZipping ? "Zipping..." : "Download Scaffold ZIP"}
                     </button>
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-inner">
-                {content.map((node, i) => (
-                    <TreeNode key={i} node={node} />
-                ))}
+            <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="min-h-0 overflow-y-auto p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-inner">
+                    {content.map((node, i) => (
+                        <TreeNode
+                            key={`${node.name}-${i}`}
+                            node={node}
+                            selectedPath={selectedFilePath}
+                            onSelectFile={(path) => setSelectedFilePath(path)}
+                        />
+                    ))}
+                </div>
+                <div className="min-h-0 flex flex-col bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-inner overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 text-xs font-mono text-gray-600 dark:text-gray-300 truncate">
+                        {selectedPreviewFile?.path || "No file selected"}
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-auto p-4">
+                        {selectedPreviewFile ? (
+                            <pre className="text-xs font-mono whitespace-pre-wrap text-gray-700 dark:text-gray-200">
+                                {selectedPreviewFile.content || "// Empty specification"}
+                            </pre>
+                        ) : (
+                            <div className="text-sm text-gray-500 dark:text-gray-400">
+                                No previewable file in this scaffold.
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
         </div>
     );

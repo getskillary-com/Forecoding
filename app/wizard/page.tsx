@@ -235,25 +235,6 @@ function parseOptionsBlock(raw: string) {
         });
 }
 
-function sanitizeStartupPromptText(prompt: string) {
-    if (!prompt) return "";
-
-    const normalized = prompt.replace(/\r\n/g, "\n").trim();
-    if (!normalized) return "";
-
-    const lines = normalized.split("\n");
-    if (lines.length > 0) {
-        lines[0] = lines[0]
-            .replace(/^\s*(?:#{1,6}\s*)?(hello|hi|hey)\s+cursor!?[,\s:!-]*/i, "")
-            .trim();
-        if (!lines[0]) {
-            lines.shift();
-        }
-    }
-
-    return lines.join("\n").trim();
-}
-
 type CheckoutQuote = {
     unitAmountCents: number;
     currency: string;
@@ -550,13 +531,8 @@ function WizardContent() {
     const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
-    const [isCopied, setIsCopied] = useState(false);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
-    const startupPromptText = sanitizeStartupPromptText(
-        generation?.startupPrompt || generation?.cursorPrompt || ""
-    );
-    const startupPromptTitle = "Startup Prompt";
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
     const visibleMessages = messages.slice(baseMessageIndex);
     const hiddenMessageCount = baseMessageIndex;
@@ -1310,7 +1286,7 @@ function WizardContent() {
     };
 
     // --- Generation Handler ---
-    const generateBlueprint = async () => {
+    const generateScaffold = async () => {
         if (generateInFlightRef.current) return;
         generateInFlightRef.current = true;
         setIsGenerating(true);
@@ -1354,13 +1330,13 @@ function WizardContent() {
 
             // Mock Task Generation
             setTasks([
-                { id: '1', title: 'Setup Project Structure', status: 'pending', description: 'Initialize codebase.', source: 'blueprint' },
-                { id: '2', title: 'Implement Core Features', status: 'pending', description: 'Based on Blueprint.', source: 'blueprint' },
+                { id: '1', title: 'Setup Project Structure', status: 'pending', description: 'Initialize scaffold.', source: 'scaffold' },
+                { id: '2', title: 'Implement Core Features', status: 'pending', description: 'Based on Scaffold.', source: 'scaffold' },
             ]);
 
         } catch (error) {
             console.error(error);
-            setGenerateError(error instanceof Error ? error.message : "Blueprint generation failed.");
+            setGenerateError(error instanceof Error ? error.message : "Scaffold generation failed.");
         } finally {
             setIsGenerating(false);
             generateInFlightRef.current = false;
@@ -1434,7 +1410,7 @@ function WizardContent() {
             await startCheckout();
             return;
         }
-        await generateBlueprint();
+        await generateScaffold();
     };
 
     if (!project || !currentVersion) return <WizardSkeleton />;
@@ -1496,9 +1472,9 @@ function WizardContent() {
                                             <>
                                                 <div className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-xl font-bold cursor-default">
                                                     <Check className="w-5 h-5" />
-                                                    Blueprint Generated
+                                                    Scaffold Generated
                                                 </div>
-                                                <p className="text-xs text-center text-green-600 dark:text-green-400 font-medium">Blueprint generated successfully! Check the Codebase tab.</p>
+                                                <p className="text-xs text-center text-green-600 dark:text-green-400 font-medium">Scaffold generated successfully! Check the Scaffold tab.</p>
                                             </>
                                         ) : (
                                             <>
@@ -1517,7 +1493,7 @@ function WizardContent() {
                                                     : isGenerating
                                                         ? "Architecting Solution..."
                                                         : !requiresPayment
-                                                            ? "Generate Blueprint"
+                                                            ? "Generate Scaffold"
                                                             : checkoutQuote?.displayAmount
                                                                 ? `Proceed to Payment (${checkoutQuote.displayAmount})`
                                                                 : isQuoteLoading
@@ -1533,7 +1509,7 @@ function WizardContent() {
                                                     : isAdmin
                                                     ? "Admin mode: payment bypass enabled"
                                                     : hasPaid
-                                                        ? "Ready to build or update blueprint"
+                                                        ? "Ready to build or update scaffold"
                                                     : checkoutQuote
                                                         ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
                                                         : isQuoteLoading
@@ -1673,7 +1649,7 @@ function WizardContent() {
                         active={activeTab === 'files'}
                         onClick={() => setActiveTab('files')}
                         icon={<FileCode className="w-4 h-4" />}
-                        label="Codebase"
+                        label="Scaffold"
                         disabled={!generation}
                     />
                     <TabButton
@@ -1745,58 +1721,10 @@ function WizardContent() {
                         </div>
                     )}
 
-                    {/* Codebase Tab */}
+                    {/* Scaffold Tab */}
                     {activeTab === 'files' && generation && (
-                        <div className="absolute inset-0 overflow-hidden">
-                            <div className="grid grid-cols-2 h-full divide-x divide-gray-200 dark:divide-gray-800">
-                                {/* Left: AI Prompt */}
-                                <div className="flex flex-col h-full bg-blue-50/30 dark:bg-blue-900/5 min-h-0">
-                                    <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center bg-blue-50 dark:bg-blue-900/20 shrink-0">
-                                        <h4 className="font-bold text-sm text-blue-800 dark:text-blue-200 flex items-center gap-2">
-                                            <Sparkles className="w-4 h-4" /> {startupPromptTitle}
-                                        </h4>
-                                        <div className="flex gap-2">
-                                            <button
-                                                onClick={() => {
-                                                    navigator.clipboard.writeText(startupPromptText);
-                                                    setIsCopied(true);
-                                                    setTimeout(() => setIsCopied(false), 2000);
-                                                }}
-                                                className="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1.5 rounded-lg transition-colors font-medium border border-blue-200 dark:border-blue-800 flex items-center gap-1"
-                                            >
-                                                {isCopied ? (
-                                                    <>
-                                                        <Check className="w-3 h-3" />
-                                                        Copied!
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <FileCode className="w-3 h-3" />
-                                                        Copy Prompt
-                                                    </>
-                                                )}
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div className="flex-1 p-4 overflow-y-auto min-h-0">
-                                        <pre className="text-xs font-mono bg-white dark:bg-gray-900 p-4 rounded-xl border border-blue-100 dark:border-blue-900/30 whitespace-pre-wrap text-gray-600 dark:text-gray-300 h-full overflow-y-auto">
-                                            {startupPromptText}
-                                        </pre>
-                                    </div>
-                                </div>
-
-                                {/* Right: File Tree */}
-                                <div className="flex flex-col h-full bg-white dark:bg-gray-900/50">
-                                    <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center shrink-0">
-                                        <h4 className="font-bold text-sm text-gray-700 dark:text-gray-200 flex items-center gap-2">
-                                            <FileCode className="w-4 h-4" /> Project Blueprint
-                                        </h4>
-                                    </div>
-                                    <div className="flex-1 p-4 overflow-y-auto min-h-0">
-                                        <FileTreeDisplay content={generation.projectTree} globalPrompt={generation.cursorPrompt} projectName={project?.name} />
-                                    </div>
-                                </div>
-                            </div>
+                        <div className="absolute inset-0 p-4 overflow-hidden">
+                            <FileTreeDisplay content={generation.projectTree} projectName={project?.name} />
                         </div>
                     )}
 

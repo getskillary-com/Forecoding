@@ -10,8 +10,7 @@ import {
     BrainCircuit,
     ListChecks,
     FileCode,
-    Layers,
-    Download
+    Layers
 } from "lucide-react";
 import type { Project, ProjectVersion } from "@/types";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -38,7 +37,7 @@ type DemoWorkspacePayload = {
     project?: Project;
 };
 
-type DemoTab = "architecture" | "prd" | "tasks" | "files" | "stack" | "prompt";
+type DemoTab = "architecture" | "prd" | "tasks" | "files" | "stack";
 
 function getLatestVersion(project: Project | null): ProjectVersion | null {
     if (!project?.versions?.length) return null;
@@ -50,25 +49,6 @@ function formatExportTime(value: string | undefined) {
     const time = new Date(value);
     if (Number.isNaN(time.getTime())) return value;
     return time.toLocaleString();
-}
-
-function sanitizeStartupPromptText(prompt: string) {
-    if (!prompt) return "";
-
-    const normalized = prompt.replace(/\r\n/g, "\n").trim();
-    if (!normalized) return "";
-
-    const lines = normalized.split("\n");
-    if (lines.length > 0) {
-        lines[0] = lines[0]
-            .replace(/^\s*(?:#{1,6}\s*)?(hello|hi|hey)\s+cursor!?[,\s:!-]*/i, "")
-            .trim();
-        if (!lines[0]) {
-            lines.shift();
-        }
-    }
-
-    return lines.join("\n").trim();
 }
 
 function DemoTabButton({
@@ -186,9 +166,6 @@ export default function DemoPage() {
     const messages = projectData.messages || [];
     const tasks = projectData.tasks || [];
     const architectureCode = projectData.currentDiagram || "graph TD\nStart[No Architecture]";
-    const startupPrompt = sanitizeStartupPromptText(
-        generation?.startupPrompt || generation?.cursorPrompt || ""
-    ) || "No startup prompt available.";
 
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-black text-gray-900 dark:text-gray-100 p-4 md:p-6">
@@ -198,7 +175,7 @@ export default function DemoPage() {
                         <BrandLogo />
                         <h1 className="text-2xl md:text-3xl font-bold">Public Demo Workspace (Read-only)</h1>
                         <p className="text-sm text-gray-600 dark:text-gray-300">
-                            This page shows a complete workspace from requirement chat to blueprint output.
+                            This page shows a complete workspace from requirement chat to scaffold output.
                         </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -255,7 +232,7 @@ export default function DemoPage() {
                                 active={activeTab === "files"}
                                 onClick={() => setActiveTab("files")}
                                 icon={<FileCode className="w-4 h-4" />}
-                                label="Files"
+                                label="Scaffold"
                                 disabled={!generation}
                             />
                             <DemoTabButton
@@ -264,12 +241,6 @@ export default function DemoPage() {
                                 icon={<Layers className="w-4 h-4" />}
                                 label="Stack"
                                 disabled={!generation}
-                            />
-                            <DemoTabButton
-                                active={activeTab === "prompt"}
-                                onClick={() => setActiveTab("prompt")}
-                                icon={<Download className="w-4 h-4" />}
-                                label="Startup Prompt"
                             />
                         </div>
 
@@ -353,7 +324,6 @@ export default function DemoPage() {
                                     {generation?.projectTree?.length ? (
                                         <FileTreeDisplay
                                             content={generation.projectTree}
-                                            globalPrompt={generation.cursorPrompt}
                                             projectName={project.name}
                                         />
                                     ) : (
@@ -372,14 +342,6 @@ export default function DemoPage() {
                                 </div>
                             )}
 
-                            {activeTab === "prompt" && (
-                                <div className="h-full p-5 overflow-y-auto">
-                                    <h3 className="font-semibold mb-3">Startup Prompt</h3>
-                                    <pre className="text-xs whitespace-pre-wrap rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-black/30">
-                                        {startupPrompt}
-                                    </pre>
-                                </div>
-                            )}
                         </div>
                     </section>
                 </div>

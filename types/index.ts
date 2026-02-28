@@ -28,8 +28,6 @@ export interface FileNode {
 export interface GenerationResponse {
     projectTree: FileNode[]; // Structured tree
     toolStack: string; // Markdown table
-    cursorPrompt: string; // Global prompt
-    startupPrompt?: string;
 }
 
 export interface Attachment {
@@ -52,7 +50,7 @@ export interface Task {
     title: string;
     status: 'pending' | 'in-progress' | 'done';
     description?: string;
-    source?: 'blueprint';
+    source?: 'scaffold' | 'blueprint';
 }
 
 // Represents the "Content" of a specific version

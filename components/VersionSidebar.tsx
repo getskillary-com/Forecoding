@@ -68,7 +68,7 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                     children
                 ) : (
                     <div className="p-4 text-xs text-gray-500 dark:text-gray-400">
-                        Versioning is disabled. This workspace uses a single live blueprint.
+                        Versioning is disabled. This workspace uses a single live scaffold.
                     </div>
                 )}
             </div>

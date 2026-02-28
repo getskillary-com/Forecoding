@@ -536,7 +536,7 @@ export async function* streamEvaluateInput(
         : "";
 
     const coachModeBlock = options?.generationReady
-        ? `\n\n# Runtime Mode\nBlueprint already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`
+        ? `\n\n# Runtime Mode\nScaffold already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`
         : "";
 
     const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
@@ -620,7 +620,7 @@ export async function evaluateInput() {
 
 
 /**
- * 3. Generate Project Resources (The Blueprint)
+ * 3. Generate Project Resources (The Scaffold)
  * Used when the user clicks "Generate".
  * This expects a JSON response.
  */
@@ -654,13 +654,13 @@ export async function generateProjectResources(
         }
     }
 
-    prompt += `\n\nBased on the above, generate the Project Blueprint JSON.`;
+    prompt += `\n\nBased on the above, generate the Project Scaffold JSON.`;
 
     try {
-        console.log("[AI] Generating Blueprint...");
+        console.log("[AI] Generating Scaffold...");
 
         const text = await generateModelText(prompt, true);
-        console.log("[AI] Blueprint Raw Response:", text.substring(0, 200) + "...");
+        console.log("[AI] Scaffold Raw Response:", text.substring(0, 200) + "...");
 
         let data;
         try {
@@ -680,50 +680,9 @@ export async function generateProjectResources(
         }
 
         data = normalizeGenerationData(data);
-        const generatedStartupPrompt = sanitizeStartupPromptText(
-            typeof data.startupPrompt === "string" ? data.startupPrompt : ""
-        );
 
         // --- Post-Processing (Consistency Check) ---
         data.toolStack = ensureDefaultToolStack(data.toolStack);
-        let cursorRulesContent = data.cursorPrompt || "";
-
-        // Helper to format the tree into a readable text list
-        const formatTree = (nodes: any[], depth = 0): string => {
-            let result = "";
-            if (!nodes) return "";
-            for (const node of nodes) {
-                const indent = "  ".repeat(depth);
-                result += `${indent}- ${node.name}`;
-                if (node.type === 'file' && node.content) {
-                    result += ` (Contains specs)`;
-                }
-                result += "\n";
-                if (node.children) {
-                    result += formatTree(node.children, depth + 1);
-                }
-            }
-            return result;
-        };
-
-        const treeString = formatTree(data.projectTree);
-
-        // Prepend quality rules to guide downstream generation
-        const qualityRules = buildGlobalQualityRules(data.toolStack);
-        cursorRulesContent = `${qualityRules}\n\n${cursorRulesContent}`.trim();
-
-        // Append structured context to the .cursorrules content
-        cursorRulesContent += "\n\n# Project Context (Auto-Generated)\n";
-        cursorRulesContent += "## 1. Project Structure\n" + treeString;
-        cursorRulesContent += "\n## 2. Tech Stack\n" + (data.toolStack || "Not specified");
-
-        if (diagram) {
-            cursorRulesContent += "\n\n## 3. System Architecture\n```mermaid\n" + diagram + "\n```";
-        }
-
-
-        // Overwrite the prompt with the enhanced version
-        data.cursorPrompt = cursorRulesContent;
 
         // Ensure executable baseline config files exist
         data.projectTree = ensureCoreConfigFiles(
@@ -734,12 +693,10 @@ export async function generateProjectResources(
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
-        data.startupPrompt = generatedStartupPrompt || sanitizeStartupPromptText(data.cursorPrompt);
-
         return data;
 
     } catch (error) {
-        console.error("[AI] Blueprint Generation Error:", error);
+        console.error("[AI] Scaffold Generation Error:", error);
         throw error;
     }
 }
@@ -818,7 +775,7 @@ function buildJsonRepairPrompt(rawResponse: string) {
         "No markdown, no code fences, no explanation.",
         "Keep keys and values from source whenever possible.",
         "If source is unusable, return a minimal valid object with this schema:",
-        '{ "projectTree": [], "toolStack": "", "cursorPrompt": "", "startupPrompt": "" }',
+        '{ "projectTree": [], "toolStack": "", "isFinal": true }',
         "",
         "SOURCE:",
         clipped || "[EMPTY]"
@@ -830,29 +787,8 @@ function normalizeGenerationData(input: any) {
 
     if (!Array.isArray(safe.projectTree)) safe.projectTree = [];
     if (typeof safe.toolStack !== "string") safe.toolStack = "";
-    if (typeof safe.cursorPrompt !== "string") safe.cursorPrompt = "";
-    if (typeof safe.startupPrompt !== "string") safe.startupPrompt = "";
 
     return safe;
-}
-
-function sanitizeStartupPromptText(prompt: string) {
-    if (!prompt) return "";
-
-    const normalized = prompt.replace(/\r\n/g, "\n").trim();
-    if (!normalized) return "";
-
-    const lines = normalized.split("\n");
-    if (lines.length > 0) {
-        lines[0] = lines[0]
-            .replace(/^\s*(?:#{1,6}\s*)?(hello|hi|hey)\s+cursor!?[,\s:!-]*/i, "")
-            .trim();
-        if (!lines[0]) {
-            lines.shift();
-        }
-    }
-
-    return lines.join("\n").trim();
 }
 
 function extractFirstJsonObject(text: string) {
@@ -1529,24 +1465,4 @@ function buildGoodBadSection(filePath: string) {
     return lines.join("\n");
 }
 
-function buildGlobalQualityRules(toolStack: string) {
-    const stack = (toolStack || "").toLowerCase();
-    const usesZod = /\bzod\b/.test(stack);
-    const usesPrisma = /prisma/.test(stack);
-    const usesNextAuth = /nextauth|next-auth/.test(stack);
-
-    const lines: string[] = [];
-    lines.push("# Global Quality Rules");
-    lines.push("- Prefer strict typing; avoid `any`.");
-    lines.push("- Validate user input; never trust raw `req.json()`.");
-    lines.push("- Handle loading/error/empty states in UI.");
-    lines.push("- Keep side effects out of render; use hooks.");
-    lines.push("- Do not log secrets or tokens.");
-
-    if (usesZod) lines.push("- Use Zod for request and form validation.");
-    if (usesPrisma) lines.push("- Use a single Prisma client instance; avoid re-instantiation.");
-    if (usesNextAuth) lines.push("- Use NextAuth session helpers; do not expose session tokens.");
-
-    return lines.join("\n");
-}
 
