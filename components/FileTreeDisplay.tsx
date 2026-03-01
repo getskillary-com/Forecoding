@@ -14,6 +14,24 @@ type PreviewFile = {
     content: string;
 };
 
+function countChineseChars(text: string) {
+    return (text.match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function countLatinChars(text: string) {
+    return (text.match(/[A-Za-z]/g) || []).length;
+}
+
+function detectScaffoldLanguage(text: string): "zh" | "en" {
+    const source = text.trim();
+    if (!source) return "en";
+    const chinese = countChineseChars(source);
+    const latin = countLatinChars(source);
+    if (chinese >= 6) return "zh";
+    if (chinese >= 2 && chinese / Math.max(1, chinese + latin) >= 0.08) return "zh";
+    return "en";
+}
+
 function collectFiles(nodes: FileNode[], currentPath: string = ""): PreviewFile[] {
     const files: PreviewFile[] = [];
 
@@ -113,9 +131,13 @@ export function FileTreeDisplay({ content, projectName }: Props) {
         "package.json",
         "tsconfig.json",
         "next.config.ts",
+        "turbo.json",
         ".env.example",
         "README.md",
-        "IMPLEMENTATION_PLAN.md"
+        "IMPLEMENTATION_PLAN.md",
+        "_AI_PROMPT.md",
+        "ONE_CLICK_PROMPT.md",
+        "GENERATION_MANIFEST.json"
     ]);
     const resolvedProjectName = projectName?.trim();
     const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-scaffold")
@@ -132,6 +154,11 @@ export function FileTreeDisplay({ content, projectName }: Props) {
         () => filesForPreview.find((file) => file.path === selectedFilePath) || null,
         [filesForPreview, selectedFilePath]
     );
+    const scaffoldLanguage = useMemo(() => {
+        const readme = filesForPreview.find((file) => file.path === "README.md");
+        if (!readme?.content) return "en";
+        return detectScaffoldLanguage(readme.content);
+    }, [filesForPreview]);
 
     useEffect(() => {
         if (filesForPreview.length === 0) {
@@ -148,11 +175,15 @@ export function FileTreeDisplay({ content, projectName }: Props) {
 
     const toScaffoldPlaceholder = (promptPath: string, fileContent?: string) => {
         const hint = (fileContent || "").slice(0, SCAFFOLD_HINT_MAX_CHARS);
+        if (scaffoldLanguage === "zh") {
+            return `// GENERATION PENDING\n// 打开 ${promptPath} 并让 AI 生成该文件。\n\n// Content Hint:\n/*\n${hint}...\n*/`;
+        }
         return `// GENERATION PENDING\n// Open ${promptPath} and ask AI to generate this file.\n\n// Content Hint:\n/*\n${hint}...\n*/`;
     };
 
     const shouldWriteRealContent = (path: string, fileName: string) => {
         if (ZIP_REAL_CONTENT_FILES.has(fileName)) return true;
+        if (fileName.endsWith("_AI_PROMPT.md")) return true;
         if (path.startsWith("docs/")) return true;
         if (path.startsWith("config/integrations/") && /\.template\./.test(fileName)) return true;
         return false;
@@ -167,6 +198,17 @@ export function FileTreeDisplay({ content, projectName }: Props) {
             const zip = new JSZip();
             let zipRealFileCount = 0;
             let zipPlaceholderFileCount = 0;
+            const globalPlaceholderTargets = filesForPreview
+                .filter((file) => {
+                    const fileName = file.path.split("/").pop() || file.path;
+                    return !shouldWriteRealContent(file.path, fileName);
+                })
+                .map((file) => ({
+                    path: file.path,
+                    promptPath: file.path.includes("/")
+                        ? `${file.path.slice(0, file.path.lastIndexOf("/"))}/_AI_PROMPT.md`
+                        : "_AI_PROMPT.md"
+                }));
 
             const addToZip = (nodes: FileNode[], currentPath: string) => {
                 const folderFiles: FileNode[] = [];
@@ -178,14 +220,28 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                 });
 
                 if (folderFiles.length > 0) {
-                    let promptContent = "# AI Code Generation Tasks\n\n";
-                    promptContent += `This file contains generation guidance for: \`${currentPath || "root"}\`\n\n`;
-                    promptContent += "**Usage:** Open this file in your editor and ask your coding assistant to implement the files listed below.\n\n";
-                    promptContent += "## Mandatory Execution Order\n";
-                    promptContent += "1. Open and follow `IMPLEMENTATION_PLAN.md` first.\n";
-                    promptContent += "2. Implement by Phase order only (Phase 0 -> Phase 6).\n";
-                    promptContent += "3. Treat this file as index + constraints, not source of execution order.\n\n";
-                    promptContent += "---\n\n";
+                    const hasExplicitPromptFile = folderFiles.some((file) => file.name === "_AI_PROMPT.md");
+                    const promptOutputPath = `${currentPath}_AI_PROMPT.md`;
+                    let promptContent = "";
+                    if (scaffoldLanguage === "zh") {
+                        promptContent += "# AI 代码生成任务\n\n";
+                        promptContent += `本文件包含以下目录的生成说明：\`${currentPath || "root"}\`\n\n`;
+                        promptContent += "**使用方式：** 在 AI IDE 中打开本文件，并按下列约束执行。\n\n";
+                        promptContent += "## 强制执行顺序\n";
+                        promptContent += "1. 先阅读 `ONE_CLICK_PROMPT.md`。\n";
+                        promptContent += "2. 再按 `GENERATION_MANIFEST.json` 的 Phase 顺序执行。\n";
+                        promptContent += "3. 本文件仅作索引与约束，不是执行顺序来源。\n\n";
+                        promptContent += "---\n\n";
+                    } else {
+                        promptContent += "# AI Code Generation Tasks\n\n";
+                        promptContent += `This file contains generation guidance for: \`${currentPath || "root"}\`\n\n`;
+                        promptContent += "**Usage:** Open this file in your editor and ask your coding assistant to implement the files listed below.\n\n";
+                        promptContent += "## Mandatory Execution Order\n";
+                        promptContent += "1. Open and follow `ONE_CLICK_PROMPT.md` first.\n";
+                        promptContent += "2. Then execute `GENERATION_MANIFEST.json` in Phase order only (Phase 0 -> Phase 6).\n";
+                        promptContent += "3. Treat this file as index + constraints, not source of execution order.\n\n";
+                        promptContent += "---\n\n";
+                    }
 
                     folderFiles.forEach((file) => {
                         const relativePath = `${currentPath}${file.name}`;
@@ -193,9 +249,11 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                         const promptPath = `${currentPath}_AI_PROMPT.md`;
 
                         promptContent += `## File: \`${file.name}\`\n`;
-                        promptContent += "**Description & Logic:**\n";
+                        promptContent += scaffoldLanguage === "zh" ? "**说明与逻辑：**\n" : "**Description & Logic:**\n";
                         if (includeRawContent) {
-                            promptContent += "Generated content is included directly in the ZIP.\n\n";
+                            promptContent += scaffoldLanguage === "zh"
+                                ? "该文件为 ZIP 内真实内容。\n\n"
+                                : "Generated content is included directly in the ZIP.\n\n";
                         } else {
                             promptContent += `${file.content || "No specific prompt provided."}\n\n`;
                         }
@@ -213,7 +271,17 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                         }
                     });
 
-                    zip.file(`${currentPath}_AI_PROMPT.md`, promptContent);
+                    if (!hasExplicitPromptFile) {
+                        if (!currentPath && globalPlaceholderTargets.length > 0) {
+                            promptContent += scaffoldLanguage === "zh" ? "## 全量占位任务\n" : "## All Placeholder Tasks\n";
+                            globalPlaceholderTargets.forEach((task) => {
+                                promptContent += `- \`${task.path}\` -> \`${task.promptPath}\`\n`;
+                            });
+                            promptContent += "\n";
+                        }
+                        zip.file(promptOutputPath, promptContent);
+                        zipRealFileCount += 1;
+                    }
                 }
 
                 subFolders.forEach((folder) => {

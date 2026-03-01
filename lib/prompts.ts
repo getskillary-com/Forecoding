@@ -114,7 +114,7 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - **Exports**: What should be exported?
 
 ## 2. Mandatory Docs
-- You MUST include both \`README.md\` and \`IMPLEMENTATION_PLAN.md\` in outputs.
+- You MUST include \`README.md\`, \`IMPLEMENTATION_PLAN.md\`, \`ONE_CLICK_PROMPT.md\`, and \`GENERATION_MANIFEST.json\` in outputs.
 - \`README.md\` is NOT a one-line intro. It must cover:
   - Project overview
   - Target users and business goals
@@ -131,6 +131,9 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - Phase 4 Feature UI & Pages
   - Phase 5 API & Integration
   - Phase 6 Validation & Handoff
+- \`ONE_CLICK_PROMPT.md\` is the human-readable single entrypoint for AI IDE execution.
+- \`GENERATION_MANIFEST.json\` is the machine-readable phase/task graph and must be consistent with \`IMPLEMENTATION_PLAN.md\`.
+- Root \`_AI_PROMPT.md\` must explicitly instruct: read \`ONE_CLICK_PROMPT.md\` first, then execute \`GENERATION_MANIFEST.json\`.
 - Do NOT tell implementers to follow raw directory traversal order.
 
 # Output Format (JSON):

@@ -2,9 +2,22 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { CTO_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
-import type { Message } from "@/types";
+import type {
+    GenerationManifest,
+    GenerationTask,
+    Message,
+    PhasePlan,
+    PreflightIssue,
+    PreflightReport,
+    TemplateKind
+} from "@/types";
 
 type OutputLanguage = "zh" | "en";
+type OneClickMode = "strict_build_v1";
+type IdeProfile = "generic";
+
+const DEFAULT_ONE_CLICK_MODE: OneClickMode = "strict_build_v1";
+const DEFAULT_IDE_PROFILE: IdeProfile = "generic";
 
 function normalizeProvider(value: string | undefined) {
     const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
@@ -643,6 +656,9 @@ export async function evaluateInput() {
 type GenerateProjectResourcesOptions = {
     projectName?: string;
     outputLanguage?: OutputLanguage;
+    oneClickMode?: OneClickMode;
+    ideProfile?: IdeProfile;
+    templateKindHint?: TemplateKind;
 };
 
 export async function generateProjectResources(
@@ -658,6 +674,8 @@ export async function generateProjectResources(
         diagram,
         resolvedProjectName
     );
+    const resolvedOneClickMode = options?.oneClickMode === "strict_build_v1" ? options.oneClickMode : DEFAULT_ONE_CLICK_MODE;
+    const resolvedIdeProfile = options?.ideProfile === "generic" ? options.ideProfile : DEFAULT_IDE_PROFILE;
 
     let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\nFinalized Requirement Consensus:\n${history}\n\nApproved System Architecture (Mermaid):\n${diagram || "Not provided"}`;
 
@@ -706,22 +724,77 @@ export async function generateProjectResources(
 
         // --- Post-Processing (Consistency Check) ---
         data.toolStack = ensureDefaultToolStack(data.toolStack);
-
-        // Ensure executable baseline config files exist
-        data.projectTree = ensureCoreConfigFiles(
+        const templateKind = detectTemplateKind(
+            options?.templateKindHint,
             data.projectTree,
+            data.toolStack,
+            history
+        );
+        const { normalizedTree, fixCount: pathNormalizationFixCount } = normalizeProjectTreePaths(data.projectTree, templateKind);
+
+        // Ensure executable baseline config files + docs + one-click artifacts exist.
+        data.projectTree = ensureCoreConfigFiles(
+            normalizedTree,
             data.toolStack,
             history,
             resolvedProjectName || "generated-project",
-            resolvedOutputLanguage
+            resolvedOutputLanguage,
+            templateKind,
+            resolvedOneClickMode,
+            resolvedIdeProfile
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
+        const manifest = buildGenerationManifest({
+            tree: data.projectTree,
+            outputLanguage: resolvedOutputLanguage,
+            templateKind,
+            oneClickMode: resolvedOneClickMode,
+            ideProfile: resolvedIdeProfile
+        });
+        upsertFileByPath(data.projectTree, "GENERATION_MANIFEST.json", JSON.stringify(manifest, null, 2));
+        upsertFileByPath(
+            data.projectTree,
+            "ONE_CLICK_PROMPT.md",
+            buildOneClickPrompt({
+                outputLanguage: resolvedOutputLanguage,
+                oneClickMode: resolvedOneClickMode
+            })
+        );
+        upsertFileByPath(
+            data.projectTree,
+            "_AI_PROMPT.md",
+            buildRootAiPrompt({
+                outputLanguage: resolvedOutputLanguage,
+                manifest,
+                oneClickMode: resolvedOneClickMode,
+                ideProfile: resolvedIdeProfile
+            })
+        );
+
+        const preflight = runGenerationPreflight({
+            tree: data.projectTree,
+            outputLanguage: resolvedOutputLanguage,
+            toolStack: data.toolStack,
+            manifest,
+            pathNormalizationFixCount
+        });
+
+        if (!preflight.pass) {
+            console.warn(
+                `[AI] Scaffold preflight reported issues: ${preflight.issues.map((issue) => issue.code).join(", ")}`
+            );
+        }
+
         const generatedReadme = getFileContentByPath(data.projectTree, "README.md");
         const generatedImplementationPlan = getFileContentByPath(data.projectTree, "IMPLEMENTATION_PLAN.md");
+        const oneClickPrompt = getFileContentByPath(data.projectTree, "ONE_CLICK_PROMPT.md");
         console.log(
-            `[AI] Scaffold docs language=${resolvedOutputLanguage} readmeChars=${generatedReadme.length} implementationPlanChars=${generatedImplementationPlan.length}`
+            `[AI] Scaffold docs language=${resolvedOutputLanguage} templateKind=${templateKind} oneClickMode=${resolvedOneClickMode} ideProfile=${resolvedIdeProfile} readmeChars=${generatedReadme.length} implementationPlanChars=${generatedImplementationPlan.length} oneClickPromptChars=${oneClickPrompt.length} pathNormalizationFixCount=${pathNormalizationFixCount} planCoveragePct=${preflight.planCoveragePct} manifestTaskCount=${preflight.manifestTaskCount} missingDepsCount=${preflight.missingDepsCount}`
         );
+
+        data.generationManifest = manifest;
+        data.preflightReport = preflight;
 
         return data;
 
@@ -924,72 +997,183 @@ function collectProjectTreeText(projectTree: any[]) {
     return chunks.join("\n");
 }
 
+const ZIP_REAL_CONTENT_PATHS = new Set([
+    "package.json",
+    "tsconfig.json",
+    "next.config.ts",
+    "turbo.json",
+    ".env.example",
+    "README.md",
+    "IMPLEMENTATION_PLAN.md",
+    "_AI_PROMPT.md",
+    "ONE_CLICK_PROMPT.md",
+    "GENERATION_MANIFEST.json"
+]);
+
+function shouldWriteRealContentByPath(path: string) {
+    if (ZIP_REAL_CONTENT_PATHS.has(path)) return true;
+    if (path.endsWith("_AI_PROMPT.md")) return true;
+    if (path.startsWith("docs/")) return true;
+    if (/^config\/integrations\/.+\.template\./.test(path)) return true;
+    return false;
+}
+
+function detectTemplateKind(
+    hint: TemplateKind | undefined,
+    projectTree: any[],
+    toolStack: string,
+    history: string
+): TemplateKind {
+    if (hint === "next_root" || hint === "next_src" || hint === "monorepo_multiapp") return hint;
+
+    const allPaths = collectFilePathsFromTree(Array.isArray(projectTree) ? projectTree : []);
+    const topLevel = new Set(allPaths.map((path) => path.split("/")[0]).filter(Boolean));
+    if (topLevel.has("apps") || topLevel.has("packages")) return "monorepo_multiapp";
+
+    const context = `${toolStack || ""}\n${history || ""}\n${allPaths.join("\n")}`.toLowerCase();
+    if (/monorepo|turborepo|workspace|react native|expo/.test(context)) return "monorepo_multiapp";
+    if (topLevel.has("src") || /src\/app|src\/components|src\/lib/.test(context)) return "next_src";
+    return "next_root";
+}
+
+function normalizeGeneratedPath(rawPath: string, templateKind: TemplateKind): { path: string; fixes: number } {
+    let fixes = 0;
+    const compact = rawPath.replace(/\\/g, "/").replace(/\/+/g, "/");
+    const rawSegments = compact.split("/").filter(Boolean);
+
+    const deduped: string[] = [];
+    for (const segment of rawSegments) {
+        if (deduped[deduped.length - 1] === segment) {
+            fixes += 1;
+            continue;
+        }
+        deduped.push(segment);
+    }
+
+    const srcEligibleRoots = new Set(["app", "components", "lib", "types", "hooks", "store", "prisma"]);
+    if (templateKind === "next_src") {
+        if (deduped[0] && srcEligibleRoots.has(deduped[0]) && deduped[0] !== "src") {
+            deduped.unshift("src");
+            fixes += 1;
+        }
+    } else if (templateKind === "next_root") {
+        if (deduped[0] === "src" && deduped[1] && srcEligibleRoots.has(deduped[1])) {
+            deduped.shift();
+            fixes += 1;
+        }
+    }
+
+    return {
+        path: deduped.join("/"),
+        fixes
+    };
+}
+
+function collectFileEntriesFromTree(tree: any[]) {
+    const entries: Array<{ path: string; content: string }> = [];
+    const walk = (nodes: any[], prefix: string) => {
+        for (const node of nodes || []) {
+            if (!node || typeof node !== "object" || typeof node.name !== "string") continue;
+            const currentPath = prefix ? `${prefix}/${node.name}` : node.name;
+            if (node.type === "file") {
+                entries.push({
+                    path: currentPath,
+                    content: typeof node.content === "string" ? node.content : ""
+                });
+                continue;
+            }
+            if (node.type === "folder" && Array.isArray(node.children)) {
+                walk(node.children, currentPath);
+            }
+        }
+    };
+
+    walk(tree, "");
+    return entries;
+}
+
+function normalizeProjectTreePaths(projectTree: any[], templateKind: TemplateKind) {
+    const inputTree = Array.isArray(projectTree) ? projectTree : [];
+    const entries = collectFileEntriesFromTree(inputTree);
+    const normalizedTree: any[] = [];
+    const pathToContent = new Map<string, string>();
+    let fixCount = 0;
+
+    for (const entry of entries) {
+        const normalized = normalizeGeneratedPath(entry.path, templateKind);
+        fixCount += normalized.fixes;
+        if (!normalized.path) continue;
+        const previous = pathToContent.get(normalized.path) || "";
+        const next = entry.content || "";
+        if (!previous || next.length > previous.length) {
+            pathToContent.set(normalized.path, next);
+        }
+    }
+
+    for (const [path, content] of pathToContent.entries()) {
+        upsertFileByPath(normalizedTree, path, content);
+    }
+
+    return { normalizedTree, fixCount };
+}
+
 function ensureCoreConfigFiles(
     projectTree: any[],
     toolStack: string,
     history: string,
     projectName: string,
-    outputLanguage: OutputLanguage
+    outputLanguage: OutputLanguage,
+    templateKind: TemplateKind,
+    oneClickMode: OneClickMode,
+    ideProfile: IdeProfile
 ): any[] {
     const tree = Array.isArray(projectTree) ? projectTree : [];
-    const existingNames = new Set<string>();
-
-    const collectNames = (nodes: any[]) => {
-        for (const node of nodes) {
-            if (node?.name) existingNames.add(node.name);
-            if (node?.children) collectNames(node.children);
-        }
-    };
-
-    collectNames(tree);
-
     const treeText = collectProjectTreeText(tree);
     const context = `${toolStack || ""}\n${history || ""}\n${treeText}`;
-    const usesNext = /next\.js|nextjs|\bnext\b/i.test(context) || existingNames.has("next.config.ts");
+    const usesNext = templateKind !== "monorepo_multiapp";
     const usesPhaser = /phaser/i.test(context);
+    const dependencyClosure = deriveDependencyClosure({
+        toolStack,
+        analysisText: `${history || ""}\n${treeText}`,
+        templateKind
+    });
+    const finalTree = JSON.parse(JSON.stringify(tree)) as any[];
 
-    const coreFiles: { name: string; content: string }[] = [];
-
-    if (!existingNames.has("package.json")) {
-        coreFiles.push({
-            name: "package.json",
-            content: generatePackageJson({
-                framework: usesNext ? "next" : "react",
-                usesPhaser,
-                projectName,
-                toolStack,
-                analysisText: `${history || ""}\n${treeText}`
-            })
+    const packageJson = templateKind === "monorepo_multiapp"
+        ? generateMonorepoRootPackageJson({
+            projectName,
+            dependencyClosure
+        })
+        : generatePackageJson({
+            framework: usesNext ? "next" : "react",
+            usesPhaser,
+            projectName,
+            toolStack,
+            analysisText: `${history || ""}\n${treeText}`,
+            dependencyClosure
         });
+
+    const tsconfig = generateTsconfig({
+        framework: usesNext ? "next" : "react",
+        templateKind
+    });
+    const nextConfig = generateNextConfig({ usesPhaser });
+    const envExample = generateEnvExample({
+        outputLanguage,
+        templateKind,
+        dependencyClosure
+    });
+
+    upsertFileByPath(finalTree, "package.json", packageJson);
+    upsertFileByPath(finalTree, "tsconfig.json", tsconfig);
+    upsertFileByPath(finalTree, "next.config.ts", nextConfig);
+    upsertFileByPath(finalTree, ".env.example", envExample);
+    if (templateKind === "monorepo_multiapp") {
+        upsertFileByPath(finalTree, "turbo.json", generateTurboConfigJson());
     }
 
-    if (!existingNames.has("tsconfig.json")) {
-        coreFiles.push({
-            name: "tsconfig.json",
-            content: generateTsconfig({ framework: usesNext ? "next" : "react" })
-        });
-    }
-
-    if (usesNext && !existingNames.has("next.config.ts")) {
-        coreFiles.push({
-            name: "next.config.ts",
-            content: generateNextConfig({ usesPhaser })
-        });
-    }
-
-    const finalTree = coreFiles.length > 0
-        ? [
-            ...coreFiles.map(f => ({
-                name: f.name,
-                type: "file",
-                content: f.content
-            })),
-            ...tree
-        ]
-        : tree;
-
-    const structuredReadme = ensureStructuredReadmeQuality(
-        buildStructuredReadme({
+    const structuredReadme = ensureStructuredReadmeQualityStable(
+        buildStructuredReadmeStable({
             outputLanguage,
             projectName,
             toolStack,
@@ -1004,15 +1188,138 @@ function ensureCoreConfigFiles(
             tree: finalTree
         }
     );
-    const implementationPlan = buildImplementationPlan({
+    const implementationPlan = buildImplementationPlanStable({
         outputLanguage,
         projectName,
         tree: finalTree
     });
+    const oneClickPrompt = buildOneClickPrompt({
+        outputLanguage,
+        oneClickMode
+    });
+    const rootPrompt = buildRootInstructionOnlyPrompt({
+        outputLanguage,
+        oneClickMode,
+        ideProfile
+    });
 
     upsertFileByPath(finalTree, "README.md", structuredReadme);
     upsertFileByPath(finalTree, "IMPLEMENTATION_PLAN.md", implementationPlan);
+    upsertFileByPath(finalTree, "ONE_CLICK_PROMPT.md", oneClickPrompt);
+    upsertFileByPath(finalTree, "_AI_PROMPT.md", rootPrompt);
     return finalTree;
+}
+
+type DependencyClosure = {
+    deps: Record<string, string>;
+    devDeps: Record<string, string>;
+};
+
+const DEPENDENCY_CATALOG: Array<{ match: RegExp; deps?: Record<string, string>; devDeps?: Record<string, string> }> = [
+    { match: /prisma|postgres|postgresql/, deps: { "@prisma/client": "^5.22.0" }, devDeps: { prisma: "^5.22.0" } },
+    { match: /nextauth|next-auth|auth\.js|@auth\/core/, deps: { "next-auth": "^5.0.0-beta.25" } },
+    { match: /stripe/, deps: { stripe: "^17.3.1", "@stripe/stripe-js": "^4.10.0" } },
+    { match: /supabase/, deps: { "@supabase/supabase-js": "^2.49.1", "@supabase/ssr": "^0.5.2" } },
+    { match: /\bredis\b|ioredis/, deps: { ioredis: "^5.4.1" } },
+    { match: /socket\.io|websocket/, deps: { "socket.io": "^4.8.1", "socket.io-client": "^4.8.1" } },
+    { match: /\bexpress\b/, deps: { express: "^4.21.2" }, devDeps: { "@types/express": "^5.0.0" } },
+    { match: /\bexpo\b|react native|react-native/, deps: { expo: "^52.0.21" } },
+    { match: /recharts|chart/, deps: { recharts: "^2.13.0" } },
+    { match: /\bxlsx\b|excel/, deps: { xlsx: "^0.18.5" } },
+    { match: /openai|@ai-sdk\/openai|vercel ai sdk/, deps: { ai: "^4.3.16", "@ai-sdk/openai": "^1.3.22" } },
+    { match: /zod/, deps: { zod: "^3.23.8" } },
+    { match: /react query|tanstack query/, deps: { "@tanstack/react-query": "^5.45.0" } },
+    { match: /tailwind/, devDeps: { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } },
+    { match: /shadcn|class-variance-authority|tailwind-merge|clsx/, deps: { "class-variance-authority": "^0.7.1", clsx: "^2.1.1", "tailwind-merge": "^2.6.0" } },
+    { match: /lucide/, deps: { "lucide-react": "^0.263.1" } },
+    { match: /zustand/, deps: { zustand: "^4.5.2" } },
+    { match: /turborepo|monorepo|workspace/, devDeps: { turbo: "^2.4.2" } }
+];
+
+function deriveDependencyClosure(input: {
+    toolStack: string;
+    analysisText: string;
+    templateKind: TemplateKind;
+}): DependencyClosure {
+    const merged = `${input.toolStack || ""}\n${input.analysisText || ""}`.toLowerCase();
+    const deps: Record<string, string> = {};
+    const devDeps: Record<string, string> = {};
+
+    for (const rule of DEPENDENCY_CATALOG) {
+        if (!rule.match.test(merged)) continue;
+        Object.assign(deps, rule.deps || {});
+        Object.assign(devDeps, rule.devDeps || {});
+    }
+
+    if (input.templateKind === "monorepo_multiapp") {
+        devDeps.turbo = devDeps.turbo || "^2.4.2";
+    }
+
+    return { deps, devDeps };
+}
+
+function generateEnvExample(input: {
+    outputLanguage: OutputLanguage;
+    templateKind: TemplateKind;
+    dependencyClosure: DependencyClosure;
+}) {
+    const lines: string[] = [];
+    lines.push("# Runtime");
+    lines.push("NODE_ENV=development");
+    lines.push("");
+    lines.push("# App");
+    lines.push("NEXT_PUBLIC_APP_NAME=Forecoding Generated App");
+    lines.push("");
+
+    const deps = { ...input.dependencyClosure.deps, ...input.dependencyClosure.devDeps };
+    if (deps["@prisma/client"] || deps.prisma) {
+        lines.push("# Database");
+        lines.push("DATABASE_URL=postgresql://postgres:postgres@localhost:5432/app");
+        lines.push("");
+    }
+    if (deps["next-auth"]) {
+        lines.push("# Auth");
+        lines.push("NEXTAUTH_URL=http://localhost:3000");
+        lines.push("NEXTAUTH_SECRET=replace_me");
+        lines.push("");
+    }
+    if (deps["@supabase/supabase-js"]) {
+        lines.push("# Supabase");
+        lines.push("NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co");
+        lines.push("NEXT_PUBLIC_SUPABASE_ANON_KEY=replace_me");
+        lines.push("");
+    }
+    if (deps.stripe || deps["@stripe/stripe-js"]) {
+        lines.push("# Stripe");
+        lines.push("STRIPE_SECRET_KEY=sk_test_replace_me");
+        lines.push("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_replace_me");
+        lines.push("");
+    }
+    if (deps.ioredis) {
+        lines.push("# Redis");
+        lines.push("REDIS_URL=redis://localhost:6379");
+        lines.push("");
+    }
+    if (deps["socket.io"]) {
+        lines.push("# Socket");
+        lines.push("SOCKET_SERVER_URL=http://localhost:3000");
+        lines.push("");
+    }
+    if (input.templateKind === "monorepo_multiapp") {
+        lines.push("# Monorepo");
+        lines.push("TURBO_TELEMETRY_DISABLED=1");
+        lines.push("");
+    }
+
+    if (input.outputLanguage === "zh") {
+        lines.push("# 说明");
+        lines.push("# 复制为 .env.local 后再运行。");
+    } else {
+        lines.push("# Notes");
+        lines.push("# Copy this file to .env.local before running.");
+    }
+
+    return `${lines.join("\n").trim()}\n`;
 }
 
 function generatePackageJson(input: {
@@ -1021,6 +1328,7 @@ function generatePackageJson(input: {
     projectName: string;
     toolStack?: string;
     analysisText?: string;
+    dependencyClosure?: DependencyClosure;
 }) {
     const stack = `${input.toolStack || ""}\n${input.analysisText || ""}`.toLowerCase();
     const usesTailwind = /tailwind/.test(stack);
@@ -1038,6 +1346,15 @@ function generatePackageJson(input: {
     const usesOpenAiSdk = /openai|@ai-sdk\/openai/.test(stack);
     const usesShadcn = /shadcn|radix|class-variance-authority|tailwind-merge|clsx/.test(stack);
     const usesDateFns = /date-fns|date range|calendar/.test(stack);
+    const usesPrisma = /prisma|postgres/.test(stack);
+    const usesNextAuth = /nextauth|next-auth|auth\.js|@auth\/core/.test(stack);
+    const usesStripe = /stripe/.test(stack);
+    const usesRecharts = /recharts|chart/.test(stack);
+    const usesXlsx = /xlsx|excel/.test(stack);
+    const usesRedis = /\bredis\b|ioredis/.test(stack);
+    const usesSocketIo = /socket\.io|websocket/.test(stack);
+    const usesExpress = /\bexpress\b/.test(stack);
+    const usesExpo = /\bexpo\b|react native|react-native/.test(stack);
 
     const extraDeps: Record<string, string> = {};
     if (input.usesPhaser) extraDeps["phaser"] = "^3.80.1";
@@ -1060,6 +1377,29 @@ function generatePackageJson(input: {
     if (usesShadcn) extraDeps["clsx"] = "^2.1.1";
     if (usesShadcn) extraDeps["tailwind-merge"] = "^2.6.0";
     if (usesDateFns) extraDeps["date-fns"] = "^4.1.0";
+    if (usesPrisma) extraDeps["@prisma/client"] = "^5.22.0";
+    if (usesNextAuth) extraDeps["next-auth"] = "^5.0.0-beta.25";
+    if (usesStripe) extraDeps["stripe"] = "^17.3.1";
+    if (usesStripe) extraDeps["@stripe/stripe-js"] = "^4.10.0";
+    if (usesRecharts) extraDeps["recharts"] = "^2.13.0";
+    if (usesXlsx) extraDeps["xlsx"] = "^0.18.5";
+    if (usesRedis) extraDeps["ioredis"] = "^5.4.1";
+    if (usesSocketIo) extraDeps["socket.io"] = "^4.8.1";
+    if (usesSocketIo) extraDeps["socket.io-client"] = "^4.8.1";
+    if (usesExpress) extraDeps["express"] = "^4.21.2";
+    if (usesExpo) extraDeps["expo"] = "^52.0.21";
+
+    const closureDeps = input.dependencyClosure?.deps || {};
+    const closureDevDeps = input.dependencyClosure?.devDeps || {};
+    const combinedDeps = { ...extraDeps, ...closureDeps };
+    const combinedDevDeps = {
+        typescript: "^5",
+        "@types/node": "^20",
+        "@types/react": "^18",
+        "@types/react-dom": "^18",
+        ...(usesTailwind ? { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } : {}),
+        ...closureDevDeps
+    };
 
     const base = {
         name: sanitizeProjectName(input.projectName || "generated-project"),
@@ -1083,20 +1423,14 @@ function generatePackageJson(input: {
                 next: "14.2.18",
                 react: "^18.3.1",
                 "react-dom": "^18.3.1",
-                ...extraDeps
+                ...combinedDeps
             }
             : {
                 react: "^18.3.1",
                 "react-dom": "^18.3.1",
-                ...extraDeps
+                ...combinedDeps
             },
-        devDependencies: {
-            typescript: "^5",
-            "@types/node": "^20",
-            "@types/react": "^18",
-            "@types/react-dom": "^18",
-            ...(usesTailwind ? { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } : {})
-        },
+        devDependencies: combinedDevDeps,
         engines: {
             node: ">=18.17.0",
             npm: ">=9.0.0"
@@ -1106,7 +1440,50 @@ function generatePackageJson(input: {
     return JSON.stringify(base, null, 2);
 }
 
-function generateTsconfig(input: { framework: "next" | "react" }) {
+function generateMonorepoRootPackageJson(input: {
+    projectName: string;
+    dependencyClosure: DependencyClosure;
+}) {
+    const base = {
+        name: sanitizeProjectName(input.projectName || "generated-monorepo"),
+        version: "0.1.0",
+        private: true,
+        workspaces: ["apps/*", "packages/*"],
+        scripts: {
+            dev: "turbo run dev --parallel",
+            build: "turbo run build",
+            lint: "turbo run lint",
+            "type-check": "turbo run type-check"
+        },
+        dependencies: {
+            ...input.dependencyClosure.deps
+        },
+        devDependencies: {
+            turbo: "^2.4.2",
+            typescript: "^5",
+            ...input.dependencyClosure.devDeps
+        },
+        engines: {
+            node: ">=18.17.0",
+            npm: ">=9.0.0"
+        }
+    };
+    return JSON.stringify(base, null, 2);
+}
+
+function generateTurboConfigJson() {
+    return JSON.stringify({
+        "$schema": "https://turbo.build/schema.json",
+        tasks: {
+            dev: { cache: false, persistent: true },
+            build: { dependsOn: ["^build"], outputs: [".next/**", "dist/**", "build/**"] },
+            lint: { dependsOn: ["^lint"] },
+            "type-check": { dependsOn: ["^type-check"] }
+        }
+    }, null, 2);
+}
+
+function generateTsconfig(input: { framework: "next" | "react"; templateKind?: TemplateKind }) {
     const config: any = {
         compilerOptions: {
             strict: true,
@@ -1127,10 +1504,11 @@ function generateTsconfig(input: { framework: "next" | "react" }) {
     };
 
     if (input.framework === "next") {
+        const basePath = input.templateKind === "next_src" ? "./src/" : "./";
         config.compilerOptions.paths = {
-            "@/*": ["./*"],
-            "@/components/*": ["./components/*"],
-            "@/lib/*": ["./lib/*"]
+            "@/*": [`${basePath}*`],
+            "@/components/*": [`${basePath}components/*`],
+            "@/lib/*": [`${basePath}lib/*`]
         };
         config.compilerOptions.plugins = [{ name: "next" }];
     }
@@ -1459,27 +1837,256 @@ function ensureStructuredReadmeQuality(
     return `${rebuilt}\n${supplement}`;
 }
 
+function extractUserIntentLinesStable(history: string, outputLanguage: OutputLanguage) {
+    const lines = history
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    const userLines = lines
+        .filter((line) => /^user:/i.test(line))
+        .map((line) => line.replace(/^user:\s*/i, ""))
+        .filter((line) => line.length > 0);
+
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const line of userLines) {
+        const normalized = line.replace(/\s+/g, " ").trim().toLowerCase();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        deduped.push(line.replace(/\s+/g, " ").trim());
+        if (deduped.length >= 5) break;
+    }
+
+    if (deduped.length > 0) return deduped;
+    return outputLanguage === "zh"
+        ? ["待补充：请在后续会话中细化核心业务目标与关键流程。"]
+        : ["TBD: clarify core business goal and user flow in follow-up prompts."];
+}
+
+function buildStructuredReadmeStable(input: {
+    outputLanguage: OutputLanguage;
+    projectName: string;
+    toolStack: string;
+    history: string;
+    tree: any[];
+}) {
+    const projectName = input.projectName || "generated-project";
+    const filePaths = collectFilePathsFromTree(input.tree);
+    const topLevelEntries = Array.from(new Set(filePaths.map((path) => path.split("/")[0]))).slice(0, 20);
+    const scopedPaths = filePaths.slice(0, 40);
+    const intents = extractUserIntentLinesStable(input.history, input.outputLanguage);
+
+    if (input.outputLanguage === "zh") {
+        const lines: string[] = [];
+        lines.push(`# ${projectName} 开发指南`);
+        lines.push("");
+        lines.push("## 项目概述");
+        lines.push(`该项目由 Forecoding 生成，目标是为 **${projectName}** 提供可执行的脚手架规范与实现顺序。`);
+        lines.push("README 作为团队与 AI IDE 的统一入口，重点说明业务目标、运行方式、环境变量、验收标准与执行顺序。");
+        lines.push("");
+        lines.push("## 目标用户与业务目标");
+        lines.push("- 目标用户：业务负责人、产品经理、工程师、AI IDE 协作开发者。");
+        lines.push("- 核心目标：将需求讨论稳定转化为可执行实现计划，降低开发前不确定性。");
+        lines.push("- 本次会话提炼要点：");
+        intents.forEach((line) => lines.push(`  - ${line}`));
+        lines.push("");
+        lines.push("## 技术栈");
+        lines.push("以下技术栈由生成阶段输出，可作为默认参考：");
+        lines.push("");
+        lines.push(input.toolStack || "- 暂无明确技术栈，建议先在 `IMPLEMENTATION_PLAN.md` 的 Phase 0 完成基线选型。");
+        lines.push("");
+        lines.push("## 项目结构");
+        lines.push("当前脚手架包含的主要目录/文件：");
+        topLevelEntries.forEach((entry) => lines.push(`- \`${entry}\``));
+        lines.push("");
+        lines.push("关键路径（节选）：");
+        scopedPaths.forEach((path) => lines.push(`- \`${path}\``));
+        lines.push("");
+        lines.push("## 快速开始");
+        lines.push("### 1) 安装依赖");
+        lines.push("```bash");
+        lines.push("npm install");
+        lines.push("```");
+        lines.push("");
+        lines.push("### 2) 本地运行");
+        lines.push("```bash");
+        lines.push("npm run dev");
+        lines.push("```");
+        lines.push("");
+        lines.push("### 3) 构建与启动");
+        lines.push("```bash");
+        lines.push("npm run build");
+        lines.push("npm run start");
+        lines.push("```");
+        lines.push("");
+        lines.push("## 环境变量");
+        lines.push("- 建议从 `.env.example` 复制到 `.env.local` 后再启动。");
+        lines.push("- 所有密钥仅用于服务端，不要提交到仓库。");
+        lines.push("- 按环境（dev/staging/prod）分离配置，避免跨环境污染。");
+        lines.push("");
+        lines.push("## 开发流程");
+        lines.push("- **必须先阅读** `ONE_CLICK_PROMPT.md`。");
+        lines.push("- `GENERATION_MANIFEST.json` 是机器可读任务图，按 phase 顺序执行。");
+        lines.push("- `IMPLEMENTATION_PLAN.md` 是唯一实施顺序来源，不要按目录遍历。");
+        lines.push("- 对于占位文件，使用对应目录 `_AI_PROMPT.md` 生成最终实现。");
+        lines.push("");
+        lines.push("## 验收清单");
+        lines.push("- [ ] 项目可安装并成功启动。");
+        lines.push("- [ ] Phase 0~6 输出物均完成并通过验证。");
+        lines.push("- [ ] 关键页面与 API 行为符合需求。");
+        lines.push("- [ ] README、IMPLEMENTATION_PLAN 与实现保持一致。");
+        lines.push("- [ ] 无敏感信息泄露。");
+        lines.push("");
+        lines.push("## 常见问题");
+        lines.push("### 1) 为什么 ZIP 中有些文件是占位内容？");
+        lines.push("Forecoding 采用规范驱动策略：核心配置与文档直接可用，其余由 AI IDE 按阶段生成，降低一次性输出偏差。");
+        lines.push("");
+        lines.push("### 2) 应先改哪个文件？");
+        lines.push("不要按目录直觉修改，必须按 `IMPLEMENTATION_PLAN.md` 的 Phase 顺序执行。");
+        lines.push("");
+        lines.push("### 3) README 与实现不一致怎么办？");
+        lines.push("先更新 README 与 IMPLEMENTATION_PLAN，再同步实现。");
+        lines.push("");
+        lines.push("### 4) 如何保证交付质量？");
+        lines.push("每个阶段执行验证命令，并在合并前完成手工回归。");
+        lines.push("");
+        return lines.join("\n");
+    }
+
+    const lines: string[] = [];
+    lines.push(`# ${projectName} Development Guide`);
+    lines.push("");
+    lines.push("## Project Overview");
+    lines.push(`This project is generated by Forecoding to provide an execution-ready scaffold for **${projectName}**.`);
+    lines.push("README is the shared entry for humans and AI IDE agents, covering goals, runtime setup, environment variables, acceptance standards, and execution order.");
+    lines.push("");
+    lines.push("## Target Users & Business Goals");
+    lines.push("- Primary users: product owners, engineers, and AI IDE-assisted builders.");
+    lines.push("- Core objective: transform requirement discussions into a deterministic implementation workflow.");
+    lines.push("- Key signals extracted from this conversation:");
+    intents.forEach((line) => lines.push(`  - ${line}`));
+    lines.push("");
+    lines.push("## Tech Stack");
+    lines.push("The following stack was generated as baseline context:");
+    lines.push("");
+    lines.push(input.toolStack || "- No explicit stack generated yet. Finalize baseline choices in `IMPLEMENTATION_PLAN.md` Phase 0.");
+    lines.push("");
+    lines.push("## Project Structure");
+    lines.push("Main directories/files currently in scaffold:");
+    topLevelEntries.forEach((entry) => lines.push(`- \`${entry}\``));
+    lines.push("");
+    lines.push("Key paths (sample):");
+    scopedPaths.forEach((path) => lines.push(`- \`${path}\``));
+    lines.push("");
+    lines.push("## Quick Start");
+    lines.push("### 1) Install dependencies");
+    lines.push("```bash");
+    lines.push("npm install");
+    lines.push("```");
+    lines.push("");
+    lines.push("### 2) Run locally");
+    lines.push("```bash");
+    lines.push("npm run dev");
+    lines.push("```");
+    lines.push("");
+    lines.push("### 3) Build and start");
+    lines.push("```bash");
+    lines.push("npm run build");
+    lines.push("npm run start");
+    lines.push("```");
+    lines.push("");
+    lines.push("## Environment Variables");
+    lines.push("- Copy `.env.example` to `.env.local` before local execution.");
+    lines.push("- Keep secrets server-side only.");
+    lines.push("- Split config by environment (dev/staging/prod).");
+    lines.push("");
+    lines.push("## Development Workflow");
+    lines.push("- **Read `ONE_CLICK_PROMPT.md` first.**");
+    lines.push("- `GENERATION_MANIFEST.json` is the machine-readable task graph.");
+    lines.push("- `IMPLEMENTATION_PLAN.md` is the only execution-order source.");
+    lines.push("- For placeholder files, generate final code via directory-level `_AI_PROMPT.md`.");
+    lines.push("");
+    lines.push("## Acceptance Checklist");
+    lines.push("- [ ] Project installs and starts successfully.");
+    lines.push("- [ ] Outputs for Phase 0~6 are completed and validated.");
+    lines.push("- [ ] Key pages/APIs match requirement intent.");
+    lines.push("- [ ] README, IMPLEMENTATION_PLAN, and implementation stay aligned.");
+    lines.push("- [ ] No secret leakage in repository.");
+    lines.push("");
+    lines.push("## FAQ");
+    lines.push("### 1) Why are some ZIP files placeholders?");
+    lines.push("Forecoding ships runnable baseline files and high-quality specs first, then lets AI IDE complete feature code by phase to reduce one-shot drift.");
+    lines.push("");
+    lines.push("### 2) What should I implement first?");
+    lines.push("Do not follow raw directory order. Always follow `IMPLEMENTATION_PLAN.md` phase order.");
+    lines.push("");
+    lines.push("### 3) What if docs and code drift?");
+    lines.push("Update README + IMPLEMENTATION_PLAN first, then align implementation.");
+    lines.push("");
+    lines.push("### 4) How do we keep delivery quality stable?");
+    lines.push("Run phase-level validation commands and complete manual QA before merge.");
+    lines.push("");
+    return lines.join("\n");
+}
+
+function validateStructuredReadmeStable(readme: string, outputLanguage: OutputLanguage) {
+    if (readme.trim().length < 900) return false;
+    const requiredHeadings = outputLanguage === "zh"
+        ? ["## 项目概述", "## 目标用户与业务目标", "## 技术栈", "## 项目结构", "## 快速开始", "## 环境变量", "## 开发流程", "## 验收清单", "## 常见问题"]
+        : ["## Project Overview", "## Target Users & Business Goals", "## Tech Stack", "## Project Structure", "## Quick Start", "## Environment Variables", "## Development Workflow", "## Acceptance Checklist", "## FAQ"];
+    return requiredHeadings.every((heading) => readme.includes(heading));
+}
+
+function ensureStructuredReadmeQualityStable(
+    readme: string,
+    input: {
+        outputLanguage: OutputLanguage;
+        projectName: string;
+        toolStack: string;
+        history: string;
+        tree: any[];
+    }
+) {
+    if (validateStructuredReadmeStable(readme, input.outputLanguage)) return readme;
+
+    const rebuilt = buildStructuredReadmeStable(input);
+    if (validateStructuredReadmeStable(rebuilt, input.outputLanguage)) return rebuilt;
+
+    const supplement = input.outputLanguage === "zh"
+        ? "\n## 附加说明\n- 若文档长度不足，请补充业务边界、失败场景、监控与回滚策略。\n- 每个 Phase 必须可验证、可回滚、可交接。\n"
+        : "\n## Additional Guidance\n- If documentation is still short, expand business boundaries, failure modes, monitoring, and rollback instructions.\n- Every phase must be verifiable, reversible, and handoff-ready.\n";
+    return `${rebuilt}\n${supplement}`;
+}
+
 function classifyImplementationPhase(filePath: string): number {
     const normalized = filePath.replace(/\\/g, "/");
+    const withoutSrc = normalized.startsWith("src/") ? normalized.slice(4) : normalized;
     const bootstrapSet = new Set([
         "package.json",
         "tsconfig.json",
         "next.config.ts",
+        "turbo.json",
         ".env.example",
         "README.md",
-        "IMPLEMENTATION_PLAN.md"
+        "IMPLEMENTATION_PLAN.md",
+        "ONE_CLICK_PROMPT.md",
+        "GENERATION_MANIFEST.json",
+        "_AI_PROMPT.md"
     ]);
 
     if (bootstrapSet.has(normalized)) return 0;
-    if (normalized.startsWith("types/")) return 1;
-    if (/\/(schema|model|entity|domain)\b/i.test(normalized)) return 1;
-    if (normalized === "app/layout.tsx" || normalized === "app/layout.ts") return 3;
-    if (normalized.startsWith("components/layout/")) return 3;
-    if (normalized.startsWith("app/api/")) return 5;
-    if (/^app\/.+\/page\.(tsx|ts|jsx|js)$/i.test(normalized) || normalized === "app/page.tsx") return 4;
-    if (normalized.startsWith("components/")) return 4;
-    if (normalized.startsWith("lib/") && /(store|service|utils|helper|core)/i.test(normalized)) return 2;
-    if (normalized.startsWith("lib/")) return 2;
+    if (normalized.endsWith("_AI_PROMPT.md")) return 6;
+    if (withoutSrc.startsWith("types/")) return 1;
+    if (/\/(schema|model|entity|domain)\b/i.test(withoutSrc)) return 1;
+    if (withoutSrc === "app/layout.tsx" || withoutSrc === "app/layout.ts") return 3;
+    if (withoutSrc.startsWith("components/layout/")) return 3;
+    if (withoutSrc.startsWith("app/api/")) return 5;
+    if (withoutSrc.startsWith("apps/") && /\/api\/|\/services\/|\/websockets\//i.test(withoutSrc)) return 5;
+    if (/^app\/.+\/page\.(tsx|ts|jsx|js)$/i.test(withoutSrc) || withoutSrc === "app/page.tsx") return 4;
+    if (withoutSrc.startsWith("components/")) return 4;
+    if (withoutSrc.startsWith("lib/") && /(store|service|utils|helper|core|actions)/i.test(withoutSrc)) return 2;
+    if (withoutSrc.startsWith("lib/")) return 2;
+    if (/^apps\/.+\/src\/screens\/.+\.(tsx|ts|jsx|js)$/i.test(withoutSrc)) return 4;
     if (normalized.startsWith("docs/")) return 6;
     return 4;
 }
@@ -1525,6 +2132,528 @@ function buildPhaseValidationCommands(
     pushScript("type-check", "npx tsc --noEmit");
     pushScript("build", "npm run build");
     return commands;
+}
+
+const IMPLEMENTATION_PLAN_FILE_RE = /-\s+`([^`]+)`/g;
+
+function isGuidanceArtifactPath(path: string) {
+    return (
+        path === "README.md" ||
+        path === "IMPLEMENTATION_PLAN.md" ||
+        path === "ONE_CLICK_PROMPT.md" ||
+        path === "GENERATION_MANIFEST.json" ||
+        path.endsWith("_AI_PROMPT.md")
+    );
+}
+
+function collectActionableFilePaths(tree: any[]) {
+    const all = collectFilePathsFromTree(tree);
+    return all.filter((path) => !isGuidanceArtifactPath(path));
+}
+
+function getPhaseMeta(outputLanguage: OutputLanguage) {
+    if (outputLanguage === "zh") {
+        return [
+            { title: "Phase 0 - 启动与基线", goal: "建立可运行基线，确保安装、启动、配置文件完整。", output: "完成运行基线文档与配置，团队可启动项目。", done: "依赖安装通过，开发环境可启动，README 与计划文件可读。" },
+            { title: "Phase 1 - 领域模型与类型", goal: "先定义业务对象、类型边界和数据契约，避免后续返工。", output: "类型与领域模型稳定，供后续状态层与页面复用。", done: "关键类型可覆盖核心业务语义，类型检查通过。" },
+            { title: "Phase 2 - 状态管理与核心逻辑", goal: "实现核心业务逻辑与状态流转，形成功能主干。", output: "状态层/服务层具备可调用能力。", done: "核心流程可在本地最小验证。" },
+            { title: "Phase 3 - 应用壳层与共享布局", goal: "完善应用壳层和通用布局，统一导航与视觉骨架。", output: "可复用壳层和布局组件。", done: "页面基础布局稳定，可承载业务页面。" },
+            { title: "Phase 4 - 功能页面与界面交互", goal: "实现业务页面与组件交互，打通用户侧操作路径。", output: "主要页面具备交互闭环。", done: "关键用户流程可端到端操作。" },
+            { title: "Phase 5 - API 与集成层", goal: "实现服务端接口与外部集成，连接前后端数据流。", output: "API 契约可用，集成边界明确。", done: "前后端对接成功，接口返回稳定。" },
+            { title: "Phase 6 - 验证与交付", goal: "执行静态检查、构建验证与人工回归，形成可交付状态。", output: "最终交付包与文档一致。", done: "lint/type-check/build 通过，关键场景回归完成。" }
+        ] as const;
+    }
+
+    return [
+        { title: "Phase 0 - Bootstrap", goal: "Establish runnable baseline, configs, and onboarding docs.", output: "Runnable baseline with setup documentation.", done: "Dependencies install, app starts, docs are available." },
+        { title: "Phase 1 - Domain & Types", goal: "Define domain objects and type contracts before implementation.", output: "Stable type boundaries for feature work.", done: "Type contracts cover key business entities." },
+        { title: "Phase 2 - State & Core Logic", goal: "Implement state transitions and core business logic.", output: "Callable core logic/state layer.", done: "Core flow is minimally executable locally." },
+        { title: "Phase 3 - App Shell & Shared UI", goal: "Set up shared shell/layout and reusable structure.", output: "Stable layout and shared shell components.", done: "Pages can mount on consistent layout." },
+        { title: "Phase 4 - Feature UI & Pages", goal: "Implement user-facing pages and component interactions.", output: "Feature pages with usable interaction loops.", done: "Primary user journeys are navigable end-to-end." },
+        { title: "Phase 5 - API & Integration", goal: "Build backend routes and external integration boundaries.", output: "Usable API contracts and integration flow.", done: "Frontend/backend integration works stably." },
+        { title: "Phase 6 - Validation & Handoff", goal: "Run static checks, build validation, and manual QA.", output: "Ship-ready handoff package.", done: "lint/type-check/build pass and key QA completed." }
+    ] as const;
+}
+
+function buildPhasePlansForTree(tree: any[], outputLanguage: OutputLanguage): PhasePlan[] {
+    const scripts = readPackageScripts(tree);
+    const actionableFiles = collectActionableFilePaths(tree);
+    const phases = new Map<number, string[]>();
+    for (let i = 0; i <= 6; i++) phases.set(i, []);
+
+    for (const filePath of actionableFiles) {
+        const phase = classifyImplementationPhase(filePath);
+        phases.get(phase)?.push(filePath);
+    }
+
+    const meta = getPhaseMeta(outputLanguage);
+    const result: PhasePlan[] = [];
+    for (let i = 0; i <= 6; i++) {
+        const files = (phases.get(i) || []).slice().sort((a, b) => a.localeCompare(b));
+        const phaseMeta = meta[i];
+        result.push({
+            phase: i,
+            title: phaseMeta.title,
+            goal: phaseMeta.goal,
+            inputFiles: files,
+            expectedOutput: phaseMeta.output,
+            doneCriteria: phaseMeta.done,
+            validationCommands: buildPhaseValidationCommands(i, scripts)
+        });
+    }
+
+    return result;
+}
+
+function renderImplementationPlan(outputLanguage: OutputLanguage, projectName: string, phasePlans: PhasePlan[]) {
+    if (outputLanguage === "zh") {
+        const lines: string[] = [];
+        lines.push(`# ${projectName || "generated-project"} 实施执行计划`);
+        lines.push("");
+        lines.push("> 本文件定义 AI IDE 的唯一执行顺序。请严格按 Phase 0 -> Phase 6 执行，不要按目录遍历顺序直接实现。");
+        lines.push("");
+        for (const phase of phasePlans) {
+            lines.push(`## ${phase.title}`);
+            lines.push("");
+            lines.push("### 目标");
+            lines.push(phase.goal);
+            lines.push("");
+            lines.push("### 输入文件");
+            if (phase.inputFiles.length === 0) {
+                lines.push("- （无）");
+            } else {
+                phase.inputFiles.forEach((file) => lines.push(`- \`${file}\``));
+            }
+            lines.push("");
+            lines.push("### 输出定义");
+            lines.push(phase.expectedOutput);
+            lines.push("");
+            lines.push("### 完成条件");
+            lines.push(`- ${phase.doneCriteria}`);
+            lines.push("");
+            lines.push("### 验证命令");
+            lines.push("```bash");
+            phase.validationCommands.forEach((cmd) => lines.push(cmd));
+            lines.push("```");
+            lines.push("");
+        }
+        lines.push("## 交接要求");
+        lines.push("- 每个 Phase 完成后更新 README 与实现状态。");
+        lines.push("- 若需求发生变化，先更新计划，再更新实现。");
+        lines.push("- 提交前确保验证命令全部通过。");
+        lines.push("");
+        return lines.join("\n");
+    }
+
+    const lines: string[] = [];
+    lines.push(`# ${projectName || "generated-project"} Implementation Plan`);
+    lines.push("");
+    lines.push("> This file is the single source of execution order for AI IDE. Follow Phase 0 -> Phase 6 strictly. Do not implement by raw directory order.");
+    lines.push("");
+    for (const phase of phasePlans) {
+        lines.push(`## ${phase.title}`);
+        lines.push("");
+        lines.push("### Goal");
+        lines.push(phase.goal);
+        lines.push("");
+        lines.push("### Input Files");
+        if (phase.inputFiles.length === 0) {
+            lines.push("- (none)");
+        } else {
+            phase.inputFiles.forEach((file) => lines.push(`- \`${file}\``));
+        }
+        lines.push("");
+        lines.push("### Expected Output");
+        lines.push(phase.expectedOutput);
+        lines.push("");
+        lines.push("### Done Criteria");
+        lines.push(`- ${phase.doneCriteria}`);
+        lines.push("");
+        lines.push("### Validation Commands");
+        lines.push("```bash");
+        phase.validationCommands.forEach((cmd) => lines.push(cmd));
+        lines.push("```");
+        lines.push("");
+    }
+    lines.push("## Handoff Requirements");
+    lines.push("- Keep README and implementation status updated after each phase.");
+    lines.push("- If requirements change, update plan first, then implementation.");
+    lines.push("- Ensure all validation commands pass before merge.");
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildImplementationPlanStable(input: {
+    outputLanguage: OutputLanguage;
+    projectName: string;
+    tree: any[];
+}) {
+    const phasePlans = buildPhasePlansForTree(input.tree, input.outputLanguage);
+    const placeholderPaths = collectPlaceholderPaths(input.tree);
+    if (placeholderPaths.length > 0) {
+        const existing = new Set(phasePlans.flatMap((phase) => phase.inputFiles));
+        const uncovered = placeholderPaths.filter((path) => !existing.has(path));
+        if (uncovered.length > 0) {
+            const phase4 = phasePlans.find((phase) => phase.phase === 4);
+            if (phase4) {
+                phase4.inputFiles = [...phase4.inputFiles, ...uncovered].sort((a, b) => a.localeCompare(b));
+            }
+        }
+    }
+    return renderImplementationPlan(input.outputLanguage, input.projectName, phasePlans);
+}
+
+function collectPlaceholderPaths(tree: any[]) {
+    return collectFilePathsFromTree(tree)
+        .filter((path) => !shouldWriteRealContentByPath(path))
+        .sort((a, b) => a.localeCompare(b));
+}
+
+function resolvePromptPathForFile(filePath: string) {
+    const normalized = filePath.replace(/\\/g, "/");
+    const idx = normalized.lastIndexOf("/");
+    if (idx === -1) return "_AI_PROMPT.md";
+    const dir = normalized.slice(0, idx);
+    return `${dir}/_AI_PROMPT.md`;
+}
+
+function buildOneClickPrompt(input: {
+    outputLanguage: OutputLanguage;
+    oneClickMode: OneClickMode;
+}) {
+    if (input.outputLanguage === "zh") {
+        return [
+            "# 一键生成执行指令",
+            "",
+            "> 本文件是 AI IDE 的单入口。先读 `GENERATION_MANIFEST.json`，再执行实现。",
+            "",
+            "## 执行步骤",
+            "1. 打开 `GENERATION_MANIFEST.json`，按 `phases` 顺序执行（Phase 0 -> Phase 6）。",
+            "2. 对于每个任务文件：打开 `promptPath` 指定的 `_AI_PROMPT.md`，生成并替换 `GENERATION PENDING` 占位内容。",
+            "3. 每完成一个 Phase，执行对应 `validationCommands`。",
+            "4. 若验证失败，先修复本 Phase 再进入下一 Phase。",
+            "",
+            "## 硬性约束",
+            "- 执行模式：`strict_build_v1`。",
+            "- 不要按目录遍历顺序实现，必须按 Phase。",
+            "- 不要改写核心配置文件协议（`package.json`、`tsconfig.json`、`next.config.ts`、`.env.example`）。",
+            "",
+            "## 最终验收",
+            "```bash",
+            "npm install",
+            "npm run build",
+            "```",
+            ""
+        ].join("\n");
+    }
+
+    return [
+        "# One-Click Generation Runbook",
+        "",
+        "> This file is the single AI IDE entrypoint. Read `GENERATION_MANIFEST.json` first, then execute.",
+        "",
+        "## Execution Steps",
+        "1. Open `GENERATION_MANIFEST.json` and execute tasks by phase order (Phase 0 -> Phase 6).",
+        "2. For each task file, open its `_AI_PROMPT.md` (`promptPath`) and replace `GENERATION PENDING` placeholders.",
+        "3. Run phase `validationCommands` before moving forward.",
+        "4. If validation fails, fix the current phase before continuing.",
+        "",
+        "## Hard Constraints",
+        "- Mode: `strict_build_v1`.",
+        "- Do not implement by raw directory traversal. Follow phases only.",
+        "- Do not rewrite core baseline config contracts (`package.json`, `tsconfig.json`, `next.config.ts`, `.env.example`).",
+        "",
+        "## Final Gate",
+        "```bash",
+        "npm install",
+        "npm run build",
+        "```",
+        ""
+    ].join("\n");
+}
+
+function buildRootInstructionOnlyPrompt(input: {
+    outputLanguage: OutputLanguage;
+    oneClickMode: OneClickMode;
+    ideProfile: IdeProfile;
+}) {
+    if (input.outputLanguage === "zh") {
+        return [
+            "# AI 任务索引（根目录）",
+            "",
+            "## 强制顺序",
+            "1. 先阅读 `ONE_CLICK_PROMPT.md`。",
+            "2. 再读取 `GENERATION_MANIFEST.json` 并按 Phase 执行。",
+            "3. `_AI_PROMPT.md` 仅作索引与约束，不是执行顺序来源。",
+            "",
+            "## 运行策略",
+            `- oneClickMode: \`${input.oneClickMode}\``,
+            `- ideProfile: \`${input.ideProfile}\``,
+            "",
+            "## 关键文件",
+            "- `ONE_CLICK_PROMPT.md`",
+            "- `GENERATION_MANIFEST.json`",
+            "- `IMPLEMENTATION_PLAN.md`",
+            ""
+        ].join("\n");
+    }
+
+    return [
+        "# AI Task Index (Root)",
+        "",
+        "## Mandatory Order",
+        "1. Read `ONE_CLICK_PROMPT.md` first.",
+        "2. Then read `GENERATION_MANIFEST.json` and execute by phases.",
+        "3. Treat `_AI_PROMPT.md` as index/constraints only, never as execution order source.",
+        "",
+        "## Runtime Strategy",
+        `- oneClickMode: \`${input.oneClickMode}\``,
+        `- ideProfile: \`${input.ideProfile}\``,
+        "",
+        "## Key Files",
+        "- `ONE_CLICK_PROMPT.md`",
+        "- `GENERATION_MANIFEST.json`",
+        "- `IMPLEMENTATION_PLAN.md`",
+        ""
+    ].join("\n");
+}
+
+function buildRootAiPrompt(input: {
+    outputLanguage: OutputLanguage;
+    manifest: GenerationManifest;
+    oneClickMode: OneClickMode;
+    ideProfile: IdeProfile;
+}) {
+    const header = buildRootInstructionOnlyPrompt({
+        outputLanguage: input.outputLanguage,
+        oneClickMode: input.oneClickMode,
+        ideProfile: input.ideProfile
+    });
+
+    const lines: string[] = [header.trim(), "", "## All Placeholder Tasks", ""];
+    for (const task of input.manifest.tasks) {
+        lines.push(`- Phase ${task.phase}: \`${task.filePath}\` -> \`${task.promptPath}\``);
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildGenerationManifest(input: {
+    tree: any[];
+    outputLanguage: OutputLanguage;
+    templateKind: TemplateKind;
+    oneClickMode: OneClickMode;
+    ideProfile: IdeProfile;
+}): GenerationManifest {
+    const phasePlans = buildPhasePlansForTree(input.tree, input.outputLanguage);
+    const taskIdByPath = new Map<string, string>();
+    const tasks: GenerationTask[] = [];
+    const placeholderPaths = collectPlaceholderPaths(input.tree);
+    const phaseByPath = new Map<string, number>();
+    const phaseTitleByIndex = new Map<number, string>();
+
+    for (const phase of phasePlans) {
+        phaseTitleByIndex.set(phase.phase, phase.title);
+        for (const path of phase.inputFiles) {
+            if (!phaseByPath.has(path)) phaseByPath.set(path, phase.phase);
+        }
+    }
+
+    for (const filePath of placeholderPaths) {
+        const phase = phaseByPath.get(filePath) ?? classifyImplementationPhase(filePath);
+        const phaseTitle = phaseTitleByIndex.get(phase) || `Phase ${phase}`;
+        const taskId = `task_${tasks.length + 1}`;
+        taskIdByPath.set(filePath, taskId);
+        tasks.push({
+            id: taskId,
+            phase,
+            phaseTitle,
+            filePath,
+            promptPath: resolvePromptPathForFile(filePath),
+            dependencies: []
+        });
+    }
+
+    for (const task of tasks) {
+        const deps = tasks
+            .filter((candidate) => candidate.phase < task.phase)
+            .map((candidate) => candidate.id);
+        task.dependencies = deps;
+    }
+
+    return {
+        version: "one_click_manifest_v1",
+        templateKind: input.templateKind,
+        outputLanguage: input.outputLanguage,
+        oneClickMode: input.oneClickMode,
+        ideProfile: input.ideProfile,
+        generatedAt: new Date().toISOString(),
+        tasks,
+        phases: phasePlans
+    };
+}
+
+function parseImplementationPlanInputFiles(planContent: string) {
+    const result = new Set<string>();
+    const matches = planContent.matchAll(IMPLEMENTATION_PLAN_FILE_RE);
+    for (const match of matches) {
+        const value = match[1]?.trim();
+        if (!value) continue;
+        result.add(value);
+    }
+    return result;
+}
+
+function parsePackageDependencyKeys(packageJsonText: string) {
+    const deps = new Set<string>();
+    if (!packageJsonText.trim()) return deps;
+    try {
+        const parsed = JSON.parse(packageJsonText) as {
+            dependencies?: Record<string, string>;
+            devDependencies?: Record<string, string>;
+        };
+        Object.keys(parsed.dependencies || {}).forEach((key) => deps.add(key));
+        Object.keys(parsed.devDependencies || {}).forEach((key) => deps.add(key));
+    } catch {
+        return deps;
+    }
+    return deps;
+}
+
+function detectDocumentLanguage(text: string): OutputLanguage {
+    const chinese = (text.match(/[\u3400-\u9fff]/g) || []).length;
+    const latin = (text.match(/[A-Za-z]/g) || []).length;
+    if (chinese >= 6) return "zh";
+    if (chinese >= 2 && chinese / Math.max(1, chinese + latin) >= 0.08) return "zh";
+    return "en";
+}
+
+function validateNextConfigContent(text: string) {
+    const source = (text || "").trim();
+    if (!source) return false;
+    if (/##\s+Quality Constraints/i.test(source)) return false;
+    if (/```/.test(source)) return false;
+    if (!/export\s+default\s+nextConfig/.test(source)) return false;
+    return true;
+}
+
+function deriveMissingDependencies(toolStack: string, packageJsonText: string) {
+    const closure = deriveDependencyClosure({
+        toolStack,
+        analysisText: toolStack,
+        templateKind: "next_root"
+    });
+    const expected = new Set<string>([
+        ...Object.keys(closure.deps || {}),
+        ...Object.keys(closure.devDeps || {})
+    ]);
+    const actual = parsePackageDependencyKeys(packageJsonText);
+    const missing = Array.from(expected).filter((name) => !actual.has(name));
+    return missing;
+}
+
+function runGenerationPreflight(input: {
+    tree: any[];
+    outputLanguage: OutputLanguage;
+    toolStack: string;
+    manifest: GenerationManifest;
+    pathNormalizationFixCount: number;
+}): PreflightReport {
+    const issues: PreflightIssue[] = [];
+    const nextConfig = getFileContentByPath(input.tree, "next.config.ts");
+    const nextConfigValid = validateNextConfigContent(nextConfig);
+    if (!nextConfigValid) {
+        issues.push({
+            code: "NEXT_CONFIG_CONTAMINATED",
+            severity: "error",
+            message: "`next.config.ts` contains invalid scaffold text."
+        });
+    }
+
+    const envExamplePresent = Boolean(getFileContentByPath(input.tree, ".env.example"));
+    if (!envExamplePresent) {
+        issues.push({
+            code: "MISSING_ENV_EXAMPLE",
+            severity: "error",
+            message: "`.env.example` is missing."
+        });
+    }
+
+    const placeholderPaths = collectPlaceholderPaths(input.tree);
+    const planContent = getFileContentByPath(input.tree, "IMPLEMENTATION_PLAN.md");
+    const planFiles = parseImplementationPlanInputFiles(planContent);
+    const uncovered = placeholderPaths.filter((path) => !planFiles.has(path));
+    const planCoveragePct = placeholderPaths.length === 0
+        ? 100
+        : Math.round(((placeholderPaths.length - uncovered.length) / placeholderPaths.length) * 1000) / 10;
+    if (uncovered.length > 0) {
+        issues.push({
+            code: "PLAN_COVERAGE_INCOMPLETE",
+            severity: "error",
+            message: "Implementation plan does not cover all placeholder files.",
+            details: uncovered.slice(0, 10).join(", ")
+        });
+    }
+
+    const invalidPromptRefs = input.manifest.tasks.filter((task) => !task.promptPath.endsWith("_AI_PROMPT.md"));
+    if (invalidPromptRefs.length > 0) {
+        issues.push({
+            code: "INVALID_PROMPT_REFERENCE",
+            severity: "error",
+            message: "Manifest contains invalid prompt references."
+        });
+    }
+
+    const duplicateSegmentPaths = collectFilePathsFromTree(input.tree).filter((path) => {
+        const segments = path.split("/");
+        for (let i = 1; i < segments.length; i++) {
+            if (segments[i] === segments[i - 1]) return true;
+        }
+        return false;
+    });
+    if (duplicateSegmentPaths.length > 0) {
+        issues.push({
+            code: "DUPLICATE_PATH_SEGMENT",
+            severity: "error",
+            message: "Found duplicate path segments in generated files.",
+            details: duplicateSegmentPaths.slice(0, 10).join(", ")
+        });
+    }
+
+    const readmeLanguage = detectDocumentLanguage(getFileContentByPath(input.tree, "README.md"));
+    const rootPromptLanguage = detectDocumentLanguage(getFileContentByPath(input.tree, "_AI_PROMPT.md"));
+    if (readmeLanguage !== rootPromptLanguage || readmeLanguage !== input.outputLanguage) {
+        issues.push({
+            code: "LANGUAGE_MISMATCH",
+            severity: "error",
+            message: "Generated docs and prompts are not language-consistent."
+        });
+    }
+
+    const missingDeps = deriveMissingDependencies(
+        input.toolStack,
+        getFileContentByPath(input.tree, "package.json")
+    );
+    if (missingDeps.length > 0) {
+        issues.push({
+            code: "MISSING_STACK_DEPENDENCIES",
+            severity: "warning",
+            message: "Some stack dependencies are missing from package.json.",
+            details: missingDeps.slice(0, 10).join(", ")
+        });
+    }
+
+    return {
+        pass: issues.every((issue) => issue.severity !== "error"),
+        planCoveragePct,
+        placeholderCount: placeholderPaths.length,
+        nextConfigValid,
+        envExamplePresent,
+        pathNormalizationFixCount: input.pathNormalizationFixCount,
+        missingDepsCount: missingDeps.length,
+        manifestTaskCount: input.manifest.tasks.length,
+        issues
+    };
 }
 
 function buildImplementationPlan(input: {
@@ -1648,11 +2777,19 @@ function buildImplementationPlan(input: {
     return lines.join("\n");
 }
 
+void ensureStructuredReadmeQuality;
+void buildImplementationPlan;
+
 function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
     const stack = (toolStack || "").toLowerCase();
     const usesZod = /\bzod\b/.test(stack);
 
     const codeFilePattern = /\.(ts|tsx|js|jsx)$/i;
+    const exemptCodeFiles = new Set([
+        "next.config.ts",
+        "next.config.js",
+        "turbo.json"
+    ]);
 
     const traverse = (nodes: any[], path: string) => {
         for (const node of nodes) {
@@ -1664,6 +2801,8 @@ function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
             if (node.type !== "file" || !node.name) continue;
             const filePath = `${path}${node.name}`;
             if (!codeFilePattern.test(node.name)) continue;
+            if (exemptCodeFiles.has(filePath)) continue;
+            if (filePath === "package.json" || filePath === "tsconfig.json") continue;
 
             const existing = node.content || "";
             const qualitySection = buildQualitySection(filePath, { usesZod });

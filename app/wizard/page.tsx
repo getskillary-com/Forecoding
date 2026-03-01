@@ -67,6 +67,8 @@ const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_COMPACT_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
 const DIAGRAM_POLICY = "incremental_manual_review_v1" as const;
+const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
+const GENERATE_IDE_PROFILE = "generic" as const;
 const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
 
 function summarizeStructureContent(content: string): string {
@@ -200,6 +202,21 @@ function inferScaffoldOutputLanguage(messages: Message[]): "zh" | "en" {
 
     const fullText = messages.map((m) => m.content || "").join("\n");
     return detectOutputLanguageFromText(fullText);
+}
+
+function inferTemplateKindHintFromTree(tree?: FileNode[]): "next_root" | "next_src" | "monorepo_multiapp" | undefined {
+    if (!tree || tree.length === 0) return undefined;
+
+    const topLevel = new Set(
+        tree
+            .map((node) => node?.name)
+            .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+    );
+
+    if (topLevel.has("apps") || topLevel.has("packages")) return "monorepo_multiapp";
+    if (topLevel.has("src")) return "next_src";
+    if (topLevel.has("app")) return "next_root";
+    return undefined;
 }
 
 function yieldToBrowser(): Promise<void> {
@@ -1525,6 +1542,7 @@ function WizardContent() {
             const historyText = messages.map(m => `${m.role}: ${m.content}`).join("\n") +
                 `\n\nFinal Analysis: ${JSON.stringify(evaluation?.analysis)}`;
             const outputLanguage = inferScaffoldOutputLanguage(messages);
+            const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
 
             const res = await fetch("/api/generate", {
                 method: "POST",
@@ -1534,6 +1552,9 @@ function WizardContent() {
                     diagram: currentDiagram,
                     projectName: project?.name,
                     outputLanguage,
+                    oneClickMode: GENERATE_ONE_CLICK_MODE,
+                    ideProfile: GENERATE_IDE_PROFILE,
+                    templateKindHint,
                     // If this version has a generation already (or base version had one), we can pass it?
                     // Actually, for v2, `generation` state was initialized from base. That is our "existingProjectTree".
                     currentProjectTree: generation?.projectTree
