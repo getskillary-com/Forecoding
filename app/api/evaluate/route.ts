@@ -18,7 +18,7 @@ const EVALUATE_RETRY_TEXT_ATTACHMENT_CHARS = 2_000;
 const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_RETRY_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_DIAGRAM_POLICY_MAX_CHARS = 120;
-const DEFAULT_DIAGRAM_POLICY = "incremental_manual_review_v1";
+const DEFAULT_DIAGRAM_POLICY = "incremental_auto_apply_v1";
 
 export const runtime = "nodejs";
 

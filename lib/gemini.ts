@@ -546,7 +546,7 @@ export async function* streamEvaluateInput(
 ) {
     const maxContextChars = 12000;
     const maxDesignMemoryChars = 14000;
-    const defaultDiagramPolicy = "incremental_manual_review_v1";
+    const defaultDiagramPolicy = "incremental_auto_apply_v1";
     const safeContext = typeof context === "string" && context.trim()
         ? context.trim().slice(0, maxContextChars)
         : "";
@@ -562,7 +562,7 @@ export async function* streamEvaluateInput(
     const designMemoryBlock = safeDesignMemory
         ? `\n\n# Persistent Design Memory\n${safeDesignMemory}`
         : "";
-    const diagramStabilityBlock = `\n\n# Diagram Stability Contract (${normalizedDiagramPolicy})\n- Baseline architecture diagram is the source of truth.\n- Only propose minimal incremental changes; do not rewrite the full diagram unless user explicitly requests a structural redesign.\n- If the latest user input does not impact architecture, keep the diagram logically unchanged.\n- Reuse existing node names and existing edges whenever possible.\n- Avoid cosmetic-only rewrites and avoid reordering nodes without functional impact.\n- Always output <diagram>, but keep it stable and continuity-preserving.`;
+    const diagramStabilityBlock = `\n\n# Diagram Stability Contract (${normalizedDiagramPolicy})\n- Baseline architecture diagram is the source of truth.\n- Output will be auto-applied, so only make changes when user input requires architecture changes.\n- Prefer minimal incremental updates; do not rewrite the full diagram unless user explicitly requests a structural redesign.\n- If the latest user input does not impact architecture, keep the diagram logically unchanged.\n- Reuse existing node names and existing edges whenever possible.\n- Avoid cosmetic-only rewrites and avoid reordering nodes without functional impact.\n- Always output <diagram>, but keep it stable and continuity-preserving.`;
 
     const coachModeBlock = options?.generationReady
         ? `\n\n# Runtime Mode\nScaffold already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`

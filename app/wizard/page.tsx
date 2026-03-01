@@ -66,7 +66,7 @@ const EVALUATE_COMPACT_CONTEXT_CHARS = 4000;
 const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_COMPACT_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
-const DIAGRAM_POLICY = "incremental_manual_review_v1" as const;
+const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
 const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
@@ -136,9 +136,9 @@ function normalizeDiagramGovernance(value: DiagramGovernance | null | undefined)
     if (!value || typeof value !== "object") return fallback;
 
     return {
-        pendingDiagram: typeof value.pendingDiagram === "string" ? value.pendingDiagram : null,
-        pendingSourceRequestId: typeof value.pendingSourceRequestId === "string" ? value.pendingSourceRequestId : null,
-        pendingUpdatedAt: typeof value.pendingUpdatedAt === "number" ? value.pendingUpdatedAt : null,
+        pendingDiagram: null,
+        pendingSourceRequestId: null,
+        pendingUpdatedAt: null,
         lastDecision:
             value.lastDecision === "applied" || value.lastDecision === "rejected" || value.lastDecision === "none"
                 ? value.lastDecision
@@ -398,9 +398,7 @@ function buildDesignMemory(
         `- Last Decision: ${diagramGovernance.lastDecision || "none"}`,
         `- Last Decision Time: ${lastDecisionAt || "N/A"}`,
         `- Last Decision Note: ${clipText(diagramGovernance.lastDecisionNote || "N/A", 500)}`,
-        diagramGovernance.pendingDiagram
-            ? "- Pending Diagram: Exists (awaiting manual review)"
-            : "- Pending Diagram: None"
+        "- Update Mode: Auto-apply accepted diagram changes; no manual approval queue."
     ];
 
     return clipText(sections.join("\n").trim(), maxChars);
@@ -694,7 +692,6 @@ function WizardContent() {
     const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
-    const [architecturePreviewMode, setArchitecturePreviewMode] = useState<"baseline" | "proposed">("baseline");
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
@@ -702,13 +699,7 @@ function WizardContent() {
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
-    const pendingDiagram = diagramGovernance.pendingDiagram;
-    const hasPendingDiagram = Boolean(pendingDiagram);
-    const pendingUpdatedLabel = diagramGovernance.pendingUpdatedAt
-        ? new Date(diagramGovernance.pendingUpdatedAt).toLocaleString()
-        : null;
-    const previewingProposed = hasPendingDiagram && architecturePreviewMode === "proposed";
-    const architectureViewerCode = previewingProposed ? (pendingDiagram || currentDiagram) : currentDiagram;
+    const architectureViewerCode = currentDiagram;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -1082,12 +1073,6 @@ function WizardContent() {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    useEffect(() => {
-        if (!hasPendingDiagram && architecturePreviewMode !== "baseline") {
-            setArchitecturePreviewMode("baseline");
-        }
-    }, [hasPendingDiagram, architecturePreviewMode]);
-
     // --- Handlers ---
 
     // --- Interaction Handlers ---
@@ -1185,38 +1170,6 @@ function WizardContent() {
         evalRequestIdRef.current += 1;
         setIsLoading(false);
         if (message) updateAssistantPlaceholder(message);
-    };
-
-    const applyPendingDiagram = () => {
-        const pendingDiagram = diagramGovernance.pendingDiagram;
-        if (!pendingDiagram) return;
-
-        setHasUserEdited(true);
-        setCurrentDiagram(pendingDiagram);
-        setDiagramGovernance((prev) => ({
-            ...prev,
-            pendingDiagram: null,
-            pendingSourceRequestId: null,
-            pendingUpdatedAt: null,
-            lastDecision: "applied",
-            lastDecisionNote: "User applied pending diagram update.",
-            lastDecisionAt: Date.now()
-        }));
-    };
-
-    const keepCurrentDiagram = () => {
-        if (!diagramGovernance.pendingDiagram) return;
-
-        setHasUserEdited(true);
-        setDiagramGovernance((prev) => ({
-            ...prev,
-            pendingDiagram: null,
-            pendingSourceRequestId: null,
-            pendingUpdatedAt: null,
-            lastDecision: "rejected",
-            lastDecisionNote: "User rejected pending update and kept current baseline architecture.",
-            lastDecisionAt: Date.now()
-        }));
     };
 
     const handleSend = async (overrideInput?: string) => {
@@ -1350,13 +1303,13 @@ function WizardContent() {
                 throw new Error("Failed to evaluate: empty response body");
             }
 
-            const serverRequestId = res.headers.get("x-evaluate-request-id") || "";
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
             const baselineDiagramForRequest = currentDiagram;
             const baselineDiagramNormalized = normalizeMermaidForComparison(baselineDiagramForRequest);
-            let latestPendingDiagramNormalized = normalizeMermaidForComparison(diagramGovernance.pendingDiagram || "");
+            let latestAppliedDiagram = baselineDiagramForRequest;
+            let latestAppliedDiagramNormalized = baselineDiagramNormalized;
             const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
@@ -1391,23 +1344,21 @@ function WizardContent() {
                     const normalizedCandidate = normalizeMermaidForComparison(code);
                     if (
                         normalizedCandidate &&
-                        normalizedCandidate !== baselineDiagramNormalized &&
-                        hasMeaningfulDiagramChange(baselineDiagramForRequest, code) &&
-                        normalizedCandidate !== latestPendingDiagramNormalized
+                        normalizedCandidate !== latestAppliedDiagramNormalized &&
+                        hasMeaningfulDiagramChange(latestAppliedDiagram, code)
                     ) {
-                        latestPendingDiagramNormalized = normalizedCandidate;
-                        setDiagramGovernance((prev) => {
-                            const prevNormalized = normalizeMermaidForComparison(prev.pendingDiagram || "");
-                            if (prevNormalized === normalizedCandidate) {
-                                return prev;
-                            }
-                            return {
-                                ...prev,
-                                pendingDiagram: code,
-                                pendingSourceRequestId: serverRequestId || String(requestId),
-                                pendingUpdatedAt: Date.now()
-                            };
-                        });
+                        latestAppliedDiagram = code;
+                        latestAppliedDiagramNormalized = normalizedCandidate;
+                        setCurrentDiagram(code);
+                        setDiagramGovernance((prev) => ({
+                            ...prev,
+                            pendingDiagram: null,
+                            pendingSourceRequestId: null,
+                            pendingUpdatedAt: null,
+                            lastDecision: "applied",
+                            lastDecisionNote: "Auto-applied architecture update from assistant response.",
+                            lastDecisionAt: Date.now()
+                        }));
                     }
                 }
 
@@ -1924,71 +1875,17 @@ function WizardContent() {
                     {activeTab === 'architecture' && (
                         <div className="absolute inset-0 p-4 flex flex-col">
                             <div className="mb-2 flex justify-between items-center text-xs text-gray-500 uppercase font-semibold tracking-wider">
-                                <span>{hasPendingDiagram ? "Architecture Review Required" : "Live System Diagram"}</span>
+                                <span>Live System Diagram</span>
                                 <span className="flex items-center gap-1">
-                                    <span className={`w-2 h-2 rounded-full ${hasPendingDiagram ? "bg-amber-500" : "bg-green-500 animate-pulse"}`} />
-                                    {hasPendingDiagram ? "Pending Update" : "Stable Baseline"}
+                                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                    Auto Updating
                                 </span>
                             </div>
 
                             <div className="flex-1 min-h-0 flex flex-col gap-3">
-                                {hasPendingDiagram && (
-                                    <div className="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-900/10 p-3">
-                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                                            <div className="text-sm text-amber-800 dark:text-amber-200">
-                                                <p className="font-semibold">Review proposed architecture changes before applying.</p>
-                                                <p className="text-xs mt-1 text-amber-700/80 dark:text-amber-300/80">
-                                                    {pendingUpdatedLabel ? `Detected at ${pendingUpdatedLabel}.` : "Detected in latest assistant response."}
-                                                </p>
-                                            </div>
-                                            <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-700 overflow-hidden">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setArchitecturePreviewMode("baseline")}
-                                                    className={`px-3 py-2 text-xs font-semibold transition-colors ${architecturePreviewMode === "baseline"
-                                                        ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
-                                                        : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"}`}
-                                                >
-                                                    Baseline
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setArchitecturePreviewMode("proposed")}
-                                                    className={`px-3 py-2 text-xs font-semibold transition-colors ${architecturePreviewMode === "proposed"
-                                                        ? "bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300"
-                                                        : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"}`}
-                                                >
-                                                    Proposed
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
-                                <div className={`flex-1 min-h-0 border-2 rounded-xl overflow-hidden relative ${previewingProposed
-                                    ? "border-amber-300/80 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-900/10"
-                                    : "border-dashed border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-black/20"}`}>
+                                <div className="flex-1 min-h-0 border-2 rounded-xl overflow-hidden relative border-dashed border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-black/20">
                                     <ArchitectureViewer code={architectureViewerCode} />
                                 </div>
-
-                                {hasPendingDiagram && (
-                                    <div className="flex gap-2 justify-end">
-                                        <button
-                                            type="button"
-                                            onClick={applyPendingDiagram}
-                                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-                                        >
-                                            Apply Update
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={keepCurrentDiagram}
-                                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                                        >
-                                            Keep Current
-                                        </button>
-                                    </div>
-                                )}
                             </div>
                         </div>
                     )}
