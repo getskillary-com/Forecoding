@@ -1171,6 +1171,13 @@ function ensureCoreConfigFiles(
     if (templateKind === "monorepo_multiapp") {
         upsertFileByPath(finalTree, "turbo.json", generateTurboConfigJson());
     }
+    ensureMinimumActionableScaffold({
+        tree: finalTree,
+        templateKind,
+        outputLanguage,
+        projectName,
+        history
+    });
 
     const structuredReadme = ensureStructuredReadmeQualityStable(
         buildStructuredReadmeStable({
@@ -1216,7 +1223,7 @@ type DependencyClosure = {
 };
 
 const DEPENDENCY_CATALOG: Array<{ match: RegExp; deps?: Record<string, string>; devDeps?: Record<string, string> }> = [
-    { match: /prisma|postgres|postgresql/, deps: { "@prisma/client": "^5.22.0" }, devDeps: { prisma: "^5.22.0" } },
+    { match: /prisma/, deps: { "@prisma/client": "^5.22.0" }, devDeps: { prisma: "^5.22.0" } },
     { match: /nextauth|next-auth|auth\.js|@auth\/core/, deps: { "next-auth": "^5.0.0-beta.25" } },
     { match: /stripe/, deps: { stripe: "^17.3.1", "@stripe/stripe-js": "^4.10.0" } },
     { match: /supabase/, deps: { "@supabase/supabase-js": "^2.49.1", "@supabase/ssr": "^0.5.2" } },
@@ -1226,6 +1233,7 @@ const DEPENDENCY_CATALOG: Array<{ match: RegExp; deps?: Record<string, string>; 
     { match: /\bexpo\b|react native|react-native/, deps: { expo: "^52.0.21" } },
     { match: /recharts|chart/, deps: { recharts: "^2.13.0" } },
     { match: /\bxlsx\b|excel/, deps: { xlsx: "^0.18.5" } },
+    { match: /pdf-parse|mammoth|docx|word|pdf/, deps: { "pdf-parse": "^1.1.1", mammoth: "^1.9.0" } },
     { match: /openai|@ai-sdk\/openai|vercel ai sdk/, deps: { ai: "^4.3.16", "@ai-sdk/openai": "^1.3.22" } },
     { match: /zod/, deps: { zod: "^3.23.8" } },
     { match: /react query|tanstack query/, deps: { "@tanstack/react-query": "^5.45.0" } },
@@ -1233,7 +1241,7 @@ const DEPENDENCY_CATALOG: Array<{ match: RegExp; deps?: Record<string, string>; 
     { match: /shadcn|class-variance-authority|tailwind-merge|clsx/, deps: { "class-variance-authority": "^0.7.1", clsx: "^2.1.1", "tailwind-merge": "^2.6.0" } },
     { match: /lucide/, deps: { "lucide-react": "^0.263.1" } },
     { match: /zustand/, deps: { zustand: "^4.5.2" } },
-    { match: /turborepo|monorepo|workspace/, devDeps: { turbo: "^2.4.2" } }
+    { match: /turborepo|monorepo/, devDeps: { turbo: "^2.4.2" } }
 ];
 
 function deriveDependencyClosure(input: {
@@ -1346,7 +1354,7 @@ function generatePackageJson(input: {
     const usesOpenAiSdk = /openai|@ai-sdk\/openai/.test(stack);
     const usesShadcn = /shadcn|radix|class-variance-authority|tailwind-merge|clsx/.test(stack);
     const usesDateFns = /date-fns|date range|calendar/.test(stack);
-    const usesPrisma = /prisma|postgres/.test(stack);
+    const usesPrisma = /prisma/.test(stack);
     const usesNextAuth = /nextauth|next-auth|auth\.js|@auth\/core/.test(stack);
     const usesStripe = /stripe/.test(stack);
     const usesRecharts = /recharts|chart/.test(stack);
@@ -2309,6 +2317,155 @@ function collectPlaceholderPaths(tree: any[]) {
         .sort((a, b) => a.localeCompare(b));
 }
 
+function buildScaffoldSpecContent(input: {
+    filePath: string;
+    outputLanguage: OutputLanguage;
+    projectName: string;
+    focus: string;
+}) {
+    const fileName = input.filePath.split("/").pop() || input.filePath;
+    const isApi = /\/api\/|route\.(ts|js)$/i.test(input.filePath);
+    const isPage = /page\.(tsx|ts|jsx|js)$/i.test(fileName);
+    const isLayout = /layout\.(tsx|ts|jsx|js)$/i.test(fileName);
+    const isComponent = /components\//i.test(input.filePath);
+    const isType = /types\//i.test(input.filePath) || /types?\.(ts|tsx)$/i.test(fileName);
+    const languageHint = input.outputLanguage === "zh"
+        ? "UI copy should be Chinese-first while preserving technical identifiers."
+        : "UI copy should be English-first with concise wording.";
+
+    if (isApi) {
+        return [
+            "# API Spec",
+            "",
+            "## Role & Responsibility",
+            `- Serve ${input.focus} backend endpoints with validated input/output contracts.`,
+            "",
+            "## Core Interactions",
+            "- `POST`: accept parsed document content and return structured risk findings.",
+            "- `GET`: return recent analysis summary for refresh/recovery scenarios.",
+            "",
+            "## Output Constraints",
+            "- Return stable JSON schema.",
+            "- Never leak raw stack traces.",
+            `- ${languageHint}`
+        ].join("\n");
+    }
+
+    if (isLayout) {
+        return [
+            "# Layout Spec",
+            "",
+            "## Role & Responsibility",
+            `- Provide shared app shell for ${input.projectName}.`,
+            "",
+            "## Core Interactions",
+            "- Render global header/nav and content container.",
+            "- Reserve global notice and error area.",
+            `- ${languageHint}`
+        ].join("\n");
+    }
+
+    if (isPage) {
+        return [
+            "# Page Spec",
+            "",
+            "## Role & Responsibility",
+            `- Host primary ${input.focus} user flow.`,
+            "",
+            "## Core Interactions",
+            "- Upload files, preview risks, export report.",
+            "- Handle loading/failure/retry and history navigation.",
+            `- ${languageHint}`
+        ].join("\n");
+    }
+
+    if (isComponent) {
+        return [
+            "# Component Spec",
+            "",
+            "## Role & Responsibility",
+            `- Reusable interaction component for ${input.focus}.`,
+            "",
+            "## Core Interactions",
+            "- Receive typed props and emit explicit callbacks.",
+            "- Keep lightweight local state and lift business logic to services."
+        ].join("\n");
+    }
+
+    if (isType) {
+        return [
+            "# Type Spec",
+            "",
+            "## Role & Responsibility",
+            `- Define contracts for ${input.focus}.`,
+            "",
+            "## Output Constraints",
+            "- Avoid `any`, prefer explicit interfaces/unions.",
+            "- Keep names aligned with API payloads."
+        ].join("\n");
+    }
+
+    return [
+        "# Module Spec",
+        "",
+        "## Role & Responsibility",
+        `- Implement core logic for ${input.focus}.`,
+        "",
+        "## Core Interactions",
+        "- Export testable functions/services."
+    ].join("\n");
+}
+
+function ensureMinimumActionableScaffold(input: {
+    tree: any[];
+    templateKind: TemplateKind;
+    outputLanguage: OutputLanguage;
+    projectName: string;
+    history: string;
+}) {
+    const existingPlaceholderPaths = collectPlaceholderPaths(input.tree);
+    if (existingPlaceholderPaths.length > 0) return;
+
+    const intents = extractUserIntentLinesStable(input.history, input.outputLanguage);
+    const focus = intents[0] || "core business";
+    const base = input.templateKind === "next_src" ? "src/" : "";
+    const defaultFiles =
+        input.templateKind === "monorepo_multiapp"
+            ? [
+                "apps/web/app/layout.tsx",
+                "apps/web/app/page.tsx",
+                "apps/web/app/review/page.tsx",
+                "apps/web/app/api/review/route.ts",
+                "apps/backend/src/services/review.service.ts",
+                "packages/domain/src/types.ts",
+                "packages/domain/src/risk-rules.ts"
+            ]
+            : [
+                `${base}app/layout.tsx`,
+                `${base}app/page.tsx`,
+                `${base}app/review/page.tsx`,
+                `${base}app/api/review/route.ts`,
+                `${base}components/review/UploadPanel.tsx`,
+                `${base}components/review/RiskSummary.tsx`,
+                `${base}lib/review-engine.ts`,
+                `${base}types/review.ts`
+            ];
+
+    for (const filePath of defaultFiles) {
+        if (getFileContentByPath(input.tree, filePath)) continue;
+        upsertFileByPath(
+            input.tree,
+            filePath,
+            buildScaffoldSpecContent({
+                filePath,
+                outputLanguage: input.outputLanguage,
+                projectName: input.projectName,
+                focus
+            })
+        );
+    }
+}
+
 function resolvePromptPathForFile(filePath: string) {
     const normalized = filePath.replace(/\\/g, "/");
     const idx = normalized.lastIndexOf("/");
@@ -2580,11 +2737,18 @@ function runGenerationPreflight(input: {
     }
 
     const placeholderPaths = collectPlaceholderPaths(input.tree);
+    if (placeholderPaths.length === 0) {
+        issues.push({
+            code: "EMPTY_GENERATION_TASKS",
+            severity: "error",
+            message: "No actionable placeholder files were generated for one-click execution."
+        });
+    }
     const planContent = getFileContentByPath(input.tree, "IMPLEMENTATION_PLAN.md");
     const planFiles = parseImplementationPlanInputFiles(planContent);
     const uncovered = placeholderPaths.filter((path) => !planFiles.has(path));
     const planCoveragePct = placeholderPaths.length === 0
-        ? 100
+        ? 0
         : Math.round(((placeholderPaths.length - uncovered.length) / placeholderPaths.length) * 1000) / 10;
     if (uncovered.length > 0) {
         issues.push({
@@ -2601,6 +2765,20 @@ function runGenerationPreflight(input: {
             code: "INVALID_PROMPT_REFERENCE",
             severity: "error",
             message: "Manifest contains invalid prompt references."
+        });
+    }
+    if (input.manifest.tasks.length === 0) {
+        issues.push({
+            code: "EMPTY_GENERATION_TASKS",
+            severity: "error",
+            message: "Manifest task graph is empty."
+        });
+    }
+    if (input.manifest.tasks.length > 0 && input.manifest.tasks.length !== placeholderPaths.length) {
+        issues.push({
+            code: "INVALID_PROMPT_REFERENCE",
+            severity: "error",
+            message: "Manifest task count does not match placeholder file count."
         });
     }
 

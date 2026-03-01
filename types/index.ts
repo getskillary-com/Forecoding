@@ -57,6 +57,7 @@ export interface PreflightIssue {
         | "MISSING_ENV_EXAMPLE"
         | "INVALID_PROMPT_REFERENCE"
         | "PLAN_COVERAGE_INCOMPLETE"
+        | "EMPTY_GENERATION_TASKS"
         | "DUPLICATE_PATH_SEGMENT"
         | "LANGUAGE_MISMATCH"
         | "MISSING_STACK_DEPENDENCIES";
