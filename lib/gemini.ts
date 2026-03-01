@@ -1638,10 +1638,17 @@ function generateNextConfig(input: { usesPhaser: boolean }) {
 }
 
 function sanitizeProjectName(name: string) {
-    return name
+    const normalized = name
         .toLowerCase()
         .replace(/[^a-z0-9-_]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "generated-project";
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+    if (!normalized) return "generated-project";
+    if (/^\d+$/.test(normalized)) return `project-${normalized}`;
+    if (!/^[a-z]/.test(normalized)) return `project-${normalized}`;
+    if (normalized.length < 3) return `project-${normalized}`;
+    return normalized;
 }
 
 function upsertFileByPath(tree: any[], filePath: string, content: string) {
@@ -2720,9 +2727,11 @@ function buildRootAiPrompt(input: {
         ideProfile: input.ideProfile
     });
 
-    const lines: string[] = [header.trim(), "", "## All Placeholder Tasks", ""];
+    const taskHeading = input.outputLanguage === "zh" ? "## 全量占位任务" : "## All Placeholder Tasks";
+    const phaseLabel = input.outputLanguage === "zh" ? "阶段" : "Phase";
+    const lines: string[] = [header.trim(), "", taskHeading, ""];
     for (const task of input.manifest.tasks) {
-        lines.push(`- Phase ${task.phase}: \`${task.filePath}\` -> \`${task.promptPath}\``);
+        lines.push(`- ${phaseLabel} ${task.phase}: \`${task.filePath}\` -> \`${task.promptPath}\``);
     }
     lines.push("");
     return lines.join("\n");
@@ -3121,14 +3130,14 @@ function enhanceProjectTreeSpecs(projectTree: any[], toolStack: string): any[] {
             const antiPatternSection = buildAntiPatternSection(filePath);
             const goodBadSection = buildGoodBadSection(filePath);
 
-            let appended = "";
-            if (!/##\s+Quality Constraints/i.test(existing)) appended += qualitySection;
-            if (!/##\s+Template Guidance/i.test(existing)) appended += templateSection;
-            if (!/##\s+Anti-Patterns/i.test(existing)) appended += antiPatternSection;
-            if (!/##\s+Good\s+vs\s+Bad\s+Examples/i.test(existing)) appended += goodBadSection;
+            const sections: string[] = [];
+            if (!/##\s+Quality Constraints/i.test(existing)) sections.push(qualitySection);
+            if (!/##\s+Template Guidance/i.test(existing)) sections.push(templateSection);
+            if (!/##\s+Anti-Patterns/i.test(existing)) sections.push(antiPatternSection);
+            if (!/##\s+Good\s+vs\s+Bad\s+Examples/i.test(existing)) sections.push(goodBadSection);
 
-            if (appended.trim().length > 0) {
-                node.content = `${existing}\n\n${appended}`.trim();
+            if (sections.length > 0) {
+                node.content = `${existing}\n\n${sections.join("\n\n")}`.trim();
             }
         }
     };
