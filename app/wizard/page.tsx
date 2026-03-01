@@ -1574,6 +1574,10 @@ function WizardContent() {
                 throw new Error(errorMessage);
             }
             const data: GenerationResponse = await res.json();
+            if (data.preflightReport && !data.preflightReport.pass) {
+                const codes = data.preflightReport.issues.map((issue) => issue.code).join(", ");
+                throw new Error(`Scaffold preflight failed: ${codes || "unknown"}`);
+            }
             setGeneration(data);
 
             // Auto switch tab

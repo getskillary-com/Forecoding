@@ -661,6 +661,14 @@ type GenerateProjectResourcesOptions = {
     templateKindHint?: TemplateKind;
 };
 
+const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
+    "EMPTY_GENERATION_TASKS",
+    "PLAN_COVERAGE_INCOMPLETE",
+    "INVALID_PROMPT_REFERENCE",
+    "NEXT_CONFIG_CONTAMINATED",
+    "MISSING_ENV_EXAMPLE"
+] as const);
+
 export async function generateProjectResources(
     history: string,
     diagram?: string,
@@ -745,7 +753,7 @@ export async function generateProjectResources(
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
-        const manifest = buildGenerationManifest({
+        let manifest = buildGenerationManifest({
             tree: data.projectTree,
             outputLanguage: resolvedOutputLanguage,
             templateKind,
@@ -772,7 +780,7 @@ export async function generateProjectResources(
             })
         );
 
-        const preflight = runGenerationPreflight({
+        let preflight = runGenerationPreflight({
             tree: data.projectTree,
             outputLanguage: resolvedOutputLanguage,
             toolStack: data.toolStack,
@@ -781,9 +789,92 @@ export async function generateProjectResources(
         });
 
         if (!preflight.pass) {
+            const hasHardBlocker = preflight.issues.some((issue) => (
+                issue.severity === "error" && SCAFFOLD_HARD_BLOCKER_CODES.has(issue.code)
+            ));
+
+            if (hasHardBlocker) {
+                ensureMinimumActionableScaffold({
+                    tree: data.projectTree,
+                    templateKind,
+                    outputLanguage: resolvedOutputLanguage,
+                    projectName: resolvedProjectName || "generated-project",
+                    history,
+                    force: true
+                });
+
+                upsertFileByPath(
+                    data.projectTree,
+                    "README.md",
+                    ensureStructuredReadmeQualityStable(
+                        buildStructuredReadmeStable({
+                            outputLanguage: resolvedOutputLanguage,
+                            projectName: resolvedProjectName || "generated-project",
+                            toolStack: data.toolStack,
+                            history,
+                            tree: data.projectTree
+                        }),
+                        {
+                            outputLanguage: resolvedOutputLanguage,
+                            projectName: resolvedProjectName || "generated-project",
+                            toolStack: data.toolStack,
+                            history,
+                            tree: data.projectTree
+                        }
+                    )
+                );
+                upsertFileByPath(
+                    data.projectTree,
+                    "IMPLEMENTATION_PLAN.md",
+                    buildImplementationPlanStable({
+                        outputLanguage: resolvedOutputLanguage,
+                        projectName: resolvedProjectName || "generated-project",
+                        tree: data.projectTree
+                    })
+                );
+
+                manifest = buildGenerationManifest({
+                    tree: data.projectTree,
+                    outputLanguage: resolvedOutputLanguage,
+                    templateKind,
+                    oneClickMode: resolvedOneClickMode,
+                    ideProfile: resolvedIdeProfile
+                });
+                upsertFileByPath(data.projectTree, "GENERATION_MANIFEST.json", JSON.stringify(manifest, null, 2));
+                upsertFileByPath(
+                    data.projectTree,
+                    "ONE_CLICK_PROMPT.md",
+                    buildOneClickPrompt({
+                        outputLanguage: resolvedOutputLanguage,
+                        oneClickMode: resolvedOneClickMode
+                    })
+                );
+                upsertFileByPath(
+                    data.projectTree,
+                    "_AI_PROMPT.md",
+                    buildRootAiPrompt({
+                        outputLanguage: resolvedOutputLanguage,
+                        manifest,
+                        oneClickMode: resolvedOneClickMode,
+                        ideProfile: resolvedIdeProfile
+                    })
+                );
+
+                preflight = runGenerationPreflight({
+                    tree: data.projectTree,
+                    outputLanguage: resolvedOutputLanguage,
+                    toolStack: data.toolStack,
+                    manifest,
+                    pathNormalizationFixCount
+                });
+            }
+        }
+
+        if (!preflight.pass) {
             console.warn(
                 `[AI] Scaffold preflight reported issues: ${preflight.issues.map((issue) => issue.code).join(", ")}`
             );
+            throw new Error(`Scaffold preflight failed: ${preflight.issues.map((issue) => issue.code).join(", ")}`);
         }
 
         const generatedReadme = getFileContentByPath(data.projectTree, "README.md");
@@ -2416,40 +2507,82 @@ function buildScaffoldSpecContent(input: {
     ].join("\n");
 }
 
+function toKebabToken(text: string) {
+    const sanitized = (text || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return sanitized;
+}
+
+function deriveFeatureSlug(projectName: string, history: string) {
+    const projectToken = toKebabToken(projectName)
+        .split("-")
+        .find((token) => token.length >= 3 && !["app", "project", "platform", "system"].includes(token));
+    if (projectToken) return projectToken;
+
+    const historyTokens = (history || "")
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((token) => token.length >= 3)
+        .filter((token) => !["the", "and", "for", "with", "that", "this", "from", "user", "assistant"].includes(token));
+    if (historyTokens.length > 0) return historyTokens[0];
+
+    return "core";
+}
+
+function toPascalToken(token: string) {
+    return token
+        .split("-")
+        .filter(Boolean)
+        .map((item) => item.charAt(0).toUpperCase() + item.slice(1))
+        .join("") || "Core";
+}
+
+function buildActionableFloorFiles(templateKind: TemplateKind, featureSlug: string) {
+    const safeSlug = toKebabToken(featureSlug) || "core";
+    const featureComponent = `${toPascalToken(safeSlug)}Panel`;
+
+    if (templateKind === "monorepo_multiapp") {
+        return [
+            "apps/web/app/layout.tsx",
+            "apps/web/app/page.tsx",
+            `apps/web/app/${safeSlug}/page.tsx`,
+            `apps/web/app/api/${safeSlug}/route.ts`,
+            `apps/web/components/${safeSlug}/${featureComponent}.tsx`,
+            `apps/web/lib/${safeSlug}/client.ts`,
+            `apps/backend/src/services/${safeSlug}.service.ts`,
+            `packages/domain/src/${safeSlug}.types.ts`
+        ];
+    }
+
+    const base = templateKind === "next_src" ? "src/" : "";
+    return [
+        `${base}app/layout.tsx`,
+        `${base}app/page.tsx`,
+        `${base}app/${safeSlug}/page.tsx`,
+        `${base}app/api/${safeSlug}/route.ts`,
+        `${base}components/${safeSlug}/${featureComponent}.tsx`,
+        `${base}lib/${safeSlug}/service.ts`,
+        `${base}types/${safeSlug}.ts`
+    ];
+}
+
 function ensureMinimumActionableScaffold(input: {
     tree: any[];
     templateKind: TemplateKind;
     outputLanguage: OutputLanguage;
     projectName: string;
     history: string;
+    force?: boolean;
 }) {
     const existingPlaceholderPaths = collectPlaceholderPaths(input.tree);
-    if (existingPlaceholderPaths.length > 0) return;
+    if (!input.force && existingPlaceholderPaths.length > 0) return;
 
     const intents = extractUserIntentLinesStable(input.history, input.outputLanguage);
     const focus = intents[0] || "core business";
-    const base = input.templateKind === "next_src" ? "src/" : "";
-    const defaultFiles =
-        input.templateKind === "monorepo_multiapp"
-            ? [
-                "apps/web/app/layout.tsx",
-                "apps/web/app/page.tsx",
-                "apps/web/app/review/page.tsx",
-                "apps/web/app/api/review/route.ts",
-                "apps/backend/src/services/review.service.ts",
-                "packages/domain/src/types.ts",
-                "packages/domain/src/risk-rules.ts"
-            ]
-            : [
-                `${base}app/layout.tsx`,
-                `${base}app/page.tsx`,
-                `${base}app/review/page.tsx`,
-                `${base}app/api/review/route.ts`,
-                `${base}components/review/UploadPanel.tsx`,
-                `${base}components/review/RiskSummary.tsx`,
-                `${base}lib/review-engine.ts`,
-                `${base}types/review.ts`
-            ];
+    const featureSlug = deriveFeatureSlug(input.projectName, input.history);
+    const defaultFiles = buildActionableFloorFiles(input.templateKind, featureSlug);
 
     for (const filePath of defaultFiles) {
         if (getFileContentByPath(input.tree, filePath)) continue;

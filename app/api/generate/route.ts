@@ -61,10 +61,31 @@ export async function POST(req: Request) {
             console.info(
                 `[generate] preflight pass=${preflight.pass} planCoveragePct=${preflight.planCoveragePct} nextConfigValid=${preflight.nextConfigValid} envExamplePresent=${preflight.envExamplePresent} pathNormalizationFixCount=${preflight.pathNormalizationFixCount} manifestTaskCount=${preflight.manifestTaskCount} missingDepsCount=${preflight.missingDepsCount}`
             );
+            if (!preflight.pass) {
+                const codes = (Array.isArray(preflight.issues) ? preflight.issues : [])
+                    .map((issue: { code?: string }) => issue.code || "")
+                    .filter(Boolean)
+                    .join(", ");
+                return NextResponse.json(
+                    {
+                        error: "Scaffold preflight failed",
+                        details: codes || "Unknown preflight error"
+                    },
+                    { status: 422 }
+                );
+            }
         }
         return NextResponse.json(resources);
     } catch (error) {
         console.error("Generation error:", error);
-        return NextResponse.json({ error: "Failed to generate resources" }, { status: 500 });
+        const details = error instanceof Error ? error.message : "Unknown error";
+        const isPreflight = /Scaffold preflight failed/i.test(details);
+        return NextResponse.json(
+            {
+                error: isPreflight ? "Scaffold preflight failed" : "Failed to generate resources",
+                details
+            },
+            { status: isPreflight ? 422 : 500 }
+        );
     }
 }
