@@ -235,45 +235,59 @@ export default function DashboardPage() {
         }
     };
 
+    const latestUpdatedAt = projects.length > 0
+        ? Math.max(...projects.map((project) => project.updatedAt))
+        : null;
+
     if (isLoading) return <DashboardSkeleton />;
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">
-            <div className="max-w-6xl mx-auto">
-                <header className="flex justify-between items-center mb-10">
-                    <div className="space-y-3">
-                        <BrandLogo />
-                        <div>
-                            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Your Projects</h1>
-                            <p className="text-gray-500 dark:text-gray-400 mt-1">Manage and evolve your ideas.</p>
+        <div className="relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.22),transparent_72%)]" />
+            <div className="relative mx-auto max-w-6xl space-y-8">
+                <header className="fc-surface rounded-[var(--radius-2xl)] p-5 sm:p-7">
+                    <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="space-y-4">
+                            <BrandLogo />
+                            <div>
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Workspace</p>
+                                <h1 className="mt-1 text-3xl font-semibold text-slate-900 dark:text-slate-100">Your Projects</h1>
+                                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Manage product directions and keep blueprint versions in one place.</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <span className="fc-chip text-slate-600 dark:text-slate-300">{projects.length} Projects</span>
+                                <span className="fc-chip text-slate-600 dark:text-slate-300">
+                                    {latestUpdatedAt ? `Last update: ${new Date(latestUpdatedAt).toLocaleDateString()}` : "No updates yet"}
+                                </span>
+                            </div>
                         </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <button
-                            onClick={openCreateModal}
-                            className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg transition-all transform hover:scale-105 active:scale-95"
-                        >
-                            <Plus className="w-5 h-5" />
-                            New Project
-                        </button>
-                        <UserCenter signOutCallbackUrl="/" />
+                        <div className="flex flex-wrap items-center gap-3">
+                            <button
+                                onClick={openCreateModal}
+                                className="fc-button-primary inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold"
+                            >
+                                <Plus className="h-4 w-4" />
+                                New Project
+                            </button>
+                            <UserCenter signOutCallbackUrl="/" />
+                        </div>
                     </div>
                 </header>
 
                 {projects.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-gray-900 rounded-3xl border border-dashed border-gray-300 dark:border-gray-800">
-                        <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 rounded-2xl flex items-center justify-center mb-4">
-                            <Folder className="w-8 h-8 text-blue-500" />
+                    <div className="fc-surface-strong flex flex-col items-center justify-center rounded-[var(--radius-2xl)] border-dashed p-12 text-center sm:p-16">
+                        <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 dark:bg-blue-900/30">
+                            <Folder className="h-8 w-8 text-blue-500" />
                         </div>
-                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">No projects yet</h3>
-                        <p className="text-gray-500 dark:text-gray-400 mb-6 max-w-md text-center">
-                            Start your journey by creating your first project. The AI architect is ready to help.
+                        <h3 className="mb-2 text-xl font-semibold text-slate-900 dark:text-slate-100">No projects yet</h3>
+                        <p className="mb-6 max-w-md text-sm text-slate-600 dark:text-slate-300">
+                            Create your first project to start requirement clarification, architecture planning, and scaffold generation.
                         </p>
                         <button
                             onClick={openCreateModal}
-                            className="text-blue-600 font-semibold hover:underline"
+                            className="fc-button-secondary px-5 py-3 text-sm font-semibold"
                         >
-                            Create one now
+                            Create First Project
                         </button>
                     </div>
                 ) : (
@@ -288,55 +302,57 @@ export default function DashboardPage() {
                                     onMouseEnter={() => prefetchWizard(project.id, latestVersion.id)}
                                     onFocus={() => prefetchWizard(project.id, latestVersion.id)}
                                     onTouchStart={() => prefetchWizard(project.id, latestVersion.id)}
-                                    className="group block bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 hover:border-blue-500/50 hover:shadow-xl transition-all duration-300 relative overflow-hidden"
+                                    className="group relative block overflow-hidden rounded-[var(--radius-xl)] border border-[color:var(--border)] bg-white/85 p-5 shadow-[var(--shadow-sm)] transition duration-300 hover:-translate-y-1 hover:border-blue-400/60 hover:shadow-[var(--shadow-lg)] dark:bg-slate-950/70"
                                 >
+                                    <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-500 via-cyan-500 to-emerald-400 opacity-70" />
+
                                     {/* Action Buttons */}
-                                    <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                    <div className="absolute right-4 top-4 z-10 flex gap-2 opacity-0 transition-all group-hover:opacity-100">
                                         <button
                                             onClick={(e) => openEditModal(project, e)}
-                                            className="p-2 bg-gray-100 hover:bg-white dark:bg-gray-800 dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 hover:text-blue-600 transition-colors shadow-sm"
+                                            className="rounded-lg border border-[color:var(--border)] bg-white/95 p-2 text-slate-600 shadow-sm transition hover:text-blue-600 dark:bg-slate-900"
                                             title="Edit Project Details"
                                         >
                                             <Edit2 className="w-4 h-4" />
                                         </button>
                                         <button
                                             onClick={(e) => handleDelete(project.id, e)}
-                                            className="p-2 bg-gray-100 hover:bg-red-50 dark:bg-gray-800 dark:hover:bg-red-900/20 rounded-lg text-gray-600 dark:text-gray-300 hover:text-red-600 transition-colors shadow-sm"
+                                            className="rounded-lg border border-[color:var(--border)] bg-white/95 p-2 text-slate-600 shadow-sm transition hover:text-red-600 dark:bg-slate-900"
                                             title="Delete Project"
                                         >
                                             <Trash2 className="w-4 h-4" />
                                         </button>
                                     </div>
 
-                                    <div className="p-6 h-full flex flex-col">
-                                        <div className="flex items-start justify-between mb-4">
-                                            <div className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                                                <Folder className="w-6 h-6 text-gray-600 dark:text-gray-400 group-hover:text-blue-500 transition-colors" />
+                                    <div className="flex h-full flex-col">
+                                        <div className="mb-4 flex items-start justify-between">
+                                            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 transition-transform duration-300 group-hover:scale-105 dark:bg-slate-800">
+                                                <Folder className="h-6 w-6 text-slate-600 transition-colors group-hover:text-blue-500 dark:text-slate-300" />
                                             </div>
                                         </div>
 
-                                        <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2 line-clamp-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                        <h3 className="mb-2 line-clamp-1 text-lg font-semibold text-slate-900 transition-colors group-hover:text-blue-600 dark:text-slate-100 dark:group-hover:text-blue-400">
                                             {project.name}
                                         </h3>
 
                                         {project.description && (
-                                            <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2 mb-4">
+                                            <p className="mb-4 line-clamp-2 text-sm text-slate-600 dark:text-slate-300">
                                                 {project.description}
                                             </p>
                                         )}
 
                                         <div className="mb-4">
-                                            <div className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/70 px-2 py-1.5">
-                                                <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">ID</span>
+                                            <div className="flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-slate-50/90 px-2 py-1.5 dark:bg-slate-800/60">
+                                                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-300">ID</span>
                                                 <code
-                                                    className="flex-1 min-w-0 truncate text-[11px] text-gray-700 dark:text-gray-300"
+                                                    className="min-w-0 flex-1 truncate text-[11px] text-slate-700 dark:text-slate-200"
                                                     title={project.id}
                                                 >
                                                     {project.id}
                                                 </code>
                                                 <button
                                                     onClick={(e) => handleCopyProjectId(project.id, e)}
-                                                    className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-500 dark:text-gray-300"
+                                                    className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-200 dark:text-slate-200 dark:hover:bg-slate-700"
                                                     title="Copy project ID"
                                                     aria-label="Copy project ID"
                                                 >
@@ -345,8 +361,8 @@ export default function DashboardPage() {
                                             </div>
                                         </div>
 
-                                        <div className="mt-auto flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-4">
-                                            <div className="flex items-center gap-1.5">
+                                        <div className="mt-auto flex items-center gap-4 border-t border-[color:var(--border)] pt-4 text-xs text-slate-500 dark:text-slate-300">
+                                            <div className="flex items-center gap-1.5 font-medium">
                                                 <Clock className="w-3.5 h-3.5" />
                                                 {new Date(project.updatedAt).toLocaleDateString()}
                                             </div>
@@ -361,18 +377,18 @@ export default function DashboardPage() {
 
             {/* Modal Overlay */}
             {isModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl p-6 border border-gray-200 dark:border-gray-800 animate-in zoom-in-95 duration-200 max-h-[88vh] overflow-y-auto">
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className="text-xl font-bold">{modalMode === 'create' ? 'Create New Project' : 'Edit Project Details'}</h3>
-                            <button onClick={handleCloseModal} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="fc-surface-strong max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-[var(--radius-2xl)] p-6 sm:p-7 animate-in zoom-in-95 duration-200">
+                        <div className="mb-6 flex items-center justify-between">
+                            <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{modalMode === 'create' ? 'Create New Project' : 'Edit Project Details'}</h3>
+                            <button onClick={handleCloseModal} className="text-slate-400 transition-colors hover:text-slate-700 dark:hover:text-slate-200">
                                 <X className="w-5 h-5" />
                             </button>
                         </div>
 
                         <form onSubmit={handleSubmit} className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">
                                     Project Name <span className="text-red-500">*</span>
                                 </label>
                                 <input
@@ -380,21 +396,21 @@ export default function DashboardPage() {
                                     value={formData.name}
                                     onChange={e => setFormData({ ...formData, name: e.target.value })}
                                     placeholder="e.g., AI Travel Planner"
-                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className="w-full rounded-xl border border-[color:var(--border)] bg-white/85 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-900/70 dark:text-slate-100"
                                     autoFocus
                                     required
                                 />
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">
                                     Description / Memo
                                 </label>
                                 <textarea
                                     value={formData.description}
                                     onChange={e => setFormData({ ...formData, description: e.target.value })}
                                     placeholder="Briefly describe your idea..."
-                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all h-24 resize-none"
+                                    className="h-24 w-full resize-none rounded-xl border border-[color:var(--border)] bg-white/85 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-900/70 dark:text-slate-100"
                                 />
                             </div>
 
@@ -402,14 +418,14 @@ export default function DashboardPage() {
                                 <button
                                     type="button"
                                     onClick={handleCloseModal}
-                                    className="flex-1 px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-semibold transition-colors"
+                                    className="fc-button-secondary flex-1 px-4 py-2.5 text-sm font-semibold"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={!formData.name.trim()}
-                                    className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                    className="fc-button-primary flex-1 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {modalMode === 'create' ? 'Start Building' : 'Save Changes'}
                                 </button>
@@ -424,26 +440,28 @@ export default function DashboardPage() {
 
 function DashboardSkeleton() {
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">
-            <div className="max-w-6xl mx-auto">
-                <header className="flex justify-between items-center mb-10">
-                    <div className="space-y-3">
-                        <div className="h-8 w-32 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-                        <div className="h-6 w-48 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-                        <div className="h-4 w-64 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" />
+        <div className="relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
+            <div className="mx-auto max-w-6xl space-y-8">
+                <header className="fc-surface rounded-[var(--radius-2xl)] p-5 sm:p-7">
+                    <div className="flex items-center justify-between">
+                        <div className="space-y-3">
+                            <div className="h-8 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+                            <div className="h-6 w-52 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+                            <div className="h-4 w-64 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
+                        </div>
+                        <div className="h-10 w-32 animate-pulse rounded-xl bg-gray-200 dark:bg-gray-800" />
                     </div>
-                    <div className="h-10 w-32 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
                 </header>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {Array.from({ length: 6 }).map((_, idx) => (
                         <div
                             key={idx}
-                            className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 animate-pulse"
+                            className="fc-surface-strong rounded-[var(--radius-xl)] p-4 animate-pulse"
                         >
-                            <div className="h-4 w-32 bg-gray-200 dark:bg-gray-800 rounded" />
-                            <div className="mt-3 h-3 w-48 bg-gray-100 dark:bg-gray-800 rounded" />
-                            <div className="mt-6 h-24 bg-gray-100 dark:bg-gray-800 rounded-xl" />
+                            <div className="h-4 w-32 rounded bg-gray-200 dark:bg-gray-800" />
+                            <div className="mt-3 h-3 w-48 rounded bg-gray-100 dark:bg-gray-800" />
+                            <div className="mt-6 h-24 rounded-xl bg-gray-100 dark:bg-gray-800" />
                         </div>
                     ))}
                 </div>

@@ -19,16 +19,27 @@ const REMOTE_FETCH_TTL_MS = 30_000;
 let remoteFetchPromise: Promise<Project[] | null> | null = null;
 let lastRemoteFetchAt = 0;
 
-function getCache(): WorkspaceCache | null {
+type WorkspaceWindow = Window & {
+    [CACHE_KEY]?: WorkspaceCache;
+};
+
+function getWorkspaceWindow(): WorkspaceWindow | null {
     if (typeof window === "undefined") return null;
-    return (window as any)[CACHE_KEY] as WorkspaceCache | undefined || null;
+    return window as WorkspaceWindow;
+}
+
+function getCache(): WorkspaceCache | null {
+    const workspaceWindow = getWorkspaceWindow();
+    if (!workspaceWindow) return null;
+    return workspaceWindow[CACHE_KEY] ?? null;
 }
 
 function setCache(projects: Project[]): void {
-    if (typeof window === "undefined") return;
+    const workspaceWindow = getWorkspaceWindow();
+    if (!workspaceWindow) return;
     const byId = new Map<string, Project>();
     projects.forEach((project) => byId.set(project.id, project));
-    (window as any)[CACHE_KEY] = {
+    workspaceWindow[CACHE_KEY] = {
         parsed: projects,
         byId,
         updatedAt: Date.now()

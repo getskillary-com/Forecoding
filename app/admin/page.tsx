@@ -6,31 +6,36 @@ export default async function AdminPage() {
     const email = user?.email || "admin";
 
     return (
-        <main className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">
-            <div className="max-w-4xl mx-auto space-y-6">
-                <header className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6">
-                    <p className="text-sm text-gray-500 dark:text-gray-400">Admin Console</p>
-                    <h1 className="text-3xl font-bold mt-1 text-gray-900 dark:text-white">Admin Backend</h1>
-                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+        <main className="relative min-h-screen overflow-hidden px-4 py-8 sm:px-8">
+            <div className="pointer-events-none absolute inset-0">
+                <div className="fc-float absolute -top-20 -left-20 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl" />
+                <div className="fc-float absolute right-0 top-1/3 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" style={{ animationDelay: "1.1s" }} />
+            </div>
+
+            <div className="relative mx-auto max-w-4xl space-y-6">
+                <header className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Admin Console</p>
+                    <h1 className="mt-1 text-3xl font-semibold text-slate-900 dark:text-slate-100">Admin Backend</h1>
+                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
                         Current account: {email}
                     </p>
                 </header>
 
-                <section className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6">
-                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Generation and Payment Policy</h2>
-                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                <section className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
+                    <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Generation and Payment Policy</h2>
+                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
                         Admin users generate directly in Wizard. Stripe checkout links are not created for admin accounts.
                     </p>
                     <div className="mt-4 flex gap-3">
                         <Link
                             href="/dashboard"
-                            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+                            className="fc-button-primary px-4 py-2.5 text-sm font-semibold"
                         >
                             Open Dashboard
                         </Link>
                         <Link
                             href="/"
-                            className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-sm font-medium"
+                            className="fc-button-secondary px-4 py-2.5 text-sm font-semibold"
                         >
                             Go Home
                         </Link>

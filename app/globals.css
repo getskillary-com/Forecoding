@@ -2,26 +2,168 @@
 @plugin "tailwindcss-animate";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f4f7ff;
+  --foreground: #0f172a;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-strong: #ffffff;
+  --surface-muted: rgba(231, 238, 252, 0.62);
+  --border: rgba(15, 23, 42, 0.13);
+  --border-strong: rgba(15, 23, 42, 0.22);
+  --brand: #0d5dff;
+  --brand-strong: #0043d2;
+  --accent: #00a89b;
+  --danger: #d63638;
+  --shadow-sm: 0 10px 30px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 25px 60px rgba(15, 23, 42, 0.15);
+  --radius-xl: 1.15rem;
+  --radius-2xl: 1.5rem;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --font-ui: "Space Grotesk", "Avenir Next", "Segoe UI", "Noto Sans", sans-serif;
+  --font-code: "JetBrains Mono", "Cascadia Code", "Fira Code", monospace;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #050b16;
+    --foreground: #e8eefc;
+    --surface: rgba(10, 19, 37, 0.76);
+    --surface-strong: #0b1427;
+    --surface-muted: rgba(19, 31, 56, 0.8);
+    --border: rgba(148, 163, 184, 0.24);
+    --border-strong: rgba(148, 163, 184, 0.36);
+    --shadow-sm: 0 18px 40px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.48);
   }
 }
 
+html,
 body {
-  background: var(--background);
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--background);
+  background-image:
+    radial-gradient(900px 420px at 8% -5%, rgba(13, 93, 255, 0.26), transparent 70%),
+    radial-gradient(860px 420px at 95% -8%, rgba(0, 168, 155, 0.2), transparent 72%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 45%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-ui);
+  letter-spacing: 0.01em;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  opacity: 0.3;
+  mask-image: radial-gradient(circle at 50% 20%, black 40%, transparent 95%);
+  z-index: -1;
+}
+
+.fc-surface {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-sm);
+}
+
+.fc-surface-strong {
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.fc-chip {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.fc-button-primary {
+  background: linear-gradient(135deg, var(--brand), #3f87ff);
+  color: #fff;
+  border-radius: 0.9rem;
+  box-shadow: 0 14px 34px rgba(13, 93, 255, 0.3);
+  transition: transform 0.25s var(--ease-standard), box-shadow 0.25s var(--ease-standard), filter 0.25s var(--ease-standard);
+}
+
+.fc-button-primary:hover {
+  transform: translateY(-1px);
+  filter: saturate(1.05);
+  box-shadow: 0 18px 38px rgba(13, 93, 255, 0.42);
+}
+
+.fc-button-secondary {
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--foreground);
+  border-radius: 0.9rem;
+  transition: transform 0.22s var(--ease-standard), border-color 0.22s var(--ease-standard), background 0.22s var(--ease-standard);
+}
+
+.fc-button-secondary:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.fc-fade-up {
+  animation: fcFadeUp 0.6s var(--ease-standard) both;
+}
+
+.fc-delay-1 {
+  animation-delay: 0.08s;
+}
+
+.fc-delay-2 {
+  animation-delay: 0.16s;
+}
+
+.fc-delay-3 {
+  animation-delay: 0.24s;
+}
+
+.fc-float {
+  animation: fcFloat 8s ease-in-out infinite;
+}
+
+@keyframes fcFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fcFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-8px);
+  }
 }

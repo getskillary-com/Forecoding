@@ -15,6 +15,12 @@ type ProfileState = {
     emailVerified: string | null;
 };
 
+const cardClassName = "fc-surface-strong rounded-[var(--radius-2xl)] p-6";
+const fieldClassName =
+    "w-full rounded-xl border border-[color:var(--border)] bg-white/90 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-900/70 dark:text-slate-100";
+const disabledFieldClassName =
+    "w-full rounded-xl border border-[color:var(--border)] bg-slate-100 px-4 py-2.5 text-slate-500 dark:bg-slate-800 dark:text-slate-300";
+
 export default function AccountPage() {
     const { user, signOutUser } = useAuth();
     const [profile, setProfile] = useState<ProfileState>({
@@ -243,13 +249,18 @@ export default function AccountPage() {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-6 md:p-8">
-            <div className="max-w-4xl mx-auto space-y-6">
-                <header className="flex items-center justify-between gap-3">
+        <div className="relative min-h-screen overflow-hidden px-4 py-6 sm:px-6 md:px-8">
+            <div className="pointer-events-none absolute inset-0">
+                <div className="fc-float absolute -top-20 -left-20 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl" />
+                <div className="fc-float absolute right-0 top-1/3 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" style={{ animationDelay: "0.9s" }} />
+            </div>
+
+            <div className="relative mx-auto max-w-4xl space-y-6">
+                <header className="fc-surface flex items-center justify-between gap-3 rounded-[var(--radius-2xl)] px-4 py-3 sm:px-5">
                     <div className="flex items-center gap-4">
                         <Link
                             href="/dashboard"
-                            className="inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"
+                            className="inline-flex items-center gap-2 text-sm text-slate-600 transition-colors hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
                         >
                             <ArrowLeft className="w-4 h-4" />
                             Back to dashboard
@@ -263,20 +274,20 @@ export default function AccountPage() {
                 </header>
 
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900 dark:text-white">User Center</h1>
-                    <p className="text-gray-500 dark:text-gray-400 mt-1">
+                    <h1 className="text-3xl font-semibold text-slate-900 dark:text-slate-100">User Center</h1>
+                    <p className="mt-1 text-slate-500 dark:text-slate-300">
                         Manage your profile, account security, and sign-in sessions.
                     </p>
                 </div>
 
-                <section className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-6">
-                    <div className="flex items-center gap-2 mb-4">
+                <section className={cardClassName}>
+                    <div className="mb-4 flex items-center gap-2">
                         <User className="w-5 h-5 text-blue-600" />
-                        <h2 className="text-lg font-semibold">Profile</h2>
+                        <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Profile</h2>
                     </div>
 
                     {isProfileLoading ? (
-                        <div className="text-sm text-gray-500">Loading profile...</div>
+                        <div className="text-sm text-slate-500 dark:text-slate-300">Loading profile...</div>
                     ) : (
                         <form onSubmit={saveProfile} className="space-y-4">
                             <div>
@@ -284,7 +295,7 @@ export default function AccountPage() {
                                 <input
                                     value={profile.email}
                                     disabled
-                                    className="w-full px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-500"
+                                    className={disabledFieldClassName}
                                 />
                             </div>
 
@@ -295,26 +306,26 @@ export default function AccountPage() {
                                     onChange={(e) => setProfile((prev) => ({ ...prev, name: e.target.value }))}
                                     maxLength={80}
                                     placeholder="Your name"
-                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={fieldClassName}
                                 />
                             </div>
 
-                            <div className="text-sm text-gray-500 dark:text-gray-400">
+                            <div className="text-sm text-slate-500 dark:text-slate-300">
                                 Email verification:{" "}
                                 {profile.emailVerified ? (
-                                    <span className="text-green-600 dark:text-green-400">Verified</span>
+                                    <span className="text-emerald-600 dark:text-emerald-400">Verified</span>
                                 ) : (
                                     <span>Not verified</span>
                                 )}
                             </div>
 
                             {profileError && <p className="text-sm text-red-500">{profileError}</p>}
-                            {profileMessage && <p className="text-sm text-green-600 dark:text-green-400">{profileMessage}</p>}
+                            {profileMessage && <p className="text-sm text-emerald-600 dark:text-emerald-400">{profileMessage}</p>}
 
                             <button
                                 type="submit"
                                 disabled={isSavingProfile}
-                                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold disabled:opacity-60"
+                                className="fc-button-primary inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                             >
                                 {isSavingProfile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                 Save profile
@@ -322,8 +333,8 @@ export default function AccountPage() {
                         </form>
                     )}
 
-                    <form onSubmit={changeEmail} className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-800 space-y-4">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Change email</h3>
+                    <form onSubmit={changeEmail} className="mt-6 space-y-4 border-t border-[color:var(--border)] pt-6">
+                        <h3 className="text-sm font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-200">Change email</h3>
 
                         <div>
                             <label className="block text-sm font-medium mb-1">New email</label>
@@ -332,7 +343,7 @@ export default function AccountPage() {
                                 value={newEmail}
                                 onChange={(e) => setNewEmail(e.target.value)}
                                 placeholder="new-email@company.com"
-                                className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                className={fieldClassName}
                                 required
                             />
                         </div>
@@ -346,14 +357,14 @@ export default function AccountPage() {
                                     onChange={(e) => setEmailCode(e.target.value)}
                                     placeholder="6-digit code"
                                     maxLength={6}
-                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={fieldClassName}
                                     required
                                 />
                                 <button
                                     type="button"
                                     onClick={sendEmailChangeCode}
                                     disabled={isSendingEmailCode || !newEmail.trim() || emailCodeCountdown > 0}
-                                    className="min-w-20 px-3 py-2 rounded-xl border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-sm disabled:opacity-60"
+                                    className="fc-button-secondary min-w-20 px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                     title="Send verification code"
                                 >
                                     {isSendingEmailCode ? (
@@ -371,12 +382,12 @@ export default function AccountPage() {
                         </div>
 
                         {emailError && <p className="text-sm text-red-500">{emailError}</p>}
-                        {emailMessage && <p className="text-sm text-green-600 dark:text-green-400">{emailMessage}</p>}
+                        {emailMessage && <p className="text-sm text-emerald-600 dark:text-emerald-400">{emailMessage}</p>}
 
                         <button
                             type="submit"
                             disabled={isChangingEmail}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-900 hover:bg-black text-white font-semibold disabled:opacity-60"
+                            className="fc-button-primary inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             {isChangingEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
                             Confirm email change
@@ -384,10 +395,10 @@ export default function AccountPage() {
                     </form>
                 </section>
 
-                <section className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-6">
-                    <div className="flex items-center gap-2 mb-4">
+                <section className={cardClassName}>
+                    <div className="mb-4 flex items-center gap-2">
                         <Shield className="w-5 h-5 text-amber-600" />
-                        <h2 className="text-lg font-semibold">Security</h2>
+                        <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Security</h2>
                     </div>
 
                     <form onSubmit={changePassword} className="space-y-4 mb-6">
@@ -401,12 +412,12 @@ export default function AccountPage() {
                                     placeholder="At least 8 characters"
                                     minLength={8}
                                     required
-                                    className="w-full px-4 py-2 pr-11 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={`${fieldClassName} pr-11`}
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setShowNewPassword((prev) => !prev)}
-                                    className="absolute inset-y-0 right-0 px-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                                    className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
                                     aria-label={showNewPassword ? "Hide password" : "Show password"}
                                 >
                                     {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -423,12 +434,12 @@ export default function AccountPage() {
                                     placeholder="Re-enter new password"
                                     minLength={8}
                                     required
-                                    className="w-full px-4 py-2 pr-11 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={`${fieldClassName} pr-11`}
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setShowConfirmNewPassword((prev) => !prev)}
-                                    className="absolute inset-y-0 right-0 px-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                                    className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
                                     aria-label={showConfirmNewPassword ? "Hide password" : "Show password"}
                                 >
                                     {showConfirmNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -437,20 +448,20 @@ export default function AccountPage() {
                         </div>
 
                         {passwordError && <p className="text-sm text-red-500">{passwordError}</p>}
-                        {passwordMessage && <p className="text-sm text-green-600 dark:text-green-400">{passwordMessage}</p>}
+                        {passwordMessage && <p className="text-sm text-emerald-600 dark:text-emerald-400">{passwordMessage}</p>}
 
                         <button
                             type="submit"
                             disabled={isChangingPassword}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-900 hover:bg-black text-white font-semibold disabled:opacity-60"
+                            className="fc-button-primary inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             {isChangingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
                             Change password
                         </button>
                     </form>
 
-                    <div className="border-t border-gray-200 dark:border-gray-800 pt-4">
-                        <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                    <div className="border-t border-[color:var(--border)] pt-4">
+                        <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
                             Force all sessions to log in again on every device.
                         </p>
                         {securityError && <p className="text-sm text-red-500 mb-2">{securityError}</p>}
@@ -458,7 +469,7 @@ export default function AccountPage() {
                             type="button"
                             onClick={logoutAllDevices}
                             disabled={isSigningOutAll}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-red-300 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 font-semibold disabled:opacity-60"
+                            className="inline-flex items-center gap-2 rounded-xl border border-red-300 px-4 py-2.5 text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-700/50 dark:text-red-300 dark:hover:bg-red-900/20"
                         >
                             {isSigningOutAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
                             Sign out all devices

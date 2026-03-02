@@ -1,164 +1,220 @@
 import Link from "next/link";
 import {
     ArrowRight,
-    Zap,
-    Rocket,
+    Sparkles,
+    Compass,
     Workflow,
-    Layers3,
+    Boxes,
     ShieldCheck,
-    CheckCircle2
+    CheckCircle2,
+    Gauge
 } from "lucide-react";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
 
+const capabilityCards = [
+    {
+        icon: Compass,
+        title: "Requirement Clarity",
+        description: "Capture edge cases and constraints before any line of code is generated."
+    },
+    {
+        icon: Workflow,
+        title: "Execution Sequence",
+        description: "Turn features into build order so AI IDE output stays aligned."
+    },
+    {
+        icon: Boxes,
+        title: "Scaffold Blueprint",
+        description: "Export architecture, file tree, and implementation prompts in one package."
+    },
+    {
+        icon: ShieldCheck,
+        title: "Risk Guardrails",
+        description: "Reduce rework by locking assumptions, interfaces, and boundaries early."
+    }
+];
+
+const flowSteps = [
+    {
+        title: "Describe the product in plain language",
+        description: "Share goals, user journey, and constraints."
+    },
+    {
+        title: "Iterate with AI until ambiguity is removed",
+        description: "Forecoding asks focused questions and hardens the scope."
+    },
+    {
+        title: "Launch implementation in your AI IDE",
+        description: "Export a structured blueprint and execute in Cursor/Windsurf/Cline."
+    }
+];
+
+const stackTags = ["Cursor", "Windsurf", "Cline", "VS Code + AI"];
+
 export default function Home() {
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 p-6 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none">
-                <div className="absolute -top-1/2 -left-1/4 w-[800px] h-[800px] bg-blue-500/20 rounded-full blur-3xl opacity-50 animate-pulse" />
-                <div className="absolute top-1/2 -right-1/4 w-[600px] h-[600px] bg-cyan-500/20 rounded-full blur-3xl opacity-50 animate-pulse delay-1000" />
+        <div className="relative min-h-screen overflow-hidden px-4 pb-14 pt-6 sm:px-8">
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+                <div className="fc-float absolute -top-28 -left-14 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl" />
+                <div className="fc-float absolute right-0 top-1/3 h-72 w-72 rounded-full bg-emerald-400/20 blur-3xl" style={{ animationDelay: "1.2s" }} />
             </div>
 
-            <main className="z-10 max-w-5xl mx-auto w-full text-center space-y-8 relative">
-                <div className="flex justify-between items-center pt-2">
+            <main className="relative z-10 mx-auto w-full max-w-6xl space-y-10">
+                <header className="flex items-center justify-between">
                     <BrandLogo />
-                    <UserCenter />
-                </div>
-
-                <section className="pt-10">
-                    <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/50 dark:bg-white/10 backdrop-blur-md border border-white/20 shadow-sm mb-4">
-                        <Zap className="w-4 h-4 text-yellow-500" />
-                        <span className="text-sm font-medium">Core function: convert rough ideas into AI IDE-ready blueprints</span>
-                    </div>
-
-                    <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight bg-gradient-to-br from-gray-900 via-blue-800 to-cyan-900 dark:from-white dark:via-blue-200 dark:to-cyan-200 bg-clip-text text-transparent">
-                        From vague requirements
-                        <br className="hidden md:block" />
-                        to executable AI IDE blueprint.
-                    </h1>
-
-                    <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto leading-relaxed mt-4">
-                        Forecoding gives you structured outputs before coding: PRD, architecture, task order,
-                        and patch-style execution prompts for Cursor, Windsurf, Cline, or VS Code AI.
-                        The value is faster planning and less rework before implementation starts.
-                    </p>
-
-                    <div className="flex flex-wrap justify-center gap-2 mt-5 text-xs">
-                        {["Cursor", "Windsurf", "Cline", "VS Code + AI"].map((tag) => (
-                            <span
-                                key={tag}
-                                className="px-3 py-1.5 rounded-full bg-white/70 dark:bg-white/10 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300"
-                            >
-                                {tag}
-                            </span>
-                        ))}
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mt-8">
+                    <div className="flex items-center gap-3">
                         <Link
                             href="/dashboard"
-                            className="group relative px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg shadow-xl hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 flex items-center gap-2"
+                            className="hidden rounded-xl border border-[color:var(--border)] bg-white/70 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900 md:inline-flex"
                         >
-                            Start a Project
-                            <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                            <div className="absolute inset-0 rounded-xl bg-white/20 blur opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                            Dashboard
                         </Link>
+                        <UserCenter />
+                    </div>
+                </header>
+
+                <section className="grid items-stretch gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+                    <div className="fc-surface fc-fade-up rounded-[var(--radius-2xl)] p-7 sm:p-10">
+                        <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.1em] text-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
+                            <Sparkles className="h-4 w-4 text-[color:var(--brand)]" />
+                            Blueprint Studio for AI IDE Teams
+                        </div>
+                        <h1 className="text-balance text-4xl font-semibold leading-tight text-slate-900 dark:text-slate-100 sm:text-5xl">
+                            Forecoding turns fuzzy product ideas into build-ready plans.
+                        </h1>
+                        <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-lg">
+                            Stop jumping directly into generation. Clarify requirements first, structure architecture,
+                            and ship cleaner output with less trial-and-error.
+                        </p>
+
+                        <div className="mt-7 flex flex-wrap gap-3">
+                            <Link
+                                href="/dashboard"
+                                className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
+                            >
+                                Start a Project
+                                <ArrowRight className="h-4 w-4" />
+                            </Link>
+                            <Link
+                                href="/demo"
+                                className="fc-button-secondary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
+                            >
+                                View Demo Blueprint
+                            </Link>
+                        </div>
+
+                        <div className="mt-6 flex flex-wrap gap-2">
+                            {stackTags.map((tag) => (
+                                <span key={tag} className="fc-chip text-slate-600 dark:text-slate-300">
+                                    {tag}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+
+                    <aside className="fc-surface fc-fade-up fc-delay-1 rounded-[var(--radius-2xl)] p-7 sm:p-8">
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/70">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Output</p>
+                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">4-in-1</p>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">PRD + architecture + scaffold + tasks</p>
+                            </div>
+                            <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/70">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Goal</p>
+                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Less Rework</p>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Reduce revisions before implementation</p>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 rounded-2xl border border-[color:var(--border)] bg-gradient-to-br from-blue-600/95 to-cyan-600/90 p-5 text-white">
+                            <div className="flex items-center justify-between">
+                                <p className="text-sm font-semibold">Planning Quality</p>
+                                <Gauge className="h-4 w-4 opacity-90" />
+                            </div>
+                            <p className="mt-2 text-xs text-blue-100">
+                                Better requirement hygiene means more deterministic AI code generation.
+                            </p>
+                            <ul className="mt-4 space-y-2 text-xs text-blue-50">
+                                <li className="flex items-center gap-2">
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    Align scope before coding
+                                </li>
+                                <li className="flex items-center gap-2">
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    Keep architecture and tasks synchronized
+                                </li>
+                                <li className="flex items-center gap-2">
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    Hand off cleanly to AI IDE workflows
+                                </li>
+                            </ul>
+                        </div>
+                    </aside>
+                </section>
+
+                <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    {capabilityCards.map((card, idx) => (
+                        <article
+                            key={card.title}
+                            className={`fc-surface rounded-2xl p-5 transition duration-300 hover:-translate-y-1 hover:shadow-[var(--shadow-lg)] fc-fade-up ${idx > 0 ? `fc-delay-${Math.min(idx, 3)}` : ""}`}
+                        >
+                            <div className="mb-4 inline-flex rounded-xl bg-blue-50 p-2.5 text-[color:var(--brand)] dark:bg-blue-950/40">
+                                <card.icon className="h-5 w-5" />
+                            </div>
+                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{card.title}</h3>
+                            <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{card.description}</p>
+                        </article>
+                    ))}
+                </section>
+
+                <section className="fc-surface fc-fade-up fc-delay-2 rounded-[var(--radius-2xl)] p-7 sm:p-9">
+                    <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">How Forecoding Works</h2>
+                    <div className="mt-6 grid gap-4 md:grid-cols-3">
+                        {flowSteps.map((step, index) => (
+                            <div key={step.title} className="rounded-2xl border border-[color:var(--border)] bg-white/75 p-5 dark:bg-slate-900/70">
+                                <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                                    {index + 1}
+                                </div>
+                                <h3 className="mt-3 text-base font-semibold text-slate-900 dark:text-slate-100">{step.title}</h3>
+                                <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{step.description}</p>
+                            </div>
+                        ))}
                     </div>
                 </section>
 
-                <section className="grid grid-cols-1 md:grid-cols-4 gap-5 mt-16 text-left">
-                    <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-blue-500/50 transition-colors">
-                        <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center mb-4">
-                            <Rocket className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-                        </div>
-                        <h3 className="text-lg font-bold mb-2">Pain: Scope keeps changing</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Forecoding runs structured clarification to lock requirements before build.</p>
-                    </div>
-                    <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-cyan-500/50 transition-colors">
-                        <div className="w-12 h-12 bg-cyan-100 dark:bg-cyan-900/30 rounded-lg flex items-center justify-center mb-4">
-                            <Workflow className="w-6 h-6 text-cyan-600 dark:text-cyan-400" />
-                        </div>
-                        <h3 className="text-lg font-bold mb-2">Pain: AI output drifts</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Architecture and constraints align AI IDE generations to one direction.</p>
-                    </div>
-                    <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-green-500/50 transition-colors">
-                        <div className="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center mb-4">
-                            <Layers3 className="w-6 h-6 text-green-600 dark:text-green-400" />
-                        </div>
-                        <h3 className="text-lg font-bold mb-2">Pain: No build order</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Task decomposition gives your AI IDE a concrete, sequential execution plan.</p>
-                    </div>
-                    <div className="p-6 rounded-2xl bg-white/60 dark:bg-white/5 backdrop-blur-lg border border-white/20 hover:border-amber-500/50 transition-colors">
-                        <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-lg flex items-center justify-center mb-4">
-                            <ShieldCheck className="w-6 h-6 text-amber-600 dark:text-amber-400" />
-                        </div>
-                        <h3 className="text-lg font-bold mb-2">Pain: Prompt waste</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Patch-style prompts reduce token waste and cut trial-and-error cycles.</p>
-                    </div>
-                </section>
-
-                <section className="mt-14 text-left">
-                    <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 text-center">How It Works</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-                        <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40 p-5">
-                            <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                                <CheckCircle2 className="w-4 h-4" />
-                                Step 1
-                            </div>
-                            <h3 className="font-semibold mt-2">Describe requirements in plain language</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Provide goals, user flow, constraints, and expected behavior.</p>
-                        </div>
-                        <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40 p-5">
-                            <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                                <CheckCircle2 className="w-4 h-4" />
-                                Step 2
-                            </div>
-                            <h3 className="font-semibold mt-2">Refine until scope is implementation-ready</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">The chat resolves missing details and removes ambiguity.</p>
-                        </div>
-                        <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40 p-5">
-                            <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                                <CheckCircle2 className="w-4 h-4" />
-                                Step 3
-                            </div>
-                            <h3 className="font-semibold mt-2">Open the unzipped blueprint folder in your AI IDE</h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Unzip the blueprint package, then continue implementation in Cursor/Windsurf/Cline.</p>
-                        </div>
-                    </div>
-                </section>
-
-                <section className="rounded-2xl border border-blue-200/60 dark:border-blue-800/40 bg-blue-50/70 dark:bg-blue-900/10 p-6 mt-12">
-                    <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                <section className="fc-surface fc-fade-up fc-delay-3 rounded-[var(--radius-2xl)] p-7 sm:p-9">
+                    <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                         <div className="text-left">
-                            <h3 className="text-lg font-bold">Main value: less planning time, less build rework</h3>
-                            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                                You are not buying final code output. You are buying faster, clearer starts in your AI IDE workflow.
+                            <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Design first, code faster.</h3>
+                            <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-300">
+                                Forecoding is not a final code generator. It is a planning layer that makes every AI IDE generation pass more accurate.
                             </p>
                         </div>
                         <Link
                             href="/dashboard"
-                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-colors"
+                            className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
                         >
                             Open Dashboard
-                            <ArrowRight className="w-4 h-4" />
+                            <ArrowRight className="h-4 w-4" />
                         </Link>
                     </div>
                 </section>
 
-                <div className="pt-6 text-sm text-gray-500 dark:text-gray-400 flex flex-wrap justify-center gap-4">
-                    <Link href="/privacy" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                <footer className="flex flex-wrap justify-center gap-4 pb-2 pt-2 text-xs font-medium uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">
+                    <Link href="/privacy" className="transition-colors hover:text-[color:var(--brand)]">
                         Privacy
                     </Link>
-                    <Link href="/terms" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                    <Link href="/terms" className="transition-colors hover:text-[color:var(--brand)]">
                         Terms
                     </Link>
-                    <Link href="/refund" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                    <Link href="/refund" className="transition-colors hover:text-[color:var(--brand)]">
                         Refund
                     </Link>
-                    <Link href="/cookie" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                    <Link href="/cookie" className="transition-colors hover:text-[color:var(--brand)]">
                         Cookie
                     </Link>
-                </div>
+                </footer>
             </main>
         </div>
     );

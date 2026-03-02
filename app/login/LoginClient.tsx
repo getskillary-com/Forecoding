@@ -22,6 +22,12 @@ function readFlow(mode: string | null): AuthFlow {
     return "login";
 }
 
+const inputClassName =
+    "w-full rounded-xl border border-[color:var(--border)] bg-white/90 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-900/70 dark:text-slate-100";
+
+const segmentedButtonBase =
+    "rounded-lg px-3 py-2 text-sm text-center transition-colors";
+
 export default function LoginClient({ initialMode }: { initialMode?: "login" | "register" }) {
     const searchParams = useSearchParams();
     const router = useRouter();
@@ -239,17 +245,21 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex items-center justify-center p-6">
-            <div className="w-full max-w-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl shadow-xl p-6">
-                <div className="flex items-center justify-between mb-4 text-sm">
+        <div className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-8 text-slate-900 dark:text-slate-100 sm:px-6">
+            <div className="pointer-events-none absolute inset-0">
+                <div className="fc-float absolute -top-24 -left-20 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl" />
+                <div className="fc-float absolute -right-20 top-1/3 h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl" style={{ animationDelay: "0.8s" }} />
+            </div>
+            <div className="fc-surface-strong relative z-10 w-full max-w-md rounded-[var(--radius-2xl)] p-6 sm:p-7">
+                <div className="mb-4 flex items-center justify-between text-sm">
                     <Link
                         href="/"
-                        className="flex items-center gap-1 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+                        className="flex items-center gap-1 text-slate-500 transition-colors hover:text-slate-800 dark:text-slate-300 dark:hover:text-slate-100"
                     >
                         <ArrowLeft className="w-4 h-4" />
                         Back to home
                     </Link>
-                    <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                    <div className="flex items-center gap-2 text-slate-500 dark:text-slate-300">
                         <BrandLogo
                             showText={false}
                             iconClassName="w-[clamp(16px,1.8vw,22px)] h-[clamp(16px,1.8vw,22px)]"
@@ -258,43 +268,43 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                     </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 rounded-xl bg-gray-100 dark:bg-gray-800 p-1 mb-4">
+                <div className="mb-4 grid grid-cols-3 gap-2 rounded-xl border border-[color:var(--border)] bg-slate-100/90 p-1 dark:bg-slate-800/80">
                     <Link
                         href={`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`}
-                        className={`px-3 py-2 text-sm rounded-lg text-center transition-colors ${
-                            flow === "login" ? "bg-white dark:bg-gray-700 font-semibold" : "text-gray-600 dark:text-gray-300"
+                        className={`${segmentedButtonBase} ${
+                            flow === "login" ? "bg-white font-semibold text-slate-900 dark:bg-slate-700 dark:text-slate-100" : "text-slate-600 dark:text-slate-300"
                         }`}
                     >
                         Sign in
                     </Link>
                     <Link
                         href={`/login?mode=register&callbackUrl=${encodeURIComponent(callbackUrl)}`}
-                        className={`px-3 py-2 text-sm rounded-lg text-center transition-colors ${
-                            flow === "register" ? "bg-white dark:bg-gray-700 font-semibold" : "text-gray-600 dark:text-gray-300"
+                        className={`${segmentedButtonBase} ${
+                            flow === "register" ? "bg-white font-semibold text-slate-900 dark:bg-slate-700 dark:text-slate-100" : "text-slate-600 dark:text-slate-300"
                         }`}
                     >
                         Register
                     </Link>
                     <Link
                         href={`/login?mode=forgot&callbackUrl=${encodeURIComponent(callbackUrl)}`}
-                        className={`px-3 py-2 text-sm rounded-lg text-center transition-colors ${
-                            flow === "forgot" ? "bg-white dark:bg-gray-700 font-semibold" : "text-gray-600 dark:text-gray-300"
+                        className={`${segmentedButtonBase} ${
+                            flow === "forgot" ? "bg-white font-semibold text-slate-900 dark:bg-slate-700 dark:text-slate-100" : "text-slate-600 dark:text-slate-300"
                         }`}
                     >
                         Forgot
                     </Link>
                 </div>
 
-                <div className="flex items-center gap-2 mb-2 text-blue-600 dark:text-blue-400">
+                <div className="mb-2 flex items-center gap-2 text-blue-600 dark:text-blue-400">
                     <ShieldCheck className="w-5 h-5" />
                     <span className="text-sm font-semibold">
                         {flow === "register" ? "Create account" : flow === "forgot" ? "Reset password" : "Sign in"}
                     </span>
                 </div>
-                <h1 className="text-2xl font-bold mb-2">
+                <h1 className="mb-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
                     {flow === "register" ? "Email + Password + Code" : flow === "forgot" ? "Recover your password" : "Sign in to continue"}
                 </h1>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                <p className="mb-6 text-sm text-slate-500 dark:text-slate-300">
                     {flow === "login"
                         ? "Use email and password, or switch to email verification code."
                         : flow === "register"
@@ -303,14 +313,14 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                 </p>
 
                 {flow === "login" && (
-                    <div className="grid grid-cols-2 gap-2 rounded-xl bg-gray-100 dark:bg-gray-800 p-1 mb-4">
+                    <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-[color:var(--border)] bg-slate-100/90 p-1 dark:bg-slate-800/80">
                         <button
                             type="button"
                             onClick={() => setLoginMethod("password")}
-                            className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                            className={`${segmentedButtonBase} ${
                                 loginMethod === "password"
-                                    ? "bg-white dark:bg-gray-700 font-semibold"
-                                    : "text-gray-600 dark:text-gray-300"
+                                    ? "bg-white font-semibold text-slate-900 dark:bg-slate-700 dark:text-slate-100"
+                                    : "text-slate-600 dark:text-slate-300"
                             }`}
                         >
                             Password
@@ -318,10 +328,10 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                         <button
                             type="button"
                             onClick={() => setLoginMethod("code")}
-                            className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                            className={`${segmentedButtonBase} ${
                                 loginMethod === "code"
-                                    ? "bg-white dark:bg-gray-700 font-semibold"
-                                    : "text-gray-600 dark:text-gray-300"
+                                    ? "bg-white font-semibold text-slate-900 dark:bg-slate-700 dark:text-slate-100"
+                                    : "text-slate-600 dark:text-slate-300"
                             }`}
                         >
                             Verification Code
@@ -337,7 +347,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             placeholder="you@company.com"
-                            className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                            className={inputClassName}
                             required
                         />
                     </div>
@@ -351,14 +361,14 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     placeholder="At least 8 characters"
-                                    className="w-full px-4 py-2 pr-11 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={`${inputClassName} pr-11`}
                                     required
                                     minLength={8}
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setShowPassword((prev) => !prev)}
-                                    className="absolute inset-y-0 right-0 px-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                                    className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
                                     aria-label={showPassword ? "Hide password" : "Show password"}
                                 >
                                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -376,14 +386,14 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                                     value={newPassword}
                                     onChange={(e) => setNewPassword(e.target.value)}
                                     placeholder="At least 8 characters"
-                                    className="w-full px-4 py-2 pr-11 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={`${inputClassName} pr-11`}
                                     required
                                     minLength={8}
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setShowNewPassword((prev) => !prev)}
-                                    className="absolute inset-y-0 right-0 px-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                                    className="absolute inset-y-0 right-0 px-3 text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
                                     aria-label={showNewPassword ? "Hide password" : "Show password"}
                                 >
                                     {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -401,7 +411,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                                     value={code}
                                     onChange={(e) => setCode(e.target.value)}
                                     placeholder="6-digit code"
-                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                    className={inputClassName}
                                     required
                                     maxLength={6}
                                 />
@@ -409,7 +419,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                                     type="button"
                                     onClick={sendCode}
                                     disabled={isSendingCode || !email.trim() || codeCountdown > 0}
-                                    className="min-w-20 px-3 py-2 rounded-xl border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-sm disabled:opacity-60"
+                                    className="fc-button-secondary min-w-20 px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     {isSendingCode ? (
                                         <Loader2 className="w-4 h-4 animate-spin mx-auto" />
@@ -427,12 +437,12 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                     )}
 
                     {error && <div className="text-sm text-red-500">{error}</div>}
-                    {message && <div className="text-sm text-green-600 dark:text-green-400">{message}</div>}
+                    {message && <div className="text-sm text-emerald-600 dark:text-emerald-400">{message}</div>}
 
                     <button
                         type="submit"
                         disabled={isSubmitting}
-                        className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-lg transition-all disabled:opacity-60"
+                        className="fc-button-primary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                     >
                         {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                         {flow === "register" ? "Create account" : flow === "forgot" ? "Reset password" : "Sign in"}
@@ -442,7 +452,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                         <button
                             type="button"
                             onClick={() => void loginWithDevBypass()}
-                            className="w-full px-4 py-2 rounded-xl bg-gray-900 hover:bg-black text-white font-semibold transition-all"
+                            className="fc-button-secondary w-full px-4 py-2.5 text-sm font-semibold"
                         >
                             Dev Login
                         </button>

@@ -1624,29 +1624,33 @@ function WizardContent() {
 
     return (
         <>
-            <div className="flex h-screen w-full bg-gray-50 dark:bg-black overflow-hidden font-sans text-gray-900 dark:text-gray-100">
+            <div className="relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.16),transparent_70%)]" />
                 {/* Project Sidebar + Chat (Left) */}
                 <VersionSidebar project={project} width={sidebarWidth}>
-                <div className="flex flex-col h-full min-h-0">
+                <div className="relative z-10 flex h-full min-h-0 flex-col">
                     <div className="flex-1 min-h-0">
-                        <div className="h-full flex flex-col bg-white dark:bg-gray-900/50 shadow-sm z-10 relative" onPaste={handlePaste}>
+                        <div
+                            className="relative z-10 flex h-full flex-col border-l border-[color:var(--border)] bg-white/82 shadow-[var(--shadow-sm)] backdrop-blur-sm dark:bg-slate-900/72"
+                            onPaste={handlePaste}
+                        >
                             {/* Header */}
-                            <div className="p-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/50 backdrop-blur-sm flex justify-between items-center">
-                                <span className="font-semibold text-sm text-gray-500 uppercase tracking-wider">
+                            <div className="flex items-center justify-between border-b border-[color:var(--border)] bg-white/70 px-4 py-3 backdrop-blur-sm dark:bg-slate-900/75">
+                                <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
                                     {project.name} Workspace
                                 </span>
                                 {evaluation && <DensityProgress score={evaluation.density_score} />}
                             </div>
 
                             {/* Chat Area */}
-                            <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-hide">
+                            <div className="flex-1 space-y-6 overflow-y-auto bg-gradient-to-b from-white/55 to-transparent p-4 scrollbar-hide dark:from-slate-900/30">
                                 {hiddenMessageCount > 0 && (
                                     <div className="flex justify-center">
                                         <button
                                             onClick={() => {
                                                 setMessageWindow((prev) => Math.min(messages.length, prev + MESSAGE_WINDOW_STEP));
                                             }}
-                                            className="px-3 py-1.5 text-xs rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                            className="rounded-full border border-[color:var(--border)] bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-white dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                                         >
                                             Show {Math.min(MESSAGE_WINDOW_STEP, hiddenMessageCount)} earlier messages ({hiddenMessageCount} hidden)
                                         </button>
@@ -1662,7 +1666,7 @@ function WizardContent() {
 
                                 {isLoading && (
                                     <div className="flex justify-start animate-pulse">
-                                        <div className="bg-gray-100 dark:bg-gray-800 px-4 py-2 rounded-xl rounded-tl-none text-sm text-gray-500">
+                                        <div className="rounded-xl rounded-tl-none bg-slate-100 px-4 py-2 text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                                             Thinking...
                                         </div>
                                     </div>
@@ -1672,23 +1676,23 @@ function WizardContent() {
                             </div>
 
                             {/* Input Area */}
-                            <div className="p-4 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800">
+                            <div className="border-t border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/75">
                                 {evaluation?.is_ready ? (
                                     <div className="flex flex-col gap-2">
                                         {generation ? (
                                             <>
-                                                <div className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-xl font-bold cursor-default">
+                                                <div className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-6 py-4 font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
                                                     <Check className="w-5 h-5" />
                                                     Scaffold Generated
                                                 </div>
-                                                <p className="text-xs text-center text-green-600 dark:text-green-400 font-medium">Scaffold generated successfully! Check the Scaffold tab.</p>
+                                                <p className="text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">Scaffold generated successfully! Check the Scaffold tab.</p>
                                             </>
                                         ) : (
                                             <>
                                             <button
                                                 onClick={handleGenerate}
                                                 disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded}
-                                                className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95"
+                                                className="fc-button-primary flex w-full items-center justify-center gap-2 px-6 py-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 {isGenerating || isCheckingOut
                                                     ? <Loader2 className="animate-spin" />
@@ -1710,7 +1714,7 @@ function WizardContent() {
                                             {generateError && (
                                                 <div className="text-xs text-red-500 text-center">{generateError}</div>
                                             )}
-                                            <p className="text-xs text-center text-gray-500">
+                                            <p className="text-center text-xs text-slate-500 dark:text-slate-300">
                                                 {!isAdminStatusLoaded
                                                     ? "Checking permissions..."
                                                     : isAdmin
@@ -1730,11 +1734,11 @@ function WizardContent() {
                                     <div className="flex flex-col gap-2">
                                         {/* Pending Attachments Preview */}
                                         {pendingAttachments.length > 0 && (
-                                            <div className="px-1 flex gap-2 overflow-x-auto pb-2">
+                                            <div className="flex gap-2 overflow-x-auto px-1 pb-2">
                                                 {pendingAttachments.map((att, idx) => (
                                                     att.type === 'image' ? (
                                                         <div key={idx} className="relative group shrink-0">
-                                                            <div className="w-20 h-20 rounded-xl overflow-hidden border-2 border-blue-200 dark:border-blue-800 shadow-sm">
+                                                            <div className="h-20 w-20 overflow-hidden rounded-xl border-2 border-blue-200 shadow-sm dark:border-blue-800">
                                                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                                                 <img src={att.content} alt={att.name} className="w-full h-full object-cover" />
                                                             </div>
@@ -1747,14 +1751,14 @@ function WizardContent() {
                                                             <span className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] text-center truncate px-1 py-0.5 rounded-b-xl">{att.name}</span>
                                                         </div>
                                                     ) : (
-                                                        <div key={idx} className="relative group bg-gray-100 dark:bg-gray-800 rounded-xl p-2 pr-8 flex items-center gap-2 border border-gray-200 dark:border-gray-700 shrink-0">
-                                                            <FileText className="w-5 h-5 text-gray-500" />
-                                                            <span className="text-xs text-gray-600 dark:text-gray-300 max-w-[100px] truncate" title={att.name}>{att.name}</span>
+                                                        <div key={idx} className="relative group flex shrink-0 items-center gap-2 rounded-xl border border-[color:var(--border)] bg-slate-100 p-2 pr-8 dark:bg-slate-800">
+                                                            <FileText className="h-5 w-5 text-slate-500 dark:text-slate-300" />
+                                                            <span className="max-w-[100px] truncate text-xs text-slate-600 dark:text-slate-300" title={att.name}>{att.name}</span>
                                                             <button
                                                                 onClick={() => removeAttachment(idx)}
-                                                                className="absolute top-1 right-1 p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors"
+                                                                className="absolute right-1 top-1 rounded-full p-1 transition-colors hover:bg-slate-200 dark:hover:bg-slate-600"
                                                             >
-                                                                <X className="w-3 h-3 text-gray-500" />
+                                                                <X className="h-3 w-3 text-slate-500 dark:text-slate-300" />
                                                             </button>
                                                         </div>
                                                     )
@@ -1762,7 +1766,7 @@ function WizardContent() {
                                             </div>
                                         )}
 
-                                        <div className="relative flex items-end gap-2 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-2 focus-within:ring-2 focus-within:ring-blue-500 transition-all">
+                                        <div className="relative flex items-end gap-2 rounded-xl border border-[color:var(--border)] bg-white/95 p-2 transition-all focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/30 dark:bg-slate-800/80">
                                             <input
                                                 type="file"
                                                 multiple
@@ -1773,7 +1777,7 @@ function WizardContent() {
                                             />
                                             <button
                                                 onClick={() => fileInputRef.current?.click()}
-                                                className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors mb-1"
+                                                className="mb-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 dark:text-slate-300 dark:hover:bg-blue-900/20"
                                                 title="Attach files"
                                             >
                                                 <Paperclip className="w-5 h-5" />
@@ -1793,19 +1797,19 @@ function WizardContent() {
                                                 placeholder={`Describe requirements for ${project.name}...`}
                                                 disabled={isGenerating}
                                                 rows={1}
-                                                className="flex-1 p-2 bg-transparent border-none focus:ring-0 focus:outline-none resize-none overflow-hidden min-h-[40px] max-h-[150px]"
+                                                className="min-h-[40px] max-h-[150px] flex-1 resize-none overflow-hidden border-none bg-transparent p-2 text-slate-900 focus:outline-none focus:ring-0 dark:text-slate-100"
                                             />
 
                                             <button
                                                 onClick={() => handleSend()}
                                                 disabled={isGenerating || (!isLoading && !input.trim() && pendingAttachments.length === 0)}
-                                                className="p-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 text-white rounded-lg transition-colors mb-1 shadow-sm"
+                                                className="fc-button-primary mb-1 rounded-lg p-2 disabled:cursor-not-allowed disabled:opacity-50"
                                             >
                                                 {isLoading ? <Square className="w-5 h-5" /> : <Send className="w-5 h-5" />}
                                             </button>
                                         </div>
                                         {isLoading && (
-                                            <p className="text-[11px] text-gray-500 dark:text-gray-400 px-1">
+                                            <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
                                                 AI is responding. Press the square button to stop and ask a new question.
                                             </p>
                                         )}
@@ -1819,7 +1823,7 @@ function WizardContent() {
 
             <div
                 onPointerDown={handleResizeStart}
-                className="w-1.5 flex-shrink-0 cursor-col-resize bg-transparent hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors"
+                className="z-20 w-1.5 flex-shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-blue-200/60 dark:hover:bg-blue-800/50"
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Resize chat panel"
@@ -1827,8 +1831,8 @@ function WizardContent() {
             />
 
             {/* Studio Panel (Right) - v2 Layout */}
-            <main className="flex-1 min-w-0 flex flex-col h-full bg-gray-100 dark:bg-gray-950 p-4 md:p-6 overflow-hidden relative">
-                <div className="mb-3 flex items-center justify-between flex-shrink-0">
+            <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
+                <div className="fc-surface mb-3 flex flex-shrink-0 items-center justify-between rounded-2xl px-4 py-3">
                     <BrandLogo
                         showText={false}
                         iconClassName="w-[clamp(20px,2vw,28px)] h-[clamp(20px,2vw,28px)]"
@@ -1839,7 +1843,7 @@ function WizardContent() {
                 </div>
 
                 {/* Tabs */}
-                <div className="flex space-x-1 mb-4 border-b border-gray-200 dark:border-gray-800 pb-1 overflow-x-auto flex-shrink-0">
+                <div className="fc-surface mb-4 flex flex-shrink-0 space-x-1 overflow-x-auto rounded-2xl p-2">
                     <TabButton
                         active={activeTab === 'architecture'}
                         onClick={() => setActiveTab('architecture')}
@@ -1869,12 +1873,12 @@ function WizardContent() {
                 </div>
 
                 {/* Content Area */}
-                <div className="flex-1 min-h-0 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm overflow-hidden relative">
+                <div className="fc-surface-strong relative flex-1 min-h-0 overflow-hidden rounded-[var(--radius-2xl)]">
 
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
                         <div className="absolute inset-0 p-4 flex flex-col">
-                            <div className="mb-2 flex justify-between items-center text-xs text-gray-500 uppercase font-semibold tracking-wider">
+                            <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
                                 <span>Live System Diagram</span>
                                 <span className="flex items-center gap-1">
                                     <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
@@ -1883,7 +1887,7 @@ function WizardContent() {
                             </div>
 
                             <div className="flex-1 min-h-0 flex flex-col gap-3">
-                                <div className="flex-1 min-h-0 border-2 rounded-xl overflow-hidden relative border-dashed border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-black/20">
+                                <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
                                     <ArchitectureViewer code={architectureViewerCode} />
                                 </div>
                             </div>
@@ -1893,41 +1897,41 @@ function WizardContent() {
                     {/* PRD Tab */}
                     {activeTab === 'prd' && (
                         <div className="absolute inset-0 p-6 overflow-y-auto custom-scrollbar">
-                            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                                <Activity className="w-5 h-5 text-blue-500" />
+                            <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                <Activity className="h-5 w-5 text-blue-500" />
                                 Feature Analysis
                             </h3>
 
                             <div className="grid gap-6">
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-green-600 dark:text-green-400 uppercase tracking-wider">Confirmed Requirements</h4>
+                                    <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-400">Confirmed Requirements</h4>
                                     {evaluation?.analysis.clarified.length ? (
                                         <ul className="space-y-2">
                                             {evaluation.analysis.clarified.map((item, i) => (
-                                                <li key={i} className="flex gap-2 text-sm text-gray-700 dark:text-gray-300 p-3 bg-green-50 dark:bg-green-900/10 rounded-lg border border-green-100 dark:border-green-900/20">
-                                                    <span className="text-green-500">?</span>
+                                                <li key={i} className="flex gap-2 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm text-slate-700 dark:border-emerald-800/40 dark:bg-emerald-900/15 dark:text-slate-200">
+                                                    <span className="text-emerald-500">+</span>
                                                     {item}
                                                 </li>
                                             ))}
                                         </ul>
                                     ) : (
-                                        <p className="text-sm text-gray-400 italic">Waiting for details...</p>
+                                        <p className="text-sm italic text-slate-400">Waiting for details...</p>
                                     )}
                                 </div>
 
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-amber-500 dark:text-amber-400 uppercase tracking-wider">Pending Questions</h4>
+                                    <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-500 dark:text-amber-400">Pending Questions</h4>
                                     {evaluation?.analysis.missing.length ? (
                                         <ul className="space-y-2">
                                             {evaluation.analysis.missing.map((item, i) => (
-                                                <li key={i} className="flex gap-2 text-sm text-gray-700 dark:text-gray-300 p-3 bg-amber-50 dark:bg-amber-900/10 rounded-lg border border-amber-100 dark:border-amber-900/20">
+                                                <li key={i} className="flex gap-2 rounded-lg border border-amber-100 bg-amber-50 p-3 text-sm text-slate-700 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-slate-200">
                                                     <span className="text-amber-500">?</span>
                                                     {item}
                                                 </li>
                                             ))}
                                         </ul>
                                     ) : (
-                                        <p className="text-sm text-gray-400 italic">No missing info detected.</p>
+                                        <p className="text-sm italic text-slate-400">No missing info detected.</p>
                                     )}
                                 </div>
                             </div>
@@ -1944,8 +1948,8 @@ function WizardContent() {
                     {/* Stack Tab */}
                     {activeTab === 'stack' && generation && (
                         <div className="absolute inset-0 p-6 overflow-y-auto">
-                            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                                <Layers className="w-5 h-5 text-orange-500" />
+                            <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                <Layers className="h-5 w-5 text-orange-500" />
                                 Technology Stack
                             </h3>
                             <ToolStackTable content={generation.toolStack} />
@@ -1972,9 +1976,9 @@ function TabButton({ active, onClick, icon, label, disabled }: TabButtonProps) {
         <button
             onClick={onClick}
             disabled={disabled}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${active
-                ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm border border-gray-200 dark:border-gray-700'
-                : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/60'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all ${active
+                ? 'border border-blue-200 bg-blue-50 text-blue-700 shadow-sm dark:border-blue-700/40 dark:bg-blue-900/20 dark:text-blue-200'
+                : 'text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/65'} ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}
         >
             {icon}
             <span>{label}</span>
@@ -1984,39 +1988,40 @@ function TabButton({ active, onClick, icon, label, disabled }: TabButtonProps) {
 
 function WizardSkeleton() {
     return (
-        <div className="flex h-screen w-full bg-gray-50 dark:bg-black overflow-hidden font-sans text-gray-900 dark:text-gray-100">
-            <div className="w-[420px] min-w-[320px] max-w-[720px] h-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/50 flex flex-col">
-                <div className="p-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/50">
-                    <div className="h-4 w-40 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+        <div className="relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.16),transparent_70%)]" />
+            <div className="relative z-10 flex h-full w-[420px] min-w-[320px] max-w-[720px] flex-col border-r border-[color:var(--border)] bg-white/85 backdrop-blur-sm dark:bg-slate-900/75">
+                <div className="border-b border-[color:var(--border)] bg-white/60 p-4 dark:bg-slate-900/75">
+                    <div className="h-4 w-40 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
                 </div>
                 <div className="flex-1 p-4 space-y-4 overflow-hidden">
-                    <div className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
-                    <div className="h-16 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
-                    <div className="h-24 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
-                    <div className="h-14 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                    <div className="h-20 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
+                    <div className="h-16 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
+                    <div className="h-24 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
+                    <div className="h-14 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
                 </div>
-                <div className="p-4 border-t border-gray-200 dark:border-gray-800">
-                    <div className="h-12 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                <div className="border-t border-[color:var(--border)] p-4">
+                    <div className="h-12 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
                 </div>
             </div>
 
-            <div className="flex-1 min-w-0 h-full bg-gray-100 dark:bg-gray-950 p-4 md:p-6 overflow-hidden">
-                <div className="mb-3 flex items-center justify-between">
-                    <div className="h-6 w-6 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-                    <div className="h-8 w-20 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+            <div className="relative z-10 h-full min-w-0 flex-1 overflow-hidden p-4 md:p-6">
+                <div className="fc-surface mb-3 flex items-center justify-between rounded-2xl px-4 py-3">
+                    <div className="h-6 w-6 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+                    <div className="h-8 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
                 </div>
-                <div className="mb-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/60 p-3">
-                    <div className="h-4 w-36 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-                    <div className="mt-2 h-3 w-48 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" />
+                <div className="fc-surface mb-3 rounded-xl p-3">
+                    <div className="h-4 w-36 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+                    <div className="mt-2 h-3 w-48 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
                 </div>
                 <div className="mb-4 flex gap-2">
-                    <div className="h-8 w-28 bg-gray-200 dark:bg-gray-800 rounded-lg animate-pulse" />
-                    <div className="h-8 w-24 bg-gray-200 dark:bg-gray-800 rounded-lg animate-pulse" />
-                    <div className="h-8 w-24 bg-gray-200 dark:bg-gray-800 rounded-lg animate-pulse" />
+                    <div className="h-8 w-28 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
+                    <div className="h-8 w-24 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
+                    <div className="h-8 w-24 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
                 </div>
-                <div className="flex-1 min-h-0 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm p-6">
-                    <div className="h-4 w-40 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-                    <div className="mt-4 h-56 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
+                <div className="fc-surface-strong flex-1 min-h-0 rounded-2xl p-6">
+                    <div className="h-4 w-40 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+                    <div className="mt-4 h-56 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
                 </div>
             </div>
         </div>

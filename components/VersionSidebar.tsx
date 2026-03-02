@@ -27,7 +27,7 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
 
     return (
         <aside
-            className="flex flex-col border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 h-full flex-shrink-0"
+            className="relative z-10 flex h-full flex-shrink-0 flex-col border-r border-[color:var(--border)] bg-white/80 backdrop-blur-sm dark:bg-slate-900/72"
             style={{
                 width,
                 minWidth: 320,
@@ -35,25 +35,25 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
             }}
         >
             {/* Header */}
-            <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center gap-2">
-                <Link href="/dashboard" className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors">
-                    <ArrowLeft className="w-4 h-4 text-gray-500" />
+            <div className="flex items-center gap-2 border-b border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/75">
+                <Link href="/dashboard" className="rounded-lg p-1 transition-colors hover:bg-slate-200 dark:hover:bg-slate-800">
+                    <ArrowLeft className="h-4 w-4 text-slate-500 dark:text-slate-300" />
                 </Link>
                 <BrandLogo
                     showText={false}
                     iconClassName="w-[clamp(18px,1.8vw,24px)] h-[clamp(18px,1.8vw,24px)]"
                 />
                 <div className="flex-1 min-w-0">
-                    <h2 className="font-bold text-sm text-gray-900 dark:text-gray-100 truncate">{project.name}</h2>
-                    <p className="text-xs text-gray-500 truncate">Project Workspace</p>
+                    <h2 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</h2>
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-300">Project Workspace</p>
                     <div className="mt-1 flex items-center gap-1.5">
-                        <code className="min-w-0 truncate text-[11px] text-gray-600 dark:text-gray-300" title={project.id}>
+                        <code className="min-w-0 truncate text-[11px] text-slate-600 dark:text-slate-300" title={project.id}>
                             {project.id}
                         </code>
                         <button
                             type="button"
                             onClick={handleCopyProjectId}
-                            className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors text-gray-500 dark:text-gray-300"
+                            className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
                             title="Copy project ID"
                             aria-label="Copy project ID"
                         >
@@ -67,7 +67,7 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                 {children ? (
                     children
                 ) : (
-                    <div className="p-4 text-xs text-gray-500 dark:text-gray-400">
+                    <div className="p-4 text-xs text-slate-500 dark:text-slate-300">
                         Versioning is disabled. This workspace uses a single live scaffold.
                     </div>
                 )}
