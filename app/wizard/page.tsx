@@ -46,7 +46,6 @@ const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then(
     )
 });
 import { VersionSidebar } from "@/components/VersionSidebar";
-import { BrandLogo } from "@/components/BrandLogo";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
     getCachedProjectSnapshot,
@@ -2267,13 +2266,6 @@ function WizardContent() {
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
-                <div className="fc-surface mb-3 flex flex-shrink-0 items-center rounded-2xl px-4 py-3">
-                    <BrandLogo
-                        showText={false}
-                        iconClassName="w-[clamp(20px,2vw,28px)] h-[clamp(20px,2vw,28px)]"
-                    />
-                </div>
-
                 {/* Tabs */}
                 <div className="fc-surface mb-4 flex flex-shrink-0 space-x-1 overflow-x-auto rounded-2xl p-2">
                     <TabButton
@@ -2474,10 +2466,6 @@ function WizardSkeleton() {
             </div>
 
             <div className="relative z-10 h-full min-w-0 flex-1 overflow-hidden p-4 md:p-6">
-                <div className="fc-surface mb-3 flex items-center justify-between rounded-2xl px-4 py-3">
-                    <div className="h-6 w-6 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                    <div className="h-8 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                </div>
                 <div className="fc-surface mb-3 rounded-xl p-3">
                     <div className="h-4 w-36 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
                     <div className="mt-2 h-3 w-48 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
