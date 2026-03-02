@@ -49,7 +49,7 @@ env:
     availability:
       - RUNTIME
   - variable: AI_PROVIDER
-    value: "chatgpt"
+    value: "deepseek"
     availability:
       - RUNTIME
   - variable: OPENAI_API_KEY
