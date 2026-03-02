@@ -19,6 +19,16 @@ type IdeProfile = "generic";
 const DEFAULT_ONE_CLICK_MODE: OneClickMode = "strict_build_v1";
 const DEFAULT_IDE_PROFILE: IdeProfile = "generic";
 
+function readEnvString(name: string, fallback = "") {
+    const raw = process.env[name];
+    return typeof raw === "string" ? raw : fallback;
+}
+
+function readEnvNumber(name: string, fallback: number) {
+    const parsed = Number(readEnvString(name));
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function normalizeProvider(value: string | undefined) {
     const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
     if (raw === "claude" || raw === "anthropic") return "claude";
@@ -28,57 +38,57 @@ function normalizeProvider(value: string | undefined) {
     return "";
 }
 
-const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || "";
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-4-6";
-const CLAUDE_API_BASE_URL = (process.env.CLAUDE_API_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "");
-const CLAUDE_API_VERSION = process.env.CLAUDE_API_VERSION || "2023-06-01";
-const CLAUDE_MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || "8192");
-const CLAUDE_COOLDOWN_MS = Number(process.env.CLAUDE_COOLDOWN_MS || "120000");
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const OPENAI_API_BASE_URL = (process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MAX_TOKENS = Number(process.env.OPENAI_MAX_TOKENS || "4096");
-const OPENAI_COOLDOWN_MS = Number(process.env.OPENAI_COOLDOWN_MS || "120000");
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
-const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
-const DEEPSEEK_API_BASE_URL = (process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com/v1").replace(/\/+$/, "");
-const DEEPSEEK_MAX_TOKENS = Number(process.env.DEEPSEEK_MAX_TOKENS || "4096");
-const DEEPSEEK_COOLDOWN_MS = Number(process.env.DEEPSEEK_COOLDOWN_MS || "120000");
-const GEMINI_CORE_COOLDOWN_MS = Number(process.env.GEMINI_CORE_COOLDOWN_MS || "180000");
+const CLAUDE_API_KEY = readEnvString("CLAUDE_API_KEY") || readEnvString("ANTHROPIC_API_KEY");
+const CLAUDE_MODEL = readEnvString("CLAUDE_MODEL", "claude-opus-4-6");
+const CLAUDE_API_BASE_URL = readEnvString("CLAUDE_API_BASE_URL", "https://api.anthropic.com").replace(/\/+$/, "");
+const CLAUDE_API_VERSION = readEnvString("CLAUDE_API_VERSION", "2023-06-01");
+const CLAUDE_MAX_TOKENS = readEnvNumber("CLAUDE_MAX_TOKENS", 8192);
+const CLAUDE_COOLDOWN_MS = readEnvNumber("CLAUDE_COOLDOWN_MS", 120000);
+const OPENAI_API_KEY = readEnvString("OPENAI_API_KEY");
+const OPENAI_MODEL = readEnvString("OPENAI_MODEL", "gpt-4o-mini");
+const OPENAI_API_BASE_URL = readEnvString("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_MAX_TOKENS = readEnvNumber("OPENAI_MAX_TOKENS", 4096);
+const OPENAI_COOLDOWN_MS = readEnvNumber("OPENAI_COOLDOWN_MS", 120000);
+const DEEPSEEK_API_KEY = readEnvString("DEEPSEEK_API_KEY");
+const DEEPSEEK_MODEL = readEnvString("DEEPSEEK_MODEL", "deepseek-chat");
+const DEEPSEEK_API_BASE_URL = readEnvString("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com/v1").replace(/\/+$/, "");
+const DEEPSEEK_MAX_TOKENS = readEnvNumber("DEEPSEEK_MAX_TOKENS", 4096);
+const DEEPSEEK_COOLDOWN_MS = readEnvNumber("DEEPSEEK_COOLDOWN_MS", 120000);
+const GEMINI_CORE_COOLDOWN_MS = readEnvNumber("GEMINI_CORE_COOLDOWN_MS", 180000);
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
-    Math.max(1, Number(process.env.GEMINI_STREAM_OPEN_MAX_ATTEMPTS || "4"))
+    Math.max(1, readEnvNumber("GEMINI_STREAM_OPEN_MAX_ATTEMPTS", 4))
 );
 const GEMINI_STREAM_RETRY_BASE_MS = Math.min(
     2_000,
-    Math.max(100, Number(process.env.GEMINI_STREAM_RETRY_BASE_MS || "350"))
+    Math.max(100, readEnvNumber("GEMINI_STREAM_RETRY_BASE_MS", 350))
 );
 const GEMINI_STREAM_RETRY_MAX_MS = Math.min(
     8_000,
-    Math.max(500, Number(process.env.GEMINI_STREAM_RETRY_MAX_MS || "4000"))
+    Math.max(500, readEnvNumber("GEMINI_STREAM_RETRY_MAX_MS", 4000))
 );
 const GEMINI_STREAM_RETRY_JITTER_MS = Math.min(
     1_000,
-    Math.max(0, Number(process.env.GEMINI_STREAM_RETRY_JITTER_MS || "250"))
+    Math.max(0, readEnvNumber("GEMINI_STREAM_RETRY_JITTER_MS", 250))
 );
 const OPENAI_COMPAT_MAX_ATTEMPTS = Math.min(
     4,
-    Math.max(1, Number(process.env.OPENAI_COMPAT_MAX_ATTEMPTS || "3"))
+    Math.max(1, readEnvNumber("OPENAI_COMPAT_MAX_ATTEMPTS", 3))
 );
 const OPENAI_COMPAT_RETRY_BASE_MS = Math.min(
     2_000,
-    Math.max(100, Number(process.env.OPENAI_COMPAT_RETRY_BASE_MS || "350"))
+    Math.max(100, readEnvNumber("OPENAI_COMPAT_RETRY_BASE_MS", 350))
 );
 const OPENAI_COMPAT_RETRY_MAX_MS = Math.min(
     8_000,
-    Math.max(500, Number(process.env.OPENAI_COMPAT_RETRY_MAX_MS || "4000"))
+    Math.max(500, readEnvNumber("OPENAI_COMPAT_RETRY_MAX_MS", 4000))
 );
 const OPENAI_COMPAT_RETRY_JITTER_MS = Math.min(
     1_000,
-    Math.max(0, Number(process.env.OPENAI_COMPAT_RETRY_JITTER_MS || "250"))
+    Math.max(0, readEnvNumber("OPENAI_COMPAT_RETRY_JITTER_MS", 250))
 );
 
-const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER) ||
+const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
     (CLAUDE_API_KEY
         ? "claude"
         : OPENAI_API_KEY
@@ -88,7 +98,7 @@ const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER) ||
                 : "gemini");
 
 // Initialize Gemini Client
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // Model Configuration
