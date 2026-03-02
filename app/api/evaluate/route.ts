@@ -192,14 +192,26 @@ async function* streamWithTimeGuards(
     })[Symbol.asyncIterator]();
     try {
         while (true) {
-            if (Date.now() - startedAt > EVALUATE_TOTAL_TIMEOUT_MS) {
+            const elapsedMs = Date.now() - startedAt;
+            const remainingTotalMs = EVALUATE_TOTAL_TIMEOUT_MS - elapsedMs;
+            if (remainingTotalMs <= 0) {
                 throw new Error("EVALUATE_TOTAL_TIMEOUT");
             }
 
+            // Cap each next() wait by the remaining total budget to avoid timeout overshoot.
+            const nextTimeoutMs = Math.max(
+                1_000,
+                Math.min(EVALUATE_MODEL_IDLE_TIMEOUT_MS, remainingTotalMs)
+            );
+            const timeoutMessage =
+                nextTimeoutMs < EVALUATE_MODEL_IDLE_TIMEOUT_MS
+                    ? "EVALUATE_TOTAL_TIMEOUT"
+                    : "EVALUATE_MODEL_IDLE_TIMEOUT";
+
             const next = await withTimeout(
                 iterator.next(),
-                EVALUATE_MODEL_IDLE_TIMEOUT_MS,
-                "EVALUATE_MODEL_IDLE_TIMEOUT"
+                nextTimeoutMs,
+                timeoutMessage
             );
 
             if (next.done) {
