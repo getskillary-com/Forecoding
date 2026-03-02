@@ -22,19 +22,28 @@ const DEFAULT_IDE_PROFILE: IdeProfile = "generic";
 function normalizeProvider(value: string | undefined) {
     const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
     if (raw === "claude" || raw === "anthropic") return "claude";
+    if (raw === "chatgpt" || raw === "openai" || raw === "gpt") return "chatgpt";
+    if (raw === "deepseek") return "deepseek";
     if (raw === "gemini" || raw === "google") return "gemini";
     return "";
 }
 
-const AI_PROVIDER =
-    normalizeProvider(process.env.AI_PROVIDER) ||
-    (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY ? "claude" : "gemini");
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || "";
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-4-6";
 const CLAUDE_API_BASE_URL = (process.env.CLAUDE_API_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "");
 const CLAUDE_API_VERSION = process.env.CLAUDE_API_VERSION || "2023-06-01";
 const CLAUDE_MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || "8192");
 const CLAUDE_COOLDOWN_MS = Number(process.env.CLAUDE_COOLDOWN_MS || "120000");
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_API_BASE_URL = (process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_MAX_TOKENS = Number(process.env.OPENAI_MAX_TOKENS || "4096");
+const OPENAI_COOLDOWN_MS = Number(process.env.OPENAI_COOLDOWN_MS || "120000");
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const DEEPSEEK_API_BASE_URL = (process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com/v1").replace(/\/+$/, "");
+const DEEPSEEK_MAX_TOKENS = Number(process.env.DEEPSEEK_MAX_TOKENS || "4096");
+const DEEPSEEK_COOLDOWN_MS = Number(process.env.DEEPSEEK_COOLDOWN_MS || "120000");
 const GEMINI_CORE_COOLDOWN_MS = Number(process.env.GEMINI_CORE_COOLDOWN_MS || "180000");
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
@@ -52,10 +61,35 @@ const GEMINI_STREAM_RETRY_JITTER_MS = Math.min(
     1_000,
     Math.max(0, Number(process.env.GEMINI_STREAM_RETRY_JITTER_MS || "250"))
 );
+const OPENAI_COMPAT_MAX_ATTEMPTS = Math.min(
+    4,
+    Math.max(1, Number(process.env.OPENAI_COMPAT_MAX_ATTEMPTS || "3"))
+);
+const OPENAI_COMPAT_RETRY_BASE_MS = Math.min(
+    2_000,
+    Math.max(100, Number(process.env.OPENAI_COMPAT_RETRY_BASE_MS || "350"))
+);
+const OPENAI_COMPAT_RETRY_MAX_MS = Math.min(
+    8_000,
+    Math.max(500, Number(process.env.OPENAI_COMPAT_RETRY_MAX_MS || "4000"))
+);
+const OPENAI_COMPAT_RETRY_JITTER_MS = Math.min(
+    1_000,
+    Math.max(0, Number(process.env.OPENAI_COMPAT_RETRY_JITTER_MS || "250"))
+);
+
+const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER) ||
+    (CLAUDE_API_KEY
+        ? "claude"
+        : OPENAI_API_KEY
+            ? "chatgpt"
+            : DEEPSEEK_API_KEY
+                ? "deepseek"
+                : "gemini");
 
 // Initialize Gemini Client
-const apiKey = process.env.GEMINI_API_KEY || "";
-const genAI = new GoogleGenerativeAI(apiKey);
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // Model Configuration
 // User explicitly requested gemini-3.1-pro-preview
@@ -70,11 +104,29 @@ function isClaudeProvider() {
     return AI_PROVIDER === "claude";
 }
 
+function isChatGptProvider() {
+    return AI_PROVIDER === "chatgpt";
+}
+
+function isDeepSeekProvider() {
+    return AI_PROVIDER === "deepseek";
+}
+
 function hasGeminiKey() {
-    return Boolean(apiKey);
+    return Boolean(GEMINI_API_KEY);
+}
+
+function hasOpenAiKey() {
+    return Boolean(OPENAI_API_KEY);
+}
+
+function hasDeepSeekKey() {
+    return Boolean(DEEPSEEK_API_KEY);
 }
 
 let claudeCooldownUntil = 0;
+let chatGptCooldownUntil = 0;
+let deepSeekCooldownUntil = 0;
 let geminiCoreCooldownUntil = 0;
 
 function shouldSkipClaude() {
@@ -83,6 +135,22 @@ function shouldSkipClaude() {
 
 function markClaudeFailure() {
     claudeCooldownUntil = Date.now() + CLAUDE_COOLDOWN_MS;
+}
+
+function shouldSkipChatGpt() {
+    return Date.now() < chatGptCooldownUntil;
+}
+
+function markChatGptFailure() {
+    chatGptCooldownUntil = Date.now() + OPENAI_COOLDOWN_MS;
+}
+
+function shouldSkipDeepSeek() {
+    return Date.now() < deepSeekCooldownUntil;
+}
+
+function markDeepSeekFailure() {
+    deepSeekCooldownUntil = Date.now() + DEEPSEEK_COOLDOWN_MS;
 }
 
 function shouldSkipGeminiCore() {
@@ -117,6 +185,22 @@ const GEMINI_CORE_RETRYABLE_ERROR_PATTERNS = [
     /timed out/i,
     /timeout/i
 ];
+const OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS = [
+    /\b429\b/i,
+    /\b500\b/i,
+    /\b502\b/i,
+    /\b503\b/i,
+    /\b504\b/i,
+    /rate limit/i,
+    /high demand/i,
+    /overloaded/i,
+    /temporarily unavailable/i,
+    /service unavailable/i,
+    /resource exhausted/i,
+    /insufficient_quota/i,
+    /timed out/i,
+    /timeout/i
+];
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -141,6 +225,17 @@ function isRetryableClaudeStreamError(error: unknown) {
 function isRetryableGeminiCoreError(error: unknown) {
     const message = getErrorMessage(error);
     return GEMINI_CORE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function isRetryableOpenAiCompatError(error: unknown) {
+    const message = getErrorMessage(error);
+    return OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function computeRetryDelayMs(baseMs: number, maxMs: number, jitterMs: number, attempt: number) {
+    const exponentialMs = baseMs * Math.pow(2, attempt);
+    const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
+    return Math.min(maxMs, exponentialMs + jitter);
 }
 
 console.log(`[AI] Active provider: ${AI_PROVIDER}`);
@@ -274,6 +369,249 @@ function buildClaudeMessages(messages: Message[]) {
         content: buildClaudeContent(msg)
     }));
 }
+
+type OpenAiCompatRole = "system" | "user" | "assistant";
+type OpenAiCompatMessage = { role: OpenAiCompatRole; content: string };
+type OpenAiCompatConfig = {
+    providerName: "ChatGPT" | "DeepSeek";
+    envKey: "OPENAI_API_KEY" | "DEEPSEEK_API_KEY";
+    apiKey: string;
+    model: string;
+    baseUrl: string;
+    maxTokens: number;
+};
+
+function buildOpenAiCompatMessageContent(message: Message) {
+    const parts: string[] = [];
+    if (message.content) {
+        parts.push(message.content);
+    }
+
+    for (const attachment of message.attachments || []) {
+        if (attachment.type === "text") {
+            parts.push(`\n\n[Attached File: ${attachment.name}]\n${attachment.content}`);
+            continue;
+        }
+
+        parts.push(`\n\n[Attachment omitted in ${AI_PROVIDER} mode: ${attachment.name} (${attachment.mimeType})]`);
+    }
+
+    return parts.join("");
+}
+
+function buildOpenAiCompatMessages(messages: Message[]): OpenAiCompatMessage[] {
+    return messages.map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        content: buildOpenAiCompatMessageContent(message)
+    }));
+}
+
+function normalizeOpenAiCompatContent(content: unknown): string {
+    if (typeof content === "string") {
+        return content;
+    }
+
+    if (Array.isArray(content)) {
+        return content
+            .map((item) => {
+                if (typeof item === "string") return item;
+                if (!item || typeof item !== "object") return "";
+                const candidate = item as { text?: unknown };
+                return typeof candidate.text === "string" ? candidate.text : "";
+            })
+            .join("");
+    }
+
+    if (content && typeof content === "object") {
+        const candidate = content as { text?: unknown };
+        if (typeof candidate.text === "string") {
+            return candidate.text;
+        }
+    }
+
+    return "";
+}
+
+function extractOpenAiCompatResponseText(payload: unknown): string {
+    if (!payload || typeof payload !== "object") return "";
+    const choices = (payload as { choices?: Array<{ message?: { content?: unknown } }> }).choices;
+    if (!Array.isArray(choices) || choices.length === 0) return "";
+    return choices
+        .map((choice) => normalizeOpenAiCompatContent(choice?.message?.content))
+        .join("");
+}
+
+function parseOpenAiCompatSseChunk(rawEvent: string) {
+    const dataLines = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+
+    if (!dataLines.length) return { text: "", error: "" };
+
+    const rawData = dataLines.join("\n");
+    if (!rawData || rawData === "[DONE]") return { text: "", error: "" };
+
+    try {
+        const payload = JSON.parse(rawData) as {
+            error?: { message?: string };
+            choices?: Array<{
+                delta?: { content?: unknown };
+                message?: { content?: unknown };
+            }>;
+        };
+
+        if (payload.error?.message) {
+            return { text: "", error: payload.error.message };
+        }
+
+        const choices = Array.isArray(payload.choices) ? payload.choices : [];
+        const text = choices
+            .map((choice) => (
+                normalizeOpenAiCompatContent(choice?.delta?.content) ||
+                normalizeOpenAiCompatContent(choice?.message?.content)
+            ))
+            .join("");
+        return { text, error: "" };
+    } catch {
+        return { text: "", error: "" };
+    }
+}
+
+async function generateTextWithOpenAiCompat(
+    prompt: string,
+    config: OpenAiCompatConfig,
+    options: { jsonMode?: boolean } = {}
+) {
+    if (!config.apiKey) {
+        throw new Error(`${config.envKey} is missing.`);
+    }
+
+    const requestBody: {
+        model: string;
+        max_tokens?: number;
+        messages: OpenAiCompatMessage[];
+        response_format?: { type: "json_object" };
+    } = {
+        model: config.model,
+        messages: [{ role: "user", content: prompt }]
+    };
+    if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
+        requestBody.max_tokens = Math.floor(config.maxTokens);
+    }
+    if (options.jsonMode && config.providerName === "ChatGPT") {
+        requestBody.response_format = { type: "json_object" };
+    }
+
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
+    }
+
+    const payload = await response.json();
+    const text = extractOpenAiCompatResponseText(payload);
+    if (!text) {
+        throw new Error(`[${config.providerName}] Empty response text.`);
+    }
+    return text;
+}
+
+async function* streamWithOpenAiCompat(
+    messages: Message[],
+    systemInstructionText: string,
+    config: OpenAiCompatConfig
+) {
+    if (!config.apiKey) {
+        throw new Error(`${config.envKey} is missing.`);
+    }
+
+    const payload: {
+        model: string;
+        stream: true;
+        max_tokens?: number;
+        messages: OpenAiCompatMessage[];
+    } = {
+        model: config.model,
+        stream: true,
+        messages: [
+            { role: "system", content: systemInstructionText },
+            ...buildOpenAiCompatMessages(messages)
+        ]
+    };
+    if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
+        payload.max_tokens = Math.floor(config.maxTokens);
+    }
+
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
+    }
+
+    if (!response.body) {
+        throw new Error(`[${config.providerName}] Empty streaming body.`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const rawEvent of events) {
+            const parsed = parseOpenAiCompatSseChunk(rawEvent);
+            if (parsed.error) throw new Error(parsed.error);
+            if (parsed.text) yield parsed.text;
+        }
+    }
+
+    if (buffer.trim()) {
+        const parsed = parseOpenAiCompatSseChunk(buffer);
+        if (parsed.error) throw new Error(parsed.error);
+        if (parsed.text) yield parsed.text;
+    }
+}
+
+const CHATGPT_CONFIG: OpenAiCompatConfig = {
+    providerName: "ChatGPT",
+    envKey: "OPENAI_API_KEY",
+    apiKey: OPENAI_API_KEY,
+    model: OPENAI_MODEL,
+    baseUrl: OPENAI_API_BASE_URL,
+    maxTokens: OPENAI_MAX_TOKENS
+};
+
+const DEEPSEEK_CONFIG: OpenAiCompatConfig = {
+    providerName: "DeepSeek",
+    envKey: "DEEPSEEK_API_KEY",
+    apiKey: DEEPSEEK_API_KEY,
+    model: DEEPSEEK_MODEL,
+    baseUrl: DEEPSEEK_API_BASE_URL,
+    maxTokens: DEEPSEEK_MAX_TOKENS
+};
 
 function parseClaudeTextResponse(payload: unknown): string {
     if (!payload || typeof payload !== "object") return "";
@@ -453,13 +791,11 @@ async function* streamWithGemini(
                     throw error;
                 }
 
-                const exponentialMs = GEMINI_STREAM_RETRY_BASE_MS * Math.pow(2, attempt);
-                const jitterMs = GEMINI_STREAM_RETRY_JITTER_MS > 0
-                    ? Math.floor(Math.random() * GEMINI_STREAM_RETRY_JITTER_MS)
-                    : 0;
-                const backoffMs = Math.min(
+                const backoffMs = computeRetryDelayMs(
+                    GEMINI_STREAM_RETRY_BASE_MS,
                     GEMINI_STREAM_RETRY_MAX_MS,
-                    exponentialMs + jitterMs
+                    GEMINI_STREAM_RETRY_JITTER_MS,
+                    attempt
                 );
                 console.warn(
                     `[AI] ${modelName} stream transient failure. Retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxAttempts}): ${message}`
@@ -540,7 +876,129 @@ async function* streamWithGemini(
     }
 }
 
+async function generateTextWithOpenAiCompatRetries(
+    prompt: string,
+    config: OpenAiCompatConfig,
+    options: { jsonMode?: boolean } = {},
+    onRetryableFailure?: () => void
+) {
+    for (let attempt = 0; attempt < OPENAI_COMPAT_MAX_ATTEMPTS; attempt++) {
+        try {
+            return await generateTextWithOpenAiCompat(prompt, config, options);
+        } catch (error) {
+            const retryable = isRetryableOpenAiCompatError(error);
+            const isLastAttempt = attempt >= OPENAI_COMPAT_MAX_ATTEMPTS - 1;
+            const message = getErrorMessage(error);
+
+            if (!retryable || isLastAttempt) {
+                if (retryable && onRetryableFailure) onRetryableFailure();
+                throw error;
+            }
+
+            const backoffMs = computeRetryDelayMs(
+                OPENAI_COMPAT_RETRY_BASE_MS,
+                OPENAI_COMPAT_RETRY_MAX_MS,
+                OPENAI_COMPAT_RETRY_JITTER_MS,
+                attempt
+            );
+            console.warn(
+                `[AI] ${config.providerName} request transient failure. Retrying in ${backoffMs}ms (attempt ${attempt + 1}/${OPENAI_COMPAT_MAX_ATTEMPTS}): ${message}`
+            );
+            await sleep(backoffMs);
+        }
+    }
+
+    throw new Error(`[AI] ${config.providerName} request failed after retries.`);
+}
+
+async function* streamWithOpenAiCompatRetries(
+    messages: Message[],
+    systemInstructionText: string,
+    config: OpenAiCompatConfig,
+    onRetryableFailure?: () => void
+) {
+    for (let attempt = 0; attempt < OPENAI_COMPAT_MAX_ATTEMPTS; attempt++) {
+        let emittedAnyChunk = false;
+        try {
+            for await (const chunk of streamWithOpenAiCompat(messages, systemInstructionText, config)) {
+                if (!chunk) continue;
+                emittedAnyChunk = true;
+                yield chunk;
+            }
+            return;
+        } catch (error) {
+            const retryable = isRetryableOpenAiCompatError(error);
+            const isLastAttempt = attempt >= OPENAI_COMPAT_MAX_ATTEMPTS - 1;
+            const message = getErrorMessage(error);
+
+            if (emittedAnyChunk || !retryable || isLastAttempt) {
+                if (!emittedAnyChunk && retryable && onRetryableFailure) {
+                    onRetryableFailure();
+                }
+                throw error;
+            }
+
+            const backoffMs = computeRetryDelayMs(
+                OPENAI_COMPAT_RETRY_BASE_MS,
+                OPENAI_COMPAT_RETRY_MAX_MS,
+                OPENAI_COMPAT_RETRY_JITTER_MS,
+                attempt
+            );
+            console.warn(
+                `[AI] ${config.providerName} stream transient failure. Retrying in ${backoffMs}ms (attempt ${attempt + 1}/${OPENAI_COMPAT_MAX_ATTEMPTS}): ${message}`
+            );
+            await sleep(backoffMs);
+        }
+    }
+
+    throw new Error(`[AI] ${config.providerName} stream failed after retries.`);
+}
+
 async function generateModelText(prompt: string, isJsonMode: boolean = false) {
+    if (isChatGptProvider() && !hasOpenAiKey()) {
+        throw new Error("OPENAI_API_KEY is missing.");
+    }
+
+    if (isDeepSeekProvider() && !hasDeepSeekKey()) {
+        throw new Error("DEEPSEEK_API_KEY is missing.");
+    }
+
+    if (isChatGptProvider() && (!shouldSkipChatGpt() || !hasGeminiKey())) {
+        try {
+            return await generateTextWithOpenAiCompatRetries(
+                prompt,
+                CHATGPT_CONFIG,
+                { jsonMode: isJsonMode },
+                markChatGptFailure
+            );
+        } catch (error) {
+            const retryable = isRetryableOpenAiCompatError(error);
+            const message = getErrorMessage(error);
+            if (!retryable || !hasGeminiKey()) {
+                throw error;
+            }
+            console.warn(`[AI] ChatGPT request unavailable. Falling back to Gemini: ${message}`);
+        }
+    }
+
+    if (isDeepSeekProvider() && (!shouldSkipDeepSeek() || !hasGeminiKey())) {
+        try {
+            return await generateTextWithOpenAiCompatRetries(
+                prompt,
+                DEEPSEEK_CONFIG,
+                { jsonMode: isJsonMode },
+                markDeepSeekFailure
+            );
+        } catch (error) {
+            const retryable = isRetryableOpenAiCompatError(error);
+            const message = getErrorMessage(error);
+            if (!retryable || !hasGeminiKey()) {
+                throw error;
+            }
+            console.warn(`[AI] DeepSeek request unavailable. Falling back to Gemini: ${message}`);
+        }
+    }
+
     if (isClaudeProvider() && !shouldSkipClaude()) {
         const maxClaudeAttempts = 2;
         for (let attempt = 0; attempt < maxClaudeAttempts; attempt++) {
@@ -624,6 +1082,64 @@ export async function* streamEvaluateInput(
     const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
+        if (isChatGptProvider() && !hasOpenAiKey()) {
+            throw new Error("OPENAI_API_KEY is missing.");
+        }
+
+        if (isDeepSeekProvider() && !hasDeepSeekKey()) {
+            throw new Error("DEEPSEEK_API_KEY is missing.");
+        }
+
+        if (isChatGptProvider() && (!shouldSkipChatGpt() || !hasGeminiKey())) {
+            try {
+                for await (const chunk of streamWithOpenAiCompatRetries(
+                    messages,
+                    systemInstructionText,
+                    CHATGPT_CONFIG,
+                    markChatGptFailure
+                )) {
+                    if (chunk) yield chunk;
+                }
+                return;
+            } catch (error) {
+                const retryable = isRetryableOpenAiCompatError(error);
+                const message = getErrorMessage(error);
+                if (retryable && hasGeminiKey()) {
+                    console.warn(`[AI] ChatGPT stream unavailable. Falling back to Gemini: ${message}`);
+                } else if (retryable) {
+                    yield "<question>AI provider timeout. Please try again in a moment.</question>";
+                    return;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        if (isDeepSeekProvider() && (!shouldSkipDeepSeek() || !hasGeminiKey())) {
+            try {
+                for await (const chunk of streamWithOpenAiCompatRetries(
+                    messages,
+                    systemInstructionText,
+                    DEEPSEEK_CONFIG,
+                    markDeepSeekFailure
+                )) {
+                    if (chunk) yield chunk;
+                }
+                return;
+            } catch (error) {
+                const retryable = isRetryableOpenAiCompatError(error);
+                const message = getErrorMessage(error);
+                if (retryable && hasGeminiKey()) {
+                    console.warn(`[AI] DeepSeek stream unavailable. Falling back to Gemini: ${message}`);
+                } else if (retryable) {
+                    yield "<question>AI provider timeout. Please try again in a moment.</question>";
+                    return;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
         let shouldUseGeminiStream = !isClaudeProvider() || shouldSkipClaude();
 
         if (isClaudeProvider()) {

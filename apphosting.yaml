@@ -48,6 +48,26 @@ env:
     secret: GEMINI_API_KEY
     availability:
       - RUNTIME
+  - variable: AI_PROVIDER
+    value: "gemini"
+    availability:
+      - RUNTIME
+  - variable: OPENAI_API_KEY
+    secret: OPENAI_API_KEY
+    availability:
+      - RUNTIME
+  - variable: OPENAI_MODEL
+    value: "gpt-5.2-pro"
+    availability:
+      - RUNTIME
+  - variable: DEEPSEEK_API_KEY
+    secret: DEEPSEEK_API_KEY
+    availability:
+      - RUNTIME
+  - variable: DEEPSEEK_MODEL
+    value: "deepseek-chat"
+    availability:
+      - RUNTIME
   - variable: EMAIL_SERVER
     secret: EMAIL_SERVER
     availability:

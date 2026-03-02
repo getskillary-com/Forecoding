@@ -38,14 +38,30 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 ## AI Provider (Optional)
 
 ```env
-# default: gemini
-AI_PROVIDER=claude
+# options: gemini | claude | chatgpt | deepseek
+AI_PROVIDER=chatgpt
+
+# Gemini
+GEMINI_API_KEY=your_gemini_api_key
+
+# Claude
 CLAUDE_API_KEY=your_anthropic_api_key
 CLAUDE_MODEL=claude-opus-4-6
-# optional
 CLAUDE_API_BASE_URL=https://api.anthropic.com
 CLAUDE_API_VERSION=2023-06-01
 CLAUDE_MAX_TOKENS=8192
+
+# ChatGPT (OpenAI)
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_BASE_URL=https://api.openai.com/v1
+OPENAI_MAX_TOKENS=4096
+
+# DeepSeek
+DEEPSEEK_API_KEY=your_deepseek_api_key
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_API_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MAX_TOKENS=4096
 ```
 
 ## Stripe Checkout
