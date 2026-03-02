@@ -1757,15 +1757,22 @@ function optimizeContext(tree: any[]): { optimizedTree: any[], truncatedFiles: s
 function parseJsonResponse(text: string) {
     if (!text) throw new Error("Empty model response");
 
+    const normalizedInput = text.replace(/^\uFEFF/, "").trim();
+
     // 1) Direct parse
     try {
-        return JSON.parse(text);
+        return JSON.parse(normalizedInput);
     } catch {
         // continue
     }
 
     // 2) Strip markdown code fences
-    const cleanText = text.replace(/```json\n?|\n?```/g, "").trim();
+    const cleanText = normalizedInput
+        .replace(/```[a-zA-Z0-9_-]*\n?/g, "")
+        .replace(/```/g, "")
+        .replace(/<json[^>]*>/gi, "")
+        .replace(/<\/json>/gi, "")
+        .trim();
     try {
         return JSON.parse(cleanText);
     } catch {
@@ -1774,8 +1781,17 @@ function parseJsonResponse(text: string) {
 
     // 3) Extract first top-level JSON object
     const extracted = extractFirstJsonObject(cleanText);
-    if (!extracted) throw new Error("Unable to extract JSON object from response");
-    return JSON.parse(extracted);
+    if (extracted) return JSON.parse(extracted);
+
+    // 4) Extract first top-level JSON array (fallback)
+    const extractedArray = extractFirstJsonArray(cleanText);
+    if (!extractedArray) throw new Error("Unable to extract JSON object from response");
+    const parsedArray = JSON.parse(extractedArray);
+    return {
+        projectTree: Array.isArray(parsedArray) ? parsedArray : [],
+        toolStack: "",
+        isFinal: true
+    };
 }
 
 function buildJsonRepairPrompt(rawResponse: string) {
@@ -1833,6 +1849,45 @@ function extractFirstJsonObject(text: string) {
             if (depth === 0) start = i;
             depth += 1;
         } else if (ch === "}") {
+            depth -= 1;
+            if (depth === 0 && start !== -1) {
+                return text.slice(start, i + 1);
+            }
+        }
+    }
+
+    return null;
+}
+
+function extractFirstJsonArray(text: string) {
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+
+        if (inString) {
+            if (escape) {
+                escape = false;
+            } else if (ch === "\\") {
+                escape = true;
+            } else if (ch === "\"") {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === "\"") {
+            inString = true;
+            continue;
+        }
+
+        if (ch === "[") {
+            if (depth === 0) start = i;
+            depth += 1;
+        } else if (ch === "]") {
             depth -= 1;
             if (depth === 0 && start !== -1) {
                 return text.slice(start, i + 1);
