@@ -42,7 +42,6 @@ const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then(
     )
 });
 import { VersionSidebar } from "@/components/VersionSidebar";
-import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
@@ -1995,14 +1994,11 @@ function WizardContent() {
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
-                <div className="fc-surface mb-3 flex flex-shrink-0 items-center justify-between rounded-2xl px-4 py-3">
+                <div className="fc-surface mb-3 flex flex-shrink-0 items-center rounded-2xl px-4 py-3">
                     <BrandLogo
                         showText={false}
                         iconClassName="w-[clamp(20px,2vw,28px)] h-[clamp(20px,2vw,28px)]"
                     />
-                    <div className="flex items-center gap-2">
-                        <UserCenter signOutCallbackUrl="/" />
-                    </div>
                 </div>
 
                 {/* Tabs */}

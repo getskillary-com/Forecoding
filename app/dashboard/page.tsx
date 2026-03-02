@@ -5,7 +5,6 @@ import Link from "next/link";
 import { Plus, Folder, Clock, Trash2, Edit2, X, Copy, Check } from "lucide-react";
 import { DiagramGovernance, Project, ProjectVersion } from "@/types";
 import { useRouter } from "next/navigation";
-import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
 import {
     prefetchWorkspaceRemote,
@@ -269,7 +268,6 @@ export default function DashboardPage() {
                                 <Plus className="h-4 w-4" />
                                 New Project
                             </button>
-                            <UserCenter signOutCallbackUrl="/" />
                         </div>
                     </div>
                 </header>
