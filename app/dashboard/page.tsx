@@ -245,7 +245,7 @@ export default function DashboardPage() {
         <div className="relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
             <div className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.22),transparent_72%)]" />
             <div className="relative mx-auto max-w-6xl space-y-8">
-                <header className="fc-surface rounded-[var(--radius-2xl)] p-5 sm:p-7">
+                <header className="fc-surface relative z-40 rounded-[var(--radius-2xl)] p-5 sm:p-7">
                     <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
                         <div className="space-y-4">
                             <BrandLogo />
@@ -442,7 +442,7 @@ function DashboardSkeleton() {
     return (
         <div className="relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
             <div className="mx-auto max-w-6xl space-y-8">
-                <header className="fc-surface rounded-[var(--radius-2xl)] p-5 sm:p-7">
+                <header className="fc-surface relative z-40 rounded-[var(--radius-2xl)] p-5 sm:p-7">
                     <div className="flex items-center justify-between">
                         <div className="space-y-3">
                             <div className="h-8 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />

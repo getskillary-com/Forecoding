@@ -100,7 +100,7 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
 
             {isOpen && (
                 <div
-                    className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl z-50 overflow-hidden"
+                    className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl z-[80] overflow-hidden"
                     role="menu"
                 >
                     <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
