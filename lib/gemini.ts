@@ -1275,9 +1275,37 @@ export async function* streamEvaluateInput(
 
     try {
         const activeProvider = getActiveAiProvider();
+        const forceGeminiBackup = options?.preferBackupModel === true && hasGeminiKey();
+        const forceChatGptNonStreamBackup = options?.preferBackupModel === true && isChatGptProvider();
         console.log(
             `[AI] Evaluate provider routing configured=${activeProvider} hasGemini=${hasGeminiKey()} hasOpenAI=${hasOpenAiKey()} hasDeepSeek=${hasDeepSeekKey()} chatgptCooldown=${shouldSkipChatGpt()} deepseekCooldown=${shouldSkipDeepSeek()} claudeCooldown=${shouldSkipClaude()}`
         );
+
+        if (forceChatGptNonStreamBackup) {
+            console.warn("[AI] Evaluate backup mode enabled. Switching ChatGPT retry to non-stream responses call.");
+            const retryText = await generateTextWithOpenAiCompatRetries(
+                buildOpenAiCompatTranscript(systemInstructionText, messages),
+                CHATGPT_CONFIG,
+                { jsonMode: false },
+                markChatGptFailure
+            );
+            if (retryText) {
+                yield retryText;
+            }
+            return;
+        }
+
+        if (forceGeminiBackup) {
+            console.warn(`[AI] Evaluate backup mode enabled. Bypassing ${activeProvider} and using Gemini fallback stream.`);
+            for await (const chunk of streamWithGemini(
+                messages,
+                systemInstructionText,
+                true
+            )) {
+                if (chunk) yield chunk;
+            }
+            return;
+        }
 
         if (isChatGptProvider() && !hasOpenAiKey()) {
             throw new Error("OPENAI_API_KEY is missing.");

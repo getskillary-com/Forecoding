@@ -423,6 +423,13 @@ export async function POST(req: Request) {
                             `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}; retrying compact payload`
                         );
                         try {
+                            const compactRetryTimeoutBudget =
+                                provider === "chatgpt"
+                                    ? {
+                                        idleTimeoutMs: timeoutBudget.totalTimeoutMs,
+                                        totalTimeoutMs: timeoutBudget.totalTimeoutMs
+                                    }
+                                    : timeoutBudget;
                             const retryMessages = buildRetryMessages(messages);
                             const retryContext = contextText
                                 ? clipText(contextText, EVALUATE_RETRY_CONTEXT_CHARS)
@@ -439,8 +446,8 @@ export async function POST(req: Request) {
                                     preferBackupModel: true,
                                     designMemory: retryDesignMemory,
                                     diagramPolicy: normalizedDiagramPolicy,
-                                    idleTimeoutMs: timeoutBudget.idleTimeoutMs,
-                                    totalTimeoutMs: timeoutBudget.totalTimeoutMs
+                                    idleTimeoutMs: compactRetryTimeoutBudget.idleTimeoutMs,
+                                    totalTimeoutMs: compactRetryTimeoutBudget.totalTimeoutMs
                                 }
                             )) {
                                 if (retryChunk.trim().length > 0) {
@@ -459,7 +466,7 @@ export async function POST(req: Request) {
                             );
                         } catch (retryError) {
                             console.error(
-                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
+                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${provider === "chatgpt" ? timeoutBudget.totalTimeoutMs : timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
                             );
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(retryError)
