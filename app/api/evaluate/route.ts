@@ -30,6 +30,8 @@ const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_RETRY_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_DIAGRAM_POLICY_MAX_CHARS = 120;
 const DEFAULT_DIAGRAM_POLICY = "incremental_auto_apply_v1";
+const EVALUATE_FALLBACK_BUFFER_CHARS = 120_000;
+const EVALUATE_FALLBACK_QUESTION_MAX_CHARS = 280;
 
 export const runtime = "nodejs";
 
@@ -102,6 +104,35 @@ function isUpstreamOverloadError(error: unknown) {
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return `${text.slice(0, maxChars)}\n... [truncated]`;
+}
+
+function extractTaggedSection(output: string, tag: string) {
+    const regex = new RegExp(`<${tag}>([\\s\\S]*?)(?:<\\/${tag}>|$)`, "i");
+    const match = output.match(regex);
+    return match?.[1]?.trim() ?? "";
+}
+
+function parseMissingItems(raw: string) {
+    return raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/^[-*]\s*/, ""))
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/[?？]+$/g, ""))
+        .filter(Boolean);
+}
+
+function buildFallbackQuestion(output: string) {
+    const missingRaw = extractTaggedSection(output, "analysis_missing");
+    const missingItems = parseMissingItems(missingRaw);
+    if (missingItems.length > 0) {
+        const summary = missingItems.slice(0, 3).join("; ");
+        const question = `Could you clarify the following so I can proceed: ${summary}?`;
+        return clipText(question, EVALUATE_FALLBACK_QUESTION_MAX_CHARS);
+    }
+    return "Could you confirm this direction so I can proceed?";
 }
 
 function compactAttachment(attachment: Attachment): Attachment {
@@ -357,6 +388,7 @@ export async function POST(req: Request) {
                 let sawQuestionTag = false;
                 let fallbackQuestionInjected = false;
                 let tagScanBuffer = "";
+                let fullOutput = "";
                 const streamStartedAt = Date.now();
 
                 const safeEnqueue = (chunk: string) => {
@@ -392,6 +424,9 @@ export async function POST(req: Request) {
                             totalTimeoutMs: timeoutBudget.totalTimeoutMs
                         }
                     )) {
+                        if (chunk) {
+                            fullOutput = (fullOutput + chunk).slice(-EVALUATE_FALLBACK_BUFFER_CHARS);
+                        }
                         tagScanBuffer = (tagScanBuffer + chunk).slice(-8192);
                         if (!sawQuestionTag && /<question>/i.test(tagScanBuffer)) {
                             sawQuestionTag = true;
@@ -491,7 +526,7 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] missingQuestionTag streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        enqueueQuestionFallback("Model response format was invalid. Please retry.");
+                        enqueueQuestionFallback(buildFallbackQuestion(fullOutput));
                     }
                     if (!closed) {
                         closed = true;
