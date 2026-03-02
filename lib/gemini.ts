@@ -973,7 +973,8 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
         throw new Error("DEEPSEEK_API_KEY is missing.");
     }
 
-    if (isChatGptProvider() && (!shouldSkipChatGpt() || !hasGeminiKey())) {
+    // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
+    if (isChatGptProvider()) {
         try {
             return await generateTextWithOpenAiCompatRetries(
                 prompt,
@@ -991,7 +992,8 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
         }
     }
 
-    if (isDeepSeekProvider() && (!shouldSkipDeepSeek() || !hasGeminiKey())) {
+    // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
+    if (isDeepSeekProvider()) {
         try {
             return await generateTextWithOpenAiCompatRetries(
                 prompt,
@@ -1009,7 +1011,8 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
         }
     }
 
-    if (isClaudeProvider() && !shouldSkipClaude()) {
+    // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
+    if (isClaudeProvider()) {
         const maxClaudeAttempts = 2;
         for (let attempt = 0; attempt < maxClaudeAttempts; attempt++) {
             try {
@@ -1092,6 +1095,11 @@ export async function* streamEvaluateInput(
     const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
+        const activeProvider = getActiveAiProvider();
+        console.log(
+            `[AI] Evaluate provider routing configured=${activeProvider} hasGemini=${hasGeminiKey()} hasOpenAI=${hasOpenAiKey()} hasDeepSeek=${hasDeepSeekKey()} chatgptCooldown=${shouldSkipChatGpt()} deepseekCooldown=${shouldSkipDeepSeek()} claudeCooldown=${shouldSkipClaude()}`
+        );
+
         if (isChatGptProvider() && !hasOpenAiKey()) {
             throw new Error("OPENAI_API_KEY is missing.");
         }
@@ -1100,7 +1108,8 @@ export async function* streamEvaluateInput(
             throw new Error("DEEPSEEK_API_KEY is missing.");
         }
 
-        if (isChatGptProvider() && (!shouldSkipChatGpt() || !hasGeminiKey())) {
+        // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
+        if (isChatGptProvider()) {
             try {
                 for await (const chunk of streamWithOpenAiCompatRetries(
                     messages,
@@ -1125,7 +1134,8 @@ export async function* streamEvaluateInput(
             }
         }
 
-        if (isDeepSeekProvider() && (!shouldSkipDeepSeek() || !hasGeminiKey())) {
+        // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
+        if (isDeepSeekProvider()) {
             try {
                 for await (const chunk of streamWithOpenAiCompatRetries(
                     messages,
@@ -1150,7 +1160,7 @@ export async function* streamEvaluateInput(
             }
         }
 
-        let shouldUseGeminiStream = !isClaudeProvider() || shouldSkipClaude();
+        let shouldUseGeminiStream = !isClaudeProvider();
 
         if (isClaudeProvider()) {
             const maxClaudeAttempts = 2;
