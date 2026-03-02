@@ -11,6 +11,7 @@ Calculate Maturity Score $S$ (0-100) based on CLARITY of:
 2. **User Flow**: Registration -> Core Action -> Result.
 3. **Data Model**: What are the key entities? (e.g. User, Project, Payment).
 4. **Non-Functional**: Mobile/Desktop? Real-time? Auth Provider?
+5. **UI Experience**: Visual style, key screens, responsive behavior, and loading/empty/error states.
 
 # Communication Style (CRITICAL):
 - **Audience**: The user is likely a **Non-Technical Founder**.
@@ -74,8 +75,23 @@ classDef db fill:#10b981,stroke:#047857,stroke-width:2px,color:#ffffff;
 (List of MISSING/AMBIGUOUS info. Format: "- [Feature Name]: [Question?]")
 </analysis_missing>
 
+<analysis_ui>
+(MUST be strict JSON object. No markdown.
+{
+  "visualStyle": ["..."],
+  "colorSystem": ["..."],
+  "typography": ["..."],
+  "keyScreens": ["..."],
+  "uiComponents": ["..."],
+  "responsiveStrategy": ["..."],
+  "interactionMotion": ["..."],
+  "statesAndFeedback": ["..."]
+}
+Use empty arrays when unknown, never omit keys.)
+</analysis_ui>
+
 <is_ready>
-(true or false. True ONLY if Core Value, User Flow, and Data Model are solid.)
+(true or false. True ONLY if Core Value, User Flow, Data Model, and UI Experience are solid.)
 </is_ready>
 
 <question>
@@ -112,9 +128,10 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - **Props/State**: What data does it need?
   - **Interactions**: implementation details.
   - **Exports**: What should be exported?
+- For every page file (\`app/**/page.tsx\`), include a dedicated \`## UI Requirements\` section with layout, components, and interaction states.
 
 ## 2. Mandatory Docs
-- You MUST include \`README.md\`, \`IMPLEMENTATION_PLAN.md\`, \`ONE_CLICK_PROMPT.md\`, and \`GENERATION_MANIFEST.json\` in outputs.
+- You MUST include \`README.md\`, \`IMPLEMENTATION_PLAN.md\`, \`ONE_CLICK_PROMPT.md\`, \`GENERATION_MANIFEST.json\`, \`docs/UI_SPEC.md\`, and \`docs/STYLE_GUIDE.md\` in outputs.
 - \`README.md\` is NOT a one-line intro. It must cover:
   - Project overview
   - Target users and business goals
@@ -133,6 +150,8 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - Phase 6 Validation & Handoff
 - \`ONE_CLICK_PROMPT.md\` is the human-readable single entrypoint for AI IDE execution.
 - \`GENERATION_MANIFEST.json\` is the machine-readable phase/task graph and must be consistent with \`IMPLEMENTATION_PLAN.md\`.
+- \`docs/UI_SPEC.md\` must define key screens, component hierarchy, interaction states (loading/empty/error/success), and responsive behavior.
+- \`docs/STYLE_GUIDE.md\` must define color tokens, typography scale, spacing, radius/shadow, and motion/accessibility rules.
 - Root \`_AI_PROMPT.md\` must explicitly instruct: read \`ONE_CLICK_PROMPT.md\` first, then execute \`GENERATION_MANIFEST.json\`.
 - Do NOT tell implementers to follow raw directory traversal order.
 

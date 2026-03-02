@@ -642,7 +642,20 @@ export async function evaluateInput() {
         // ... return mock or implement static call
         density_score: 0,
         is_ready: false,
-        analysis: { clarified: [], missing: [] },
+        analysis: {
+            clarified: [],
+            missing: [],
+            ui: {
+                visualStyle: [],
+                colorSystem: [],
+                typography: [],
+                keyScreens: [],
+                uiComponents: [],
+                responsiveStrategy: [],
+                interactionMotion: [],
+                statesAndFeedback: []
+            }
+        },
         next_step: { question: "System update... please use streaming." }
     };
 }
@@ -666,7 +679,9 @@ const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
     "PLAN_COVERAGE_INCOMPLETE",
     "INVALID_PROMPT_REFERENCE",
     "NEXT_CONFIG_CONTAMINATED",
-    "MISSING_ENV_EXAMPLE"
+    "MISSING_ENV_EXAMPLE",
+    "MISSING_UI_SPEC",
+    "MISSING_PAGE_UI_REQUIREMENTS"
 ] as const);
 
 export async function generateProjectResources(
@@ -802,6 +817,14 @@ export async function generateProjectResources(
                     history,
                     force: true
                 });
+                ensureUiDesignDocs({
+                    tree: data.projectTree,
+                    outputLanguage: resolvedOutputLanguage,
+                    projectName: resolvedProjectName || "generated-project",
+                    toolStack: data.toolStack,
+                    history
+                });
+                ensurePageUiRequirementSections(data.projectTree);
 
                 upsertFileByPath(
                     data.projectTree,
@@ -1269,6 +1292,14 @@ function ensureCoreConfigFiles(
         projectName,
         history
     });
+    ensureUiDesignDocs({
+        tree: finalTree,
+        outputLanguage,
+        projectName,
+        toolStack,
+        history
+    });
+    ensurePageUiRequirementSections(finalTree);
 
     const structuredReadme = ensureStructuredReadmeQualityStable(
         buildStructuredReadmeStable({
@@ -1306,6 +1337,157 @@ function ensureCoreConfigFiles(
     upsertFileByPath(finalTree, "ONE_CLICK_PROMPT.md", oneClickPrompt);
     upsertFileByPath(finalTree, "_AI_PROMPT.md", rootPrompt);
     return finalTree;
+}
+
+function buildUiSpecDoc(input: {
+    projectName: string;
+    history: string;
+    outputLanguage: OutputLanguage;
+}) {
+    const intents = extractUserIntentLinesStable(input.history, input.outputLanguage).slice(0, 5);
+    const focusLines = intents.length > 0
+        ? intents.map((line) => `- ${line}`)
+        : ["- Define user-facing goals from finalized PRD and align with key task flow."];
+
+    const lines: string[] = [];
+    lines.push(`# ${input.projectName || "generated-project"} UI Specification`);
+    lines.push("");
+    lines.push("## Product Surface");
+    lines.push("- Primary platform: Web first, responsive for desktop/tablet/mobile.");
+    lines.push("- Main objective: deliver a complete UI shell before deep feature wiring.");
+    lines.push("");
+    lines.push("## Key Screens");
+    lines.push("- Landing/Home");
+    lines.push("- Primary workflow page");
+    lines.push("- Settings/Profile");
+    lines.push("- Empty/error recovery views");
+    lines.push("");
+    lines.push("## Screen Intent Notes");
+    focusLines.forEach((line) => lines.push(line));
+    lines.push("");
+    lines.push("## Interaction States");
+    lines.push("- Loading: skeleton or progress indicator for every async panel.");
+    lines.push("- Empty: clear call-to-action and onboarding hint.");
+    lines.push("- Error: actionable message and retry path.");
+    lines.push("- Success: explicit confirmation toast/banner.");
+    lines.push("");
+    lines.push("## Responsive Strategy");
+    lines.push("- Mobile: single-column layout, sticky primary actions.");
+    lines.push("- Tablet: adaptive split layout where context helps.");
+    lines.push("- Desktop: multi-panel productivity layout with clear hierarchy.");
+    lines.push("");
+    lines.push("## Component Inventory");
+    lines.push("- Top navigation/header");
+    lines.push("- Sidebar or tab navigation");
+    lines.push("- Cards, tables, forms, and modal/drawer patterns");
+    lines.push("- Feedback components (toast, inline alerts, banners)");
+    lines.push("");
+    lines.push("## Accessibility & Motion");
+    lines.push("- Preserve keyboard navigation and visible focus states.");
+    lines.push("- Ensure color contrast and semantic labels for interactive controls.");
+    lines.push("- Keep motion subtle; respect reduced-motion preferences.");
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildStyleGuideDoc(input: {
+    projectName: string;
+    toolStack: string;
+}) {
+    const stackLine = input.toolStack?.trim()
+        ? `- Stack reference: ${input.toolStack.split("\n")[0].trim()}`
+        : "- Stack reference: follow generated stack table.";
+
+    return [
+        `# ${input.projectName || "generated-project"} Style Guide`,
+        "",
+        "## Color Tokens",
+        "- `--bg`: base background",
+        "- `--surface`: panel surface",
+        "- `--text-primary`: primary text",
+        "- `--text-muted`: secondary text",
+        "- `--brand-primary`: main action color",
+        "- `--status-success|warning|danger`: system feedback colors",
+        "",
+        "## Typography Scale",
+        "- Display / Heading / Body / Caption levels must be explicit.",
+        "- Define font-size, line-height, weight, and letter spacing for each level.",
+        "- Keep paragraph width readable on desktop and mobile.",
+        "",
+        "## Spacing, Radius, Elevation",
+        "- Spacing scale: 4, 8, 12, 16, 24, 32.",
+        "- Radius scale: 8, 12, 16.",
+        "- Elevation tokens for card/modal/dropdown surfaces.",
+        "",
+        "## Motion Rules",
+        "- Standard duration: 120-220ms for UI transitions.",
+        "- Use easing that prioritizes clarity over decoration.",
+        "- Avoid chained animations that block interaction.",
+        "",
+        "## Accessibility Rules",
+        "- Minimum contrast target: WCAG AA.",
+        "- All controls need visible focus ring and descriptive labels.",
+        "- Interactive areas should support keyboard and touch targets.",
+        "",
+        "## Component Behavior Rules",
+        "- Button variants: primary, secondary, ghost, danger.",
+        "- Form fields: default/focus/error/disabled states defined.",
+        "- Data tables/cards: loading, empty, error, success states defined.",
+        stackLine,
+        ""
+    ].join("\n");
+}
+
+function ensureUiDesignDocs(input: {
+    tree: any[];
+    projectName: string;
+    history: string;
+    toolStack: string;
+    outputLanguage: OutputLanguage;
+}) {
+    const uiSpec = getFileContentByPath(input.tree, "docs/UI_SPEC.md");
+    if (!validateUiSpecContent(uiSpec)) {
+        upsertFileByPath(
+            input.tree,
+            "docs/UI_SPEC.md",
+            buildUiSpecDoc({
+                projectName: input.projectName,
+                history: input.history,
+                outputLanguage: input.outputLanguage
+            })
+        );
+    }
+
+    const styleGuide = getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md");
+    if (!validateStyleGuideContent(styleGuide)) {
+        upsertFileByPath(
+            input.tree,
+            "docs/STYLE_GUIDE.md",
+            buildStyleGuideDoc({
+                projectName: input.projectName,
+                toolStack: input.toolStack
+            })
+        );
+    }
+}
+
+function ensurePageUiRequirementSections(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    for (const path of pagePaths) {
+        const existing = getFileContentByPath(tree, path);
+        if (!existing.trim()) continue;
+        if (hasPageUiRequirements(existing)) continue;
+        const appended = [
+            existing.trim(),
+            "",
+            "## UI Requirements",
+            "- Define layout structure and visual hierarchy.",
+            "- List key UI components and their intent.",
+            "- Specify loading, empty, error, and success states.",
+            "- Describe responsive behavior for mobile/tablet/desktop."
+        ].join("\n");
+        upsertFileByPath(tree, path, appended);
+    }
 }
 
 type DependencyClosure = {
@@ -2470,6 +2652,12 @@ function buildScaffoldSpecContent(input: {
             "## Role & Responsibility",
             `- Host primary ${input.focus} user flow.`,
             "",
+            "## UI Requirements",
+            "- Define page layout hierarchy (header/content/footer or split panels).",
+            "- Specify key components and information priority.",
+            "- Include loading, empty, error, and success states.",
+            "- Ensure mobile/tablet/desktop responsive behavior.",
+            "",
             "## Core Interactions",
             "- Upload files, preview risks, export report.",
             "- Handle loading/failure/retry and history navigation.",
@@ -2836,6 +3024,61 @@ function validateNextConfigContent(text: string) {
     return true;
 }
 
+function validateUiSpecContent(text: string) {
+    const source = (text || "").trim();
+    if (source.length < 320) return false;
+    const required = [
+        /##\s+Product Surface/i,
+        /##\s+Key Screens/i,
+        /##\s+Interaction States/i,
+        /##\s+Responsive Strategy/i,
+        /##\s+Component Inventory/i,
+        /##\s+Accessibility/i
+    ];
+    return required.every((pattern) => pattern.test(source));
+}
+
+function validateStyleGuideContent(text: string) {
+    const source = (text || "").trim();
+    if (source.length < 280) return false;
+    const required = [
+        /##\s+Color Tokens/i,
+        /##\s+Typography/i,
+        /##\s+Spacing/i,
+        /##\s+Motion/i,
+        /##\s+Accessibility/i,
+        /##\s+Component Behavior/i
+    ];
+    return required.every((pattern) => pattern.test(source));
+}
+
+function isPageSpecPath(path: string) {
+    const normalized = (path || "").replace(/\\/g, "/");
+    if (/^app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
+    if (/^src\/app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
+    if (/^apps\/[^/]+\/app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
+    return false;
+}
+
+function hasPageUiRequirements(content: string) {
+    const source = (content || "").trim();
+    if (!source) return false;
+    return (
+        /##\s+UI Requirements/i.test(source) ||
+        /##\s+UI Spec/i.test(source) ||
+        /##\s+Interface Requirements/i.test(source)
+    );
+}
+
+function collectPagesMissingUiRequirements(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    const missing = pagePaths.filter((path) => !hasPageUiRequirements(getFileContentByPath(tree, path)));
+    return {
+        pagePaths,
+        missing
+    };
+}
+
 function deriveMissingDependencies(toolStack: string, packageJsonText: string) {
     const closure = deriveDependencyClosure({
         toolStack,
@@ -2875,6 +3118,33 @@ function runGenerationPreflight(input: {
             code: "MISSING_ENV_EXAMPLE",
             severity: "error",
             message: "`.env.example` is missing."
+        });
+    }
+
+    const uiSpecValid = validateUiSpecContent(getFileContentByPath(input.tree, "docs/UI_SPEC.md"));
+    const styleGuideValid = validateStyleGuideContent(getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md"));
+    if (!uiSpecValid || !styleGuideValid) {
+        const missingDocs: string[] = [];
+        if (!uiSpecValid) missingDocs.push("docs/UI_SPEC.md");
+        if (!styleGuideValid) missingDocs.push("docs/STYLE_GUIDE.md");
+        issues.push({
+            code: "MISSING_UI_SPEC",
+            severity: "error",
+            message: "UI documentation is missing or incomplete.",
+            details: missingDocs.join(", ")
+        });
+    }
+
+    const pageUiCoverage = collectPagesMissingUiRequirements(input.tree);
+    if (pageUiCoverage.pagePaths.length === 0 || pageUiCoverage.missing.length > 0) {
+        issues.push({
+            code: "MISSING_PAGE_UI_REQUIREMENTS",
+            severity: "error",
+            message: "Page specs must include `## UI Requirements` sections.",
+            details:
+                pageUiCoverage.pagePaths.length === 0
+                    ? "No page specs found under app/**/page.*"
+                    : pageUiCoverage.missing.slice(0, 10).join(", ")
         });
     }
 

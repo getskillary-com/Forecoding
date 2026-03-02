@@ -1,7 +1,19 @@
 
+export interface UiRequirements {
+    visualStyle: string[];
+    colorSystem: string[];
+    typography: string[];
+    keyScreens: string[];
+    uiComponents: string[];
+    responsiveStrategy: string[];
+    interactionMotion: string[];
+    statesAndFeedback: string[];
+}
+
 export interface Analysis {
     clarified: string[];
     missing: string[];
+    ui?: UiRequirements;
 }
 
 export interface NextStep {
@@ -60,7 +72,9 @@ export interface PreflightIssue {
         | "EMPTY_GENERATION_TASKS"
         | "DUPLICATE_PATH_SEGMENT"
         | "LANGUAGE_MISMATCH"
-        | "MISSING_STACK_DEPENDENCIES";
+        | "MISSING_STACK_DEPENDENCIES"
+        | "MISSING_UI_SPEC"
+        | "MISSING_PAGE_UI_REQUIREMENTS";
     severity: "warning" | "error";
     message: string;
     details?: string;

@@ -7,6 +7,7 @@ import {
     EvaluationResponse,
     GenerationResponse,
     DiagramGovernance,
+    UiRequirements,
     Project,
     Task,
     ProjectVersion,
@@ -70,6 +71,138 @@ const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
 const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
+const UI_REQUIREMENT_KEYS: Array<keyof UiRequirements> = [
+    "visualStyle",
+    "colorSystem",
+    "typography",
+    "keyScreens",
+    "uiComponents",
+    "responsiveStrategy",
+    "interactionMotion",
+    "statesAndFeedback"
+];
+
+const UI_REQUIREMENT_LABELS: Record<keyof UiRequirements, string> = {
+    visualStyle: "Visual style",
+    colorSystem: "Color system",
+    typography: "Typography",
+    keyScreens: "Key screens",
+    uiComponents: "UI components",
+    responsiveStrategy: "Responsive strategy",
+    interactionMotion: "Interaction motion",
+    statesAndFeedback: "States and feedback"
+};
+
+function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
+    if (!Array.isArray(value)) return [];
+    const dedupe = new Set<string>();
+    const normalized = value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+        .filter((item) => {
+            const key = item.toLowerCase();
+            if (dedupe.has(key)) return false;
+            dedupe.add(key);
+            return true;
+        });
+    return normalized.slice(0, maxItems);
+}
+
+function createEmptyUiRequirements(): UiRequirements {
+    return {
+        visualStyle: [],
+        colorSystem: [],
+        typography: [],
+        keyScreens: [],
+        uiComponents: [],
+        responsiveStrategy: [],
+        interactionMotion: [],
+        statesAndFeedback: []
+    };
+}
+
+function normalizeUiRequirements(value: unknown): UiRequirements {
+    const base = createEmptyUiRequirements();
+    if (!value || typeof value !== "object") return base;
+    const candidate = value as Partial<UiRequirements>;
+    for (const key of UI_REQUIREMENT_KEYS) {
+        base[key] = normalizeStringList(candidate[key]);
+    }
+    return base;
+}
+
+function normalizeAnalysis(raw: EvaluationResponse["analysis"] | null | undefined): EvaluationResponse["analysis"] {
+    const fallback = {
+        clarified: [] as string[],
+        missing: [] as string[],
+        ui: createEmptyUiRequirements()
+    };
+
+    if (!raw || typeof raw !== "object") return fallback;
+    return {
+        clarified: normalizeStringList((raw as { clarified?: unknown }).clarified, 80),
+        missing: normalizeStringList((raw as { missing?: unknown }).missing, 60),
+        ui: normalizeUiRequirements((raw as { ui?: unknown }).ui)
+    };
+}
+
+function normalizeEvaluation(value: EvaluationResponse | null | undefined): EvaluationResponse | null {
+    if (!value || typeof value !== "object") return null;
+    return {
+        ...value,
+        analysis: normalizeAnalysis(value.analysis)
+    };
+}
+
+function parseAnalysisList(raw: string) {
+    return raw
+        .split("\n")
+        .map((line) => line.trim().replace(/^- /, ""))
+        .filter(Boolean);
+}
+
+function parseAnalysisUiBlock(raw: string): UiRequirements {
+    const source = (raw || "")
+        .trim()
+        .replace(/^```json/i, "")
+        .replace(/^```/i, "")
+        .replace(/```$/i, "")
+        .trim();
+    if (!source) return createEmptyUiRequirements();
+
+    const parseJsonCandidate = (text: string): UiRequirements | null => {
+        try {
+            const parsed = JSON.parse(text) as unknown;
+            return normalizeUiRequirements(parsed);
+        } catch {
+            return null;
+        }
+    };
+
+    const direct = parseJsonCandidate(source);
+    if (direct) return direct;
+
+    const objectMatch = source.match(/\{[\s\S]*\}/);
+    if (objectMatch?.[0]) {
+        const embedded = parseJsonCandidate(objectMatch[0]);
+        if (embedded) return embedded;
+    }
+
+    return createEmptyUiRequirements();
+}
+
+function getMissingUiRequirementLabels(evaluation: EvaluationResponse | null) {
+    const ui = normalizeUiRequirements(evaluation?.analysis?.ui);
+    return UI_REQUIREMENT_KEYS
+        .filter((key) => ui[key].length === 0)
+        .map((key) => UI_REQUIREMENT_LABELS[key]);
+}
+
+function buildUiRequirementErrorMessage(evaluation: EvaluationResponse | null) {
+    const missing = getMissingUiRequirementLabels(evaluation);
+    if (missing.length === 0) return "";
+    return `UI requirements are incomplete: ${missing.join(", ")}. Please clarify these items before generating scaffold.`;
+}
 
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -274,6 +407,7 @@ function extractFallbackAssistantText(raw: string) {
         .replace(/<diagram>[\s\S]*?(?:<\/diagram>|$)/gi, " ")
         .replace(/<analysis_clarified>[\s\S]*?(?:<\/analysis_clarified>|$)/gi, " ")
         .replace(/<analysis_missing>[\s\S]*?(?:<\/analysis_missing>|$)/gi, " ")
+        .replace(/<analysis_ui>[\s\S]*?(?:<\/analysis_ui>|$)/gi, " ")
         .replace(/<density>[\s\S]*?(?:<\/density>|$)/gi, " ")
         .replace(/<is_ready>[\s\S]*?(?:<\/is_ready>|$)/gi, " ")
         .replace(/<options>[\s\S]*?(?:<\/options>|$)/gi, " ")
@@ -370,8 +504,10 @@ function buildDesignMemory(
     diagramGovernance: DiagramGovernance,
     maxChars: number = EVALUATE_DESIGN_MEMORY_CHARS
 ) {
-    const clarified = evaluation?.analysis.clarified || [];
-    const missing = evaluation?.analysis.missing || [];
+    const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
+    const clarified = normalizedAnalysis.clarified;
+    const missing = normalizedAnalysis.missing;
+    const ui = normalizeUiRequirements(normalizedAnalysis.ui);
     const lastDecisionAt = diagramGovernance.lastDecisionAt
         ? new Date(diagramGovernance.lastDecisionAt).toISOString()
         : null;
@@ -392,6 +528,14 @@ function buildDesignMemory(
         missing.length > 0
             ? missing.slice(0, 20).map((item) => `- ${clipText(item, 300)}`).join("\n")
             : "- None",
+        "",
+        "# UI Requirement Profile",
+        ...UI_REQUIREMENT_KEYS.map((key) => {
+            const items = ui[key];
+            const title = UI_REQUIREMENT_LABELS[key];
+            if (items.length === 0) return `- ${title}: (missing)`;
+            return `- ${title}: ${items.map((item) => clipText(item, 200)).join(" | ")}`;
+        }),
         "",
         "# Diagram Governance",
         `- Policy: ${DIAGRAM_POLICY}`,
@@ -660,7 +804,9 @@ function WizardContent() {
     const [messageWindow, setMessageWindow] = useState(MESSAGE_WINDOW_SIZE);
 
     // Core Domain State
-    const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(cachedSnapshot?.data.evaluation ?? null);
+    const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(
+        normalizeEvaluation(cachedSnapshot?.data.evaluation ?? null)
+    );
     const [generation, setGeneration] = useState<GenerationResponse | null>(cachedSnapshot?.data.generation ?? null);
     const [tasks, setTasks] = useState<Task[]>(cachedSnapshot?.data.tasks ?? []);
 
@@ -699,6 +845,9 @@ function WizardContent() {
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
+    const uiMissingRequirements = getMissingUiRequirementLabels(evaluation);
+    const hasCompleteUiRequirements = uiMissingRequirements.length === 0;
+    const isScaffoldReady = Boolean(evaluation?.is_ready && hasCompleteUiRequirements);
     const architectureViewerCode = currentDiagram;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
@@ -766,7 +915,7 @@ function WizardContent() {
             const data = latestVersion.data;
             setMessages(data.messages);
             setMessageWindow(MESSAGE_WINDOW_SIZE);
-            setEvaluation(data.evaluation);
+            setEvaluation(normalizeEvaluation(data.evaluation));
             setGeneration(data.generation);
             setCurrentDiagram(data.currentDiagram);
             setDiagramGovernance(normalizeDiagramGovernance(data.diagramGovernance));
@@ -862,7 +1011,7 @@ function WizardContent() {
 
     // 1f. Fetch complexity-based quote for unpaid projects
     useEffect(() => {
-        if (!projectId || !evaluation?.is_ready || hasPaid || isAdmin || !isAdminStatusLoaded) {
+        if (!projectId || !isScaffoldReady || hasPaid || isAdmin || !isAdminStatusLoaded) {
             setCheckoutQuote(null);
             setIsQuoteLoading(false);
             return;
@@ -928,6 +1077,7 @@ function WizardContent() {
         };
     }, [
         projectId,
+        isScaffoldReady,
         hasPaid,
         isAdmin,
         isAdminStatusLoaded,
@@ -1314,7 +1464,7 @@ function WizardContent() {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
                 current_diagram: currentDiagram,
-                analysis: evaluation?.analysis || { clarified: [], missing: [] },
+                analysis: normalizeAnalysis(evaluation?.analysis),
                 next_step: { reasoning: "", question: null }
             };
 
@@ -1398,12 +1548,17 @@ function WizardContent() {
 
                 const clarifiedMatch = buffer.match(/<analysis_clarified>([\s\S]*?)<\/analysis_clarified>/);
                 if (clarifiedMatch) {
-                    currentEval.analysis.clarified = clarifiedMatch[1].split('\n').map(l => l.trim().replace(/^- /, '')).filter(l => l);
+                    currentEval.analysis.clarified = parseAnalysisList(clarifiedMatch[1]);
                 }
 
                 const missingMatch = buffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/);
                 if (missingMatch) {
-                    currentEval.analysis.missing = missingMatch[1].split('\n').map(l => l.trim().replace(/^- /, '')).filter(l => l);
+                    currentEval.analysis.missing = parseAnalysisList(missingMatch[1]);
+                }
+
+                const uiMatch = buffer.match(/<analysis_ui>([\s\S]*?)<\/analysis_ui>/i);
+                if (uiMatch) {
+                    currentEval.analysis.ui = parseAnalysisUiBlock(uiMatch[1]);
                 }
 
                 // Options
@@ -1422,7 +1577,7 @@ function WizardContent() {
                     });
                 }
 
-                setEvaluation({ ...currentEval });
+                setEvaluation(normalizeEvaluation({ ...currentEval }));
             }
 
             if (evalRequestIdRef.current === requestId) {
@@ -1613,6 +1768,10 @@ function WizardContent() {
         if (isGenerating || isCheckingOut) return;
 
         setGenerateError(null);
+        if (!hasCompleteUiRequirements) {
+            setGenerateError(buildUiRequirementErrorMessage(evaluation));
+            return;
+        }
         if (requiresPayment) {
             await startCheckout();
             return;
@@ -1691,7 +1850,7 @@ function WizardContent() {
                                             <>
                                             <button
                                                 onClick={handleGenerate}
-                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded}
+                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded || !hasCompleteUiRequirements}
                                                 className="fc-button-primary flex w-full items-center justify-center gap-2 px-6 py-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 {isGenerating || isCheckingOut
@@ -1699,6 +1858,8 @@ function WizardContent() {
                                                     : <Sparkles className="w-5 h-5" />}
                                                 {!isAdminStatusLoaded
                                                     ? "Checking access..."
+                                                    : !hasCompleteUiRequirements
+                                                        ? "Complete UI Requirements First"
                                                     : isCheckingOut
                                                     ? "Redirecting to Payment..."
                                                     : isGenerating
@@ -1717,6 +1878,8 @@ function WizardContent() {
                                             <p className="text-center text-xs text-slate-500 dark:text-slate-300">
                                                 {!isAdminStatusLoaded
                                                     ? "Checking permissions..."
+                                                    : !hasCompleteUiRequirements
+                                                        ? `Missing UI details: ${uiMissingRequirements.join(", ")}.`
                                                     : isAdmin
                                                     ? "Admin mode: payment bypass enabled"
                                                     : hasPaid
@@ -1933,6 +2096,21 @@ function WizardContent() {
                                     ) : (
                                         <p className="text-sm italic text-slate-400">No missing info detected.</p>
                                     )}
+                                </div>
+
+                                <div className="space-y-3">
+                                    <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-500 dark:text-blue-400">UI Requirement Profile</h4>
+                                    <ul className="space-y-2">
+                                        {UI_REQUIREMENT_KEYS.map((key) => {
+                                            const items = normalizeUiRequirements(evaluation?.analysis.ui)[key];
+                                            return (
+                                                <li key={key} className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-slate-700 dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-slate-200">
+                                                    <span className="font-semibold text-blue-600 dark:text-blue-300">{UI_REQUIREMENT_LABELS[key]}: </span>
+                                                    {items.length > 0 ? items.join(" | ") : "(missing)"}
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
                                 </div>
                             </div>
                         </div>
