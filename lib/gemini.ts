@@ -385,6 +385,7 @@ type OpenAiCompatMessage = { role: OpenAiCompatRole; content: string };
 type OpenAiCompatConfig = {
     providerName: "ChatGPT" | "DeepSeek";
     envKey: "OPENAI_API_KEY" | "DEEPSEEK_API_KEY";
+    apiStyle: "responses" | "chat_completions";
     apiKey: string;
     model: string;
     baseUrl: string;
@@ -414,6 +415,21 @@ function buildOpenAiCompatMessages(messages: Message[]): OpenAiCompatMessage[] {
         role: message.role === "assistant" ? "assistant" : "user",
         content: buildOpenAiCompatMessageContent(message)
     }));
+}
+
+function buildOpenAiCompatTranscript(systemInstructionText: string, messages: Message[]) {
+    const lines: string[] = [];
+    if (systemInstructionText.trim()) {
+        lines.push(`[system]\n${systemInstructionText.trim()}`);
+    }
+
+    for (const message of messages) {
+        const role = message.role === "assistant" ? "assistant" : "user";
+        const content = buildOpenAiCompatMessageContent(message).trim();
+        lines.push(`[${role}]\n${content}`);
+    }
+
+    return lines.join("\n\n");
 }
 
 function normalizeOpenAiCompatContent(content: unknown): string {
@@ -451,7 +467,25 @@ function extractOpenAiCompatResponseText(payload: unknown): string {
         .join("");
 }
 
-function parseOpenAiCompatSseChunk(rawEvent: string) {
+function extractOpenAiResponsesText(payload: unknown): string {
+    if (!payload || typeof payload !== "object") return "";
+    const source = payload as {
+        output_text?: unknown;
+        output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+    };
+    if (typeof source.output_text === "string" && source.output_text.trim()) {
+        return source.output_text;
+    }
+
+    const output = Array.isArray(source.output) ? source.output : [];
+    return output
+        .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+        .filter((part) => part?.type === "output_text" && typeof part.text === "string")
+        .map((part) => part.text || "")
+        .join("");
+}
+
+function parseOpenAiCompatChatSseChunk(rawEvent: string) {
     const dataLines = rawEvent
         .split("\n")
         .filter((line) => line.startsWith("data:"))
@@ -488,6 +522,43 @@ function parseOpenAiCompatSseChunk(rawEvent: string) {
     }
 }
 
+function parseOpenAiResponsesSseChunk(rawEvent: string) {
+    const dataLines = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+
+    if (!dataLines.length) return { text: "", error: "" };
+
+    const rawData = dataLines.join("\n");
+    if (!rawData || rawData === "[DONE]") return { text: "", error: "" };
+
+    try {
+        const payload = JSON.parse(rawData) as {
+            type?: string;
+            delta?: string;
+            error?: { message?: string };
+            response?: { output_text?: string };
+        };
+
+        if (payload.error?.message) {
+            return { text: "", error: payload.error.message };
+        }
+
+        if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") {
+            return { text: payload.delta, error: "" };
+        }
+
+        if (payload.type === "response.completed") {
+            return { text: "", error: "" };
+        }
+    } catch {
+        return { text: "", error: "" };
+    }
+
+    return { text: "", error: "" };
+}
+
 async function generateTextWithOpenAiCompat(
     prompt: string,
     config: OpenAiCompatConfig,
@@ -495,6 +566,41 @@ async function generateTextWithOpenAiCompat(
 ) {
     if (!config.apiKey) {
         throw new Error(`${config.envKey} is missing.`);
+    }
+
+    if (config.apiStyle === "responses") {
+        const requestBody: {
+            model: string;
+            input: string;
+            max_output_tokens?: number;
+        } = {
+            model: config.model,
+            input: prompt
+        };
+        if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
+            requestBody.max_output_tokens = Math.floor(config.maxTokens);
+        }
+
+        const response = await fetch(`${config.baseUrl}/responses`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${config.apiKey}`
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
+        }
+
+        const payload = await response.json();
+        const text = extractOpenAiResponsesText(payload);
+        if (!text) {
+            throw new Error(`[${config.providerName}] Empty response text.`);
+        }
+        return text;
     }
 
     const requestBody: {
@@ -542,6 +648,66 @@ async function* streamWithOpenAiCompat(
 ) {
     if (!config.apiKey) {
         throw new Error(`${config.envKey} is missing.`);
+    }
+
+    if (config.apiStyle === "responses") {
+        const payload: {
+            model: string;
+            stream: true;
+            input: string;
+            max_output_tokens?: number;
+        } = {
+            model: config.model,
+            stream: true,
+            input: buildOpenAiCompatTranscript(systemInstructionText, messages)
+        };
+        if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
+            payload.max_output_tokens = Math.floor(config.maxTokens);
+        }
+
+        const response = await fetch(`${config.baseUrl}/responses`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${config.apiKey}`
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
+        }
+
+        if (!response.body) {
+            throw new Error(`[${config.providerName}] Empty streaming body.`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || "";
+
+            for (const rawEvent of events) {
+                const parsed = parseOpenAiResponsesSseChunk(rawEvent);
+                if (parsed.error) throw new Error(parsed.error);
+                if (parsed.text) yield parsed.text;
+            }
+        }
+
+        if (buffer.trim()) {
+            const parsed = parseOpenAiResponsesSseChunk(buffer);
+            if (parsed.error) throw new Error(parsed.error);
+            if (parsed.text) yield parsed.text;
+        }
+        return;
     }
 
     const payload: {
@@ -592,14 +758,14 @@ async function* streamWithOpenAiCompat(
         buffer = events.pop() || "";
 
         for (const rawEvent of events) {
-            const parsed = parseOpenAiCompatSseChunk(rawEvent);
+            const parsed = parseOpenAiCompatChatSseChunk(rawEvent);
             if (parsed.error) throw new Error(parsed.error);
             if (parsed.text) yield parsed.text;
         }
     }
 
     if (buffer.trim()) {
-        const parsed = parseOpenAiCompatSseChunk(buffer);
+        const parsed = parseOpenAiCompatChatSseChunk(buffer);
         if (parsed.error) throw new Error(parsed.error);
         if (parsed.text) yield parsed.text;
     }
@@ -608,6 +774,7 @@ async function* streamWithOpenAiCompat(
 const CHATGPT_CONFIG: OpenAiCompatConfig = {
     providerName: "ChatGPT",
     envKey: "OPENAI_API_KEY",
+    apiStyle: "responses",
     apiKey: OPENAI_API_KEY,
     model: OPENAI_MODEL,
     baseUrl: OPENAI_API_BASE_URL,
@@ -617,6 +784,7 @@ const CHATGPT_CONFIG: OpenAiCompatConfig = {
 const DEEPSEEK_CONFIG: OpenAiCompatConfig = {
     providerName: "DeepSeek",
     envKey: "DEEPSEEK_API_KEY",
+    apiStyle: "chat_completions",
     apiKey: DEEPSEEK_API_KEY,
     model: DEEPSEEK_MODEL,
     baseUrl: DEEPSEEK_API_BASE_URL,
