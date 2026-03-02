@@ -1,6 +1,6 @@
 
 "use client";
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
 const customStyles = `
@@ -53,6 +53,10 @@ const customStyles = `
     .node rect, .node polygon, .node circle, .node ellipse {
         stroke-width: 2px !important;
         filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.25)) !important;
+    }
+
+    .node {
+        cursor: pointer;
     }
     
     /* Node text - clear typography */
@@ -164,7 +168,29 @@ function sanitizeMermaidCode(input: string) {
     };
 }
 
-export default function ArchitectureViewer({ code }: { code: string }) {
+function normalizeNodeText(value: string) {
+    return value.replace(/\s+/g, " ").trim();
+}
+
+function extractNodeLabel(node: Element) {
+    const foreignLabel = node.querySelector("foreignObject")?.textContent || "";
+    const textLabel = node.querySelector("text")?.textContent || "";
+    const titleLabel = node.querySelector("title")?.textContent || "";
+    const label = normalizeNodeText(foreignLabel || textLabel || titleLabel);
+    return label;
+}
+
+function extractNodeId(node: Element, fallback: string) {
+    const id = node.getAttribute("id") || "";
+    return normalizeNodeText(id || fallback);
+}
+
+type ArchitectureViewerProps = {
+    code: string;
+    onNodeSelect?: (node: { id: string; label: string }) => void;
+};
+
+export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureViewerProps) {
     const [svg, setSvg] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [warning, setWarning] = useState<string | null>(null);
@@ -173,6 +199,8 @@ export default function ArchitectureViewer({ code }: { code: string }) {
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+    const dragOriginRef = useRef({ x: 0, y: 0 });
+    const dragMovedRef = useRef(false);
     const mermaidRef = useRef<typeof import('mermaid').default | null>(null);
     const initializedRef = useRef(false);
     const hasRenderedRef = useRef(false);
@@ -318,10 +346,17 @@ export default function ArchitectureViewer({ code }: { code: string }) {
     const handleMouseDown = (e: React.MouseEvent) => {
         setIsDragging(true);
         setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+        dragOriginRef.current = { x: e.clientX, y: e.clientY };
+        dragMovedRef.current = false;
     };
 
     const handleMouseMove = (e: React.MouseEvent) => {
         if (isDragging) {
+            const dx = e.clientX - dragOriginRef.current.x;
+            const dy = e.clientY - dragOriginRef.current.y;
+            if (Math.abs(dx) + Math.abs(dy) > 3) {
+                dragMovedRef.current = true;
+            }
             setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
         }
     };
@@ -349,6 +384,24 @@ export default function ArchitectureViewer({ code }: { code: string }) {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     };
+
+    const handleSvgClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        if (!onNodeSelect) return;
+        if (dragMovedRef.current) {
+            dragMovedRef.current = false;
+            return;
+        }
+
+        const target = event.target as Element | null;
+        if (!target) return;
+        const nodeEl = target.closest(".node");
+        if (!nodeEl) return;
+
+        const label = extractNodeLabel(nodeEl);
+        if (!label) return;
+        const id = extractNodeId(nodeEl, label);
+        onNodeSelect({ id, label });
+    }, [onNodeSelect]);
 
     return (
         <div className="w-full h-full flex flex-col relative bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 rounded-xl shadow-inner overflow-hidden border border-slate-800/50">
@@ -379,6 +432,7 @@ export default function ArchitectureViewer({ code }: { code: string }) {
                         style={{
                             transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
                         }}
+                        onClick={handleSvgClick}
                         dangerouslySetInnerHTML={{ __html: svg }}
                     />
                 ) : error ? (

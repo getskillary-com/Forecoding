@@ -309,6 +309,113 @@ function buildUiRequirementErrorMessage(evaluation: EvaluationResponse | null) {
     return `UI requirements are incomplete: ${missing.join(", ")}. Please clarify these items before generating scaffold.`;
 }
 
+type UiWireframeScreen = {
+    name: string;
+    modules: string[];
+    states: string[];
+    interactions: string[];
+};
+
+function tokenizeUiHints(items: string[], maxItems: number) {
+    const dedupe = new Set<string>();
+    const result: string[] = [];
+
+    for (const item of items) {
+        const tokens = item
+            .split(/[|,;/]+/)
+            .map((token) => token.trim())
+            .filter(Boolean);
+
+        for (const token of tokens) {
+            const key = token.toLowerCase();
+            if (dedupe.has(key)) continue;
+            dedupe.add(key);
+            result.push(token);
+            if (result.length >= maxItems) return result;
+        }
+    }
+
+    return result;
+}
+
+function pickCyclicSlice(source: string[], start: number, count: number, fallback: string[]) {
+    if (source.length === 0) return fallback.slice(0, count);
+    const values: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+        values.push(source[(start + i) % source.length]);
+    }
+    return values;
+}
+
+function buildUiWireframeScreens(ui: UiRequirements): UiWireframeScreen[] {
+    const screenNames = tokenizeUiHints(ui.keyScreens, 8);
+    const modules = tokenizeUiHints(ui.uiComponents, 24);
+    const states = tokenizeUiHints(ui.statesAndFeedback, 10);
+    const interactions = tokenizeUiHints(ui.interactionMotion, 10);
+
+    const resolvedScreenNames = screenNames.length > 0
+        ? screenNames
+        : ["Home Feed", "Detail Page", "Profile Center"];
+
+    return resolvedScreenNames.slice(0, 6).map((name, idx) => ({
+        name,
+        modules: pickCyclicSlice(modules, idx * 2, 3, ["Header", "Primary Content", "Action Section"]),
+        states: pickCyclicSlice(states, idx, 3, ["loading", "empty", "success"]),
+        interactions: pickCyclicSlice(interactions, idx, 2, ["tap interactions", "micro animation"])
+    }));
+}
+
+function normalizeMatchValue(value: string) {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function getTokenOverlapScore(a: string, b: string) {
+    const aTokens = new Set(a.split(" ").filter(Boolean));
+    const bTokens = new Set(b.split(" ").filter(Boolean));
+    let score = 0;
+    aTokens.forEach((token) => {
+        if (bTokens.has(token)) score += 1;
+    });
+    return score;
+}
+
+function findBestScreenMatch(label: string, screens: UiWireframeScreen[]) {
+    const normalizedLabel = normalizeMatchValue(label);
+    if (!normalizedLabel) return null;
+
+    let bestIndex: number | null = null;
+    let bestScore = 0;
+
+    screens.forEach((screen, idx) => {
+        const normalizedScreen = normalizeMatchValue(screen.name);
+        if (!normalizedScreen) return;
+
+        if (normalizedScreen === normalizedLabel) {
+            bestIndex = idx;
+            bestScore = 999;
+            return;
+        }
+
+        if (normalizedScreen.includes(normalizedLabel) || normalizedLabel.includes(normalizedScreen)) {
+            if (bestScore < 50) {
+                bestScore = 50;
+                bestIndex = idx;
+            }
+            return;
+        }
+
+        const overlap = getTokenOverlapScore(normalizedLabel, normalizedScreen);
+        if (overlap > bestScore) {
+            bestScore = overlap;
+            bestIndex = idx;
+        }
+    });
+
+    if (!bestIndex && bestIndex !== 0) return null;
+    if (bestScore === 0) return null;
+    return bestIndex;
+}
+
 function summarizeStructureContent(content: string): string {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
     if (lines.length === 0) return "";
@@ -975,6 +1082,8 @@ function WizardContent() {
     const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
+    const [selectedUiScreenIndex, setSelectedUiScreenIndex] = useState<number | null>(null);
+    const [uiFocusLabel, setUiFocusLabel] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
@@ -987,6 +1096,8 @@ function WizardContent() {
     const hasCompleteUiRequirements = uiDesignState.readiness.completed;
     const isReadyToGenerateStage = designStage === "ready_to_generate";
     const architectureViewerCode = currentDiagram;
+    const uiRequirements = normalizeUiRequirements(evaluation?.analysis?.ui);
+    const uiWireframes = buildUiWireframeScreens(uiRequirements);
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -1032,6 +1143,13 @@ function WizardContent() {
             cancelled = true;
         };
     }, []);
+
+    useEffect(() => {
+        if (selectedUiScreenIndex === null) return;
+        if (selectedUiScreenIndex >= uiWireframes.length) {
+            setSelectedUiScreenIndex(null);
+        }
+    }, [selectedUiScreenIndex, uiWireframes.length]);
 
     // 1. Load Project & Version Data
     useEffect(() => {
@@ -2032,7 +2150,22 @@ function WizardContent() {
         setHasUserEdited(true);
         setDesignStage("ui_design");
         setGenerateError(null);
-        setActiveTab("prd");
+        setActiveTab("architecture");
+    };
+
+    const handleArchitectureNodeSelect = (node: { id: string; label: string }) => {
+        const matchIndex = findBestScreenMatch(node.label, uiWireframes);
+        setUiFocusLabel(node.label);
+        if (matchIndex === null) {
+            setSelectedUiScreenIndex(null);
+            return;
+        }
+        setSelectedUiScreenIndex(matchIndex);
+    };
+
+    const handleUiScreenSelect = (index: number) => {
+        setSelectedUiScreenIndex(index);
+        setUiFocusLabel(null);
     };
 
     if (!project || !currentVersion) return <WizardSkeleton />;
@@ -2301,18 +2434,29 @@ function WizardContent() {
 
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
-                        <div className="absolute inset-0 p-4 flex flex-col">
+                        <div className="absolute inset-0 p-4 flex flex-col gap-3">
                             <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
-                                <span>Live System Diagram</span>
+                                <span>System + UI Design Studio</span>
                                 <span className="flex items-center gap-1">
                                     <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                                     Auto Updating
                                 </span>
                             </div>
 
-                            <div className="flex-1 min-h-0 flex flex-col gap-3">
-                                <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                    <ArchitectureViewer code={architectureViewerCode} />
+                            <div className="grid flex-1 min-h-0 gap-3 lg:grid-cols-[1.2fr_1fr]">
+                                <div className="relative min-h-0 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
+                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
+                                </div>
+                                <div className="relative min-h-0 overflow-hidden rounded-xl border border-[color:var(--border)] bg-white/75 dark:bg-slate-900/65">
+                                    <UiDesignWorkbench
+                                        designStage={designStage}
+                                        uiDesignState={uiDesignState}
+                                        uiRequirements={uiRequirements}
+                                        wireframes={uiWireframes}
+                                        activeScreenIndex={selectedUiScreenIndex}
+                                        focusLabel={uiFocusLabel}
+                                        onSelectScreen={handleUiScreenSelect}
+                                    />
                                 </div>
                             </div>
                         </div>
@@ -2420,6 +2564,128 @@ function WizardContent() {
                 </main>
             </div>
         </>
+    );
+}
+
+function UiDesignWorkbench({
+    designStage,
+    uiDesignState,
+    uiRequirements,
+    wireframes,
+    activeScreenIndex,
+    focusLabel,
+    onSelectScreen
+}: {
+    designStage: DesignStage;
+    uiDesignState: UiDesignState;
+    uiRequirements: UiRequirements;
+    wireframes: UiWireframeScreen[];
+    activeScreenIndex: number | null;
+    focusLabel: string | null;
+    onSelectScreen: (index: number) => void;
+}) {
+    const ui = uiRequirements;
+    const visualStyle = ui.visualStyle[0] || "Not defined";
+    const colorSystem = ui.colorSystem[0] || "Not defined";
+    const typography = ui.typography[0] || "Not defined";
+    const responsive = ui.responsiveStrategy[0] || "Not defined";
+    const screenRefs = useRef<(HTMLElement | null)[]>([]);
+
+    useEffect(() => {
+        if (activeScreenIndex === null) return;
+        const target = screenRefs.current[activeScreenIndex];
+        if (target) {
+            target.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+    }, [activeScreenIndex, wireframes.length]);
+
+    return (
+        <div className="absolute inset-0 overflow-y-auto p-6 custom-scrollbar">
+            <div className="mb-5 space-y-2">
+                <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                    <Sparkles className="h-5 w-5 text-pink-500" />
+                    UI Design Workbench
+                </h3>
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                    {designStage === "functional_architecture"
+                        ? "UI preview is collecting style intent. It becomes actionable after Information Density reaches 100."
+                        : "UI preview is active. Refine screens and interaction states until readiness reaches 100%."}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Stage: {DESIGN_STAGE_LABELS[designStage]} | UI readiness: {uiDesignState.readiness.score}%{uiDesignState.needsResync ? " | Needs resync" : ""}
+                </p>
+                {focusLabel && (
+                    <p className="text-xs text-slate-500 dark:text-slate-300">
+                        Focus: {focusLabel}{activeScreenIndex !== null && wireframes[activeScreenIndex] ? ` -> ${wireframes[activeScreenIndex].name}` : " (no matching screen)"}
+                    </p>
+                )}
+            </div>
+
+            <div className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 dark:border-blue-800/40 dark:bg-blue-900/15">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-blue-600 dark:text-blue-300">Style</p>
+                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{visualStyle}</p>
+                </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 dark:border-indigo-800/40 dark:bg-indigo-900/15">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-600 dark:text-indigo-300">Color</p>
+                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{colorSystem}</p>
+                </div>
+                <div className="rounded-xl border border-purple-100 bg-purple-50 p-3 dark:border-purple-800/40 dark:bg-purple-900/15">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-purple-600 dark:text-purple-300">Typography</p>
+                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{typography}</p>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-800/40 dark:bg-emerald-900/15">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-600 dark:text-emerald-300">Responsive</p>
+                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{responsive}</p>
+                </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+                {wireframes.map((screen, index) => (
+                    <section
+                        key={`${screen.name}-${index}`}
+                        ref={(el) => {
+                            screenRefs.current[index] = el;
+                        }}
+                        onClick={() => onSelectScreen(index)}
+                        className={`cursor-pointer rounded-2xl border bg-white/80 p-4 shadow-sm transition-all dark:bg-slate-900/50 ${activeScreenIndex === index
+                            ? "border-blue-300 ring-2 ring-blue-300/70 dark:border-blue-500/70 dark:ring-blue-500/60"
+                            : "border-[color:var(--border)] hover:border-blue-200 dark:hover:border-blue-500/40"}`}
+                    >
+                        <div className="mb-3 flex items-center justify-between">
+                            <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{screen.name}</h4>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                                Screen {index + 1}
+                            </span>
+                        </div>
+
+                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/45">
+                            <div className="mb-2 h-2.5 w-24 rounded bg-slate-300/80 dark:bg-slate-600/80" />
+                            <div className="mb-3 h-7 rounded-md border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900/50" />
+                            <div className="space-y-2">
+                                {screen.modules.map((module, moduleIndex) => (
+                                    <div
+                                        key={`${screen.name}-module-${moduleIndex}`}
+                                        className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
+                                    >
+                                        {module}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="mt-3 space-y-1 text-[11px] text-slate-500 dark:text-slate-300">
+                            <p>
+                                <span className="font-semibold text-slate-700 dark:text-slate-200">States:</span> {screen.states.join(" | ")}
+                            </p>
+                            <p>
+                                <span className="font-semibold text-slate-700 dark:text-slate-200">Interactions:</span> {screen.interactions.join(" | ")}
+                            </p>
+                        </div>
+                    </section>
+                ))}
+            </div>
+        </div>
     );
 }
 
