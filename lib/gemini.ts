@@ -38,11 +38,19 @@ const CLAUDE_COOLDOWN_MS = Number(process.env.CLAUDE_COOLDOWN_MS || "120000");
 const GEMINI_CORE_COOLDOWN_MS = Number(process.env.GEMINI_CORE_COOLDOWN_MS || "180000");
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
-    Math.max(1, Number(process.env.GEMINI_STREAM_OPEN_MAX_ATTEMPTS || "2"))
+    Math.max(1, Number(process.env.GEMINI_STREAM_OPEN_MAX_ATTEMPTS || "3"))
 );
 const GEMINI_STREAM_RETRY_BASE_MS = Math.min(
     2_000,
     Math.max(100, Number(process.env.GEMINI_STREAM_RETRY_BASE_MS || "350"))
+);
+const GEMINI_STREAM_RETRY_MAX_MS = Math.min(
+    8_000,
+    Math.max(500, Number(process.env.GEMINI_STREAM_RETRY_MAX_MS || "4000"))
+);
+const GEMINI_STREAM_RETRY_JITTER_MS = Math.min(
+    1_000,
+    Math.max(0, Number(process.env.GEMINI_STREAM_RETRY_JITTER_MS || "250"))
 );
 
 // Initialize Gemini Client
@@ -437,7 +445,14 @@ async function* streamWithGemini(
                     throw error;
                 }
 
-                const backoffMs = GEMINI_STREAM_RETRY_BASE_MS * (attempt + 1);
+                const exponentialMs = GEMINI_STREAM_RETRY_BASE_MS * Math.pow(2, attempt);
+                const jitterMs = GEMINI_STREAM_RETRY_JITTER_MS > 0
+                    ? Math.floor(Math.random() * GEMINI_STREAM_RETRY_JITTER_MS)
+                    : 0;
+                const backoffMs = Math.min(
+                    GEMINI_STREAM_RETRY_MAX_MS,
+                    exponentialMs + jitterMs
+                );
                 console.warn(
                     `[AI] ${modelName} stream transient failure. Retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxAttempts}): ${message}`
                 );

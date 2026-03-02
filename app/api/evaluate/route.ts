@@ -379,7 +379,8 @@ export async function POST(req: Request) {
                         !emittedMeaningfulChunk &&
                         (isErrorWithMessage(e, "EVALUATE_MODEL_IDLE_TIMEOUT") ||
                             isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT") ||
-                            isGeminiStreamParseError(e))
+                            isGeminiStreamParseError(e) ||
+                            isUpstreamOverloadError(e))
                     ) {
                         console.warn(
                             `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}; retrying compact payload`
