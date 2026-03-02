@@ -38,7 +38,7 @@ const CLAUDE_COOLDOWN_MS = Number(process.env.CLAUDE_COOLDOWN_MS || "120000");
 const GEMINI_CORE_COOLDOWN_MS = Number(process.env.GEMINI_CORE_COOLDOWN_MS || "180000");
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
-    Math.max(1, Number(process.env.GEMINI_STREAM_OPEN_MAX_ATTEMPTS || "3"))
+    Math.max(1, Number(process.env.GEMINI_STREAM_OPEN_MAX_ATTEMPTS || "4"))
 );
 const GEMINI_STREAM_RETRY_BASE_MS = Math.min(
     2_000,
@@ -430,6 +430,14 @@ async function* streamWithGemini(
         });
         return await chatModel.generateContentStream({ contents });
     };
+    const generateNonStream = async (modelName: string) => {
+        const chatModel = genAI.getGenerativeModel({
+            model: modelName,
+            systemInstruction: systemInstructionText
+        });
+        const result = await chatModel.generateContent({ contents });
+        return result.response.text() || "";
+    };
 
     const openWithRetries = async (modelName: string) => {
         const maxAttempts = GEMINI_STREAM_OPEN_MAX_ATTEMPTS;
@@ -469,6 +477,7 @@ async function* streamWithGemini(
         : [CORE_MODEL, BACKUP_MODEL];
 
     let streamResult: Awaited<ReturnType<typeof openStream>> | null = null;
+    let lastOpenError: unknown = null;
 
     for (let i = 0; i < modelCandidates.length; i++) {
         const modelName = modelCandidates[i];
@@ -476,6 +485,7 @@ async function* streamWithGemini(
             streamResult = await openWithRetries(modelName);
             break;
         } catch (error) {
+            lastOpenError = error;
             const message = getErrorMessage(error);
             const retryable = isRetryableGeminiCoreError(error);
 
@@ -493,6 +503,34 @@ async function* streamWithGemini(
     }
 
     if (!streamResult) {
+        const canTryNonStreamFallback = lastOpenError ? isRetryableGeminiCoreError(lastOpenError) : false;
+        if (canTryNonStreamFallback) {
+            console.warn("[AI] Gemini stream unavailable after retries. Attempting non-stream fallback.");
+            for (let i = 0; i < modelCandidates.length; i++) {
+                const modelName = modelCandidates[i];
+                try {
+                    const text = await generateNonStream(modelName);
+                    if (text.trim()) {
+                        console.log(`[AI] Non-stream fallback succeeded with ${modelName}.`);
+                        yield text;
+                        return;
+                    }
+                } catch (error) {
+                    const message = getErrorMessage(error);
+                    const fallbackModel = modelCandidates[i + 1];
+                    if (!fallbackModel) {
+                        break;
+                    }
+                    console.warn(
+                        `[AI] ${modelName} non-stream fallback failed (${message}). Trying ${fallbackModel}`
+                    );
+                }
+            }
+        }
+
+        if (lastOpenError) {
+            throw lastOpenError;
+        }
         throw new Error("[AI] Failed to initialize Gemini stream.");
     }
 
