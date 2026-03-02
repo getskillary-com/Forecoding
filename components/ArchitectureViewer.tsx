@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -103,8 +103,8 @@ function sanitizeMermaidCode(input: string) {
         .replace(/```mermaid\s*/gi, "")
         .replace(/```/g, "")
         .replace(/\r/g, "")
-        .replace(/（/g, "(")
-        .replace(/）/g, ")")
+        .replace(/\uFF08/g, "(")
+        .replace(/\uFF09/g, ")")
         .trim();
 
     const lines = normalizedSource.split("\n");
@@ -114,6 +114,8 @@ function sanitizeMermaidCode(input: string) {
     const normalizeLabel = (raw: string) => {
         const cleaned = raw
             .replace(/\\n/g, "<br/>")
+            .replace(/--?>/g, " to ")
+            .replace(/<--?/g, " from ")
             .replace(/[()]/g, " ")
             .replace(/\s+/g, " ")
             .trim()
@@ -146,7 +148,7 @@ function sanitizeMermaidCode(input: string) {
         }
 
         // Normalize labels in node declarations, so parser is less fragile with punctuation/newlines.
-        const normalizedNodes = line.replace(/([A-Za-z][\w-]*)\[(.+?)\]/g, (_, nodeId: string, rawLabel: string) => {
+        const normalizedNodes = line.replace(/([A-Za-z][\w-]*)\s*\[(.+?)\]/g, (_, nodeId: string, rawLabel: string) => {
             const label = normalizeLabel(rawLabel);
             if (label !== rawLabel) changed = true;
             return `${nodeId}["${label}"]`;
@@ -496,4 +498,8 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
         </div>
     );
 }
+
+
+
+
 
