@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Plus, Folder, Clock, Trash2, Edit2, X, Copy, Check } from "lucide-react";
-import { DiagramGovernance, Project, ProjectVersion } from "@/types";
+import { DiagramGovernance, Project, ProjectVersion, UiDesignState } from "@/types";
 import { useRouter } from "next/navigation";
 import { BrandLogo } from "@/components/BrandLogo";
 import {
@@ -31,6 +31,37 @@ function buildDefaultDiagramGovernance(): DiagramGovernance {
         lastDecision: "none",
         lastDecisionNote: null,
         lastDecisionAt: null
+    };
+}
+
+function buildDefaultUiDesignState(): UiDesignState {
+    return {
+        needsResync: false,
+        readiness: {
+            score: 0,
+            completed: false,
+            missingKeys: [
+                "visualStyle",
+                "colorSystem",
+                "typography",
+                "keyScreens",
+                "uiComponents",
+                "responsiveStrategy",
+                "interactionMotion",
+                "statesAndFeedback"
+            ],
+            missingLabels: [
+                "Visual style",
+                "Color system",
+                "Typography",
+                "Key screens",
+                "UI components",
+                "Responsive strategy",
+                "Interaction motion",
+                "States and feedback"
+            ],
+            updatedAt: Date.now()
+        }
     };
 }
 
@@ -171,7 +202,11 @@ export default function DashboardPage() {
                     generation: null,
                     currentDiagram: "graph TD\nStart[Start Here]",
                     tasks: [],
-                    diagramGovernance: buildDefaultDiagramGovernance()
+                    diagramGovernance: buildDefaultDiagramGovernance(),
+                    designStage: "functional_architecture",
+                    uiDesignState: buildDefaultUiDesignState(),
+                    functionalLockedAt: null,
+                    uiReadyAt: null
                 }
             };
 

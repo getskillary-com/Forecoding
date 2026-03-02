@@ -1121,13 +1121,16 @@ const ZIP_REAL_CONTENT_PATHS = new Set([
     "IMPLEMENTATION_PLAN.md",
     "_AI_PROMPT.md",
     "ONE_CLICK_PROMPT.md",
-    "GENERATION_MANIFEST.json"
+    "GENERATION_MANIFEST.json",
+    "design/tokens.json",
+    "design/page-contracts.json"
 ]);
 
 function shouldWriteRealContentByPath(path: string) {
     if (ZIP_REAL_CONTENT_PATHS.has(path)) return true;
     if (path.endsWith("_AI_PROMPT.md")) return true;
     if (path.startsWith("docs/")) return true;
+    if (path.startsWith("design/")) return true;
     if (/^config\/integrations\/.+\.template\./.test(path)) return true;
     return false;
 }
@@ -1438,6 +1441,221 @@ function buildStyleGuideDoc(input: {
     ].join("\n");
 }
 
+function hasMinimumDocContent(text: string, minChars: number = 160) {
+    return (text || "").trim().length >= minChars;
+}
+
+function buildFunctionalArchitectureDoc(input: {
+    projectName: string;
+    history: string;
+    toolStack: string;
+}) {
+    const intents = extractUserIntentLinesStable(input.history, "en").slice(0, 6);
+    const intentLines = intents.length > 0
+        ? intents.map((line) => `- ${line}`)
+        : ["- Define and lock business-critical functional requirements."];
+
+    return [
+        `# ${input.projectName || "generated-project"} Functional Architecture`,
+        "",
+        "## Purpose",
+        "- Capture function-level architecture before UI implementation details.",
+        "",
+        "## Core Functional Domains",
+        "- Authentication and session flow",
+        "- Primary business workflow",
+        "- Data persistence and retrieval",
+        "- Error handling and recovery",
+        "",
+        "## Key Requirement Signals",
+        ...intentLines,
+        "",
+        "## Boundaries",
+        "- Define what is in scope for MVP vs later phases.",
+        "- Clarify dependency boundaries between pages, APIs, and services.",
+        "",
+        "## Stack Notes",
+        input.toolStack?.trim() ? input.toolStack.split("\n")[0].trim() : "- Follow generated stack table.",
+        "",
+        "## Non-Functional Baseline",
+        "- Reliability: graceful failures and retries where required.",
+        "- Security: protect secrets and validate untrusted input.",
+        "- Performance: avoid expensive render-path work.",
+        ""
+    ].join("\n");
+}
+
+function buildUiFlowDoc(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    const normalized = pagePaths.length > 0 ? pagePaths : ["app/page.tsx"];
+    const lines: string[] = [];
+    lines.push("# UI Flow");
+    lines.push("");
+    lines.push("## Primary Navigation Graph");
+    normalized.forEach((path, index) => {
+        const next = normalized[index + 1];
+        if (next) {
+            lines.push(`- \`${path}\` -> \`${next}\` (primary progression)`);
+        } else {
+            lines.push(`- \`${path}\` -> \`app/page.tsx\` (return/home)`);
+        }
+    });
+    lines.push("");
+    lines.push("## Error and Recovery Flow");
+    lines.push("- Any page with async operations must expose retry and safe fallback navigation.");
+    lines.push("- Authentication failures should redirect to login with preserved intent.");
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildComponentMapDoc(tree: any[]) {
+    const allPaths = collectFilePathsFromTree(tree);
+    const componentPaths = allPaths.filter((path) => /\/components\//i.test(path));
+    const pagePaths = allPaths.filter((path) => isPageSpecPath(path));
+
+    const lines: string[] = [];
+    lines.push("# Component Map");
+    lines.push("");
+    lines.push("## Shared Components");
+    if (componentPaths.length === 0) {
+        lines.push("- Define reusable components under `components/` as UI contracts stabilize.");
+    } else {
+        componentPaths.slice(0, 40).forEach((path) => lines.push(`- \`${path}\``));
+    }
+    lines.push("");
+    lines.push("## Page to Component Mapping");
+    if (pagePaths.length === 0) {
+        lines.push("- No page specs detected yet.");
+    } else {
+        pagePaths.slice(0, 40).forEach((path) => lines.push(`- \`${path}\` uses shared layout + domain components.`));
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildInteractionStatesDoc(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    const targets = pagePaths.length > 0 ? pagePaths : ["app/page.tsx"];
+
+    const lines: string[] = [];
+    lines.push("# Interaction States");
+    lines.push("");
+    lines.push("Each key page must define these states:");
+    lines.push("- Loading");
+    lines.push("- Empty");
+    lines.push("- Error");
+    lines.push("- Success");
+    lines.push("");
+    lines.push("## Coverage");
+    targets.forEach((path) => lines.push(`- \`${path}\`: loading/empty/error/success required.`));
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildRouteMapDoc(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    const lines: string[] = [];
+    lines.push("# Route Map");
+    lines.push("");
+    lines.push("| Route | Spec Path | Notes |");
+    lines.push("| --- | --- | --- |");
+    if (pagePaths.length === 0) {
+        lines.push("| / | app/page.tsx | Default route placeholder |");
+    } else {
+        pagePaths.slice(0, 60).forEach((path) => {
+            const route = path
+                .replace(/^src\//, "")
+                .replace(/^apps\/[^/]+\//, "")
+                .replace(/^app\//, "/")
+                .replace(/\/page\.(tsx|ts|jsx|js)$/i, "")
+                .replace(/^$/, "/");
+            lines.push(`| ${route === "" ? "/" : route} | ${path} | Derived from page spec |`);
+        });
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildAcceptanceUiDoc(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    return [
+        "# UI Acceptance Checklist",
+        "",
+        "## Global",
+        "- [ ] Typography, colors, spacing follow STYLE_GUIDE.",
+        "- [ ] Keyboard navigation and focus visibility pass.",
+        "- [ ] Responsive behavior verified on mobile and desktop.",
+        "",
+        "## Page-Level",
+        ...(pagePaths.length > 0
+            ? pagePaths.map((path) => `- [ ] ${path}: loading/empty/error/success verified.`)
+            : ["- [ ] app/page.tsx: loading/empty/error/success verified."]),
+        "",
+        "## Release Gate",
+        "- [ ] No blocking visual regressions.",
+        "- [ ] UI docs and implementation are consistent.",
+        ""
+    ].join("\n");
+}
+
+function buildDesignTokensJson() {
+    return JSON.stringify(
+        {
+            version: "design_tokens_v1",
+            color: {
+                bg: "{color.neutral.0}",
+                surface: "{color.neutral.50}",
+                textPrimary: "{color.neutral.900}",
+                textMuted: "{color.neutral.500}",
+                brandPrimary: "{color.brand.500}",
+                success: "{color.semantic.success}",
+                warning: "{color.semantic.warning}",
+                danger: "{color.semantic.danger}"
+            },
+            typography: {
+                display: { fontSize: 40, lineHeight: 48, fontWeight: 700 },
+                heading: { fontSize: 28, lineHeight: 36, fontWeight: 600 },
+                body: { fontSize: 16, lineHeight: 24, fontWeight: 400 },
+                caption: { fontSize: 12, lineHeight: 16, fontWeight: 500 }
+            },
+            spacing: [4, 8, 12, 16, 24, 32],
+            radius: [8, 12, 16],
+            motion: {
+                fastMs: 120,
+                baseMs: 180,
+                slowMs: 220,
+                reducedMotionRespect: true
+            }
+        },
+        null,
+        2
+    );
+}
+
+function buildPageContractsJson(tree: any[]) {
+    const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
+    const pages = (pagePaths.length > 0 ? pagePaths : ["app/page.tsx"]).map((path) => ({
+        id: path
+            .replace(/\.(tsx|ts|jsx|js)$/i, "")
+            .replace(/[^a-z0-9]+/gi, "-")
+            .replace(/^-+|-+$/g, "")
+            .toLowerCase(),
+        path,
+        requiredSections: ["Role & Responsibility", "UI Requirements", "Core Interactions"],
+        requiredStates: ["loading", "empty", "error", "success"],
+        responsiveRequired: true
+    }));
+
+    return JSON.stringify(
+        {
+            version: "ui_page_contracts_v1",
+            pages
+        },
+        null,
+        2
+    );
+}
+
 function ensureUiDesignDocs(input: {
     tree: any[];
     projectName: string;
@@ -1468,6 +1686,61 @@ function ensureUiDesignDocs(input: {
                 toolStack: input.toolStack
             })
         );
+    }
+
+    const functionalArchitecture = getFileContentByPath(input.tree, "docs/FUNCTIONAL_ARCHITECTURE.md");
+    if (!hasMinimumDocContent(functionalArchitecture)) {
+        upsertFileByPath(
+            input.tree,
+            "docs/FUNCTIONAL_ARCHITECTURE.md",
+            buildFunctionalArchitectureDoc({
+                projectName: input.projectName,
+                history: input.history,
+                toolStack: input.toolStack
+            })
+        );
+    }
+
+    const uiFlow = getFileContentByPath(input.tree, "docs/UI_FLOW.md");
+    if (!hasMinimumDocContent(uiFlow)) {
+        upsertFileByPath(input.tree, "docs/UI_FLOW.md", buildUiFlowDoc(input.tree));
+    }
+
+    const componentMap = getFileContentByPath(input.tree, "docs/COMPONENT_MAP.md");
+    if (!hasMinimumDocContent(componentMap)) {
+        upsertFileByPath(input.tree, "docs/COMPONENT_MAP.md", buildComponentMapDoc(input.tree));
+    }
+
+    const interactionStates = getFileContentByPath(input.tree, "docs/INTERACTION_STATES.md");
+    if (!hasMinimumDocContent(interactionStates)) {
+        upsertFileByPath(input.tree, "docs/INTERACTION_STATES.md", buildInteractionStatesDoc(input.tree));
+    }
+
+    const routeMap = getFileContentByPath(input.tree, "docs/ROUTE_MAP.md");
+    if (!hasMinimumDocContent(routeMap)) {
+        upsertFileByPath(input.tree, "docs/ROUTE_MAP.md", buildRouteMapDoc(input.tree));
+    }
+
+    const acceptanceUi = getFileContentByPath(input.tree, "docs/ACCEPTANCE_UI.md");
+    if (!hasMinimumDocContent(acceptanceUi)) {
+        upsertFileByPath(input.tree, "docs/ACCEPTANCE_UI.md", buildAcceptanceUiDoc(input.tree));
+    }
+
+    const designTokens = getFileContentByPath(input.tree, "design/tokens.json");
+    let tokensValid = false;
+    try {
+        JSON.parse(designTokens);
+        tokensValid = designTokens.trim().length > 0;
+    } catch {
+        tokensValid = false;
+    }
+    if (!tokensValid) {
+        upsertFileByPath(input.tree, "design/tokens.json", buildDesignTokensJson());
+    }
+
+    const pageContracts = getFileContentByPath(input.tree, "design/page-contracts.json");
+    if (!validatePageContractsContent(pageContracts)) {
+        upsertFileByPath(input.tree, "design/page-contracts.json", buildPageContractsJson(input.tree));
     }
 }
 
@@ -3052,6 +3325,29 @@ function validateStyleGuideContent(text: string) {
     return required.every((pattern) => pattern.test(source));
 }
 
+function validatePageContractsContent(text: string) {
+    const source = (text || "").trim();
+    if (!source) return false;
+    try {
+        const parsed = JSON.parse(source) as {
+            version?: string;
+            pages?: Array<{ path?: string; requiredStates?: string[]; requiredSections?: string[] }>;
+        };
+        if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) return false;
+        const hasInvalidPage = parsed.pages.some((page) => (
+            typeof page.path !== "string" ||
+            page.path.trim().length === 0 ||
+            !Array.isArray(page.requiredStates) ||
+            page.requiredStates.length === 0 ||
+            !Array.isArray(page.requiredSections) ||
+            page.requiredSections.length === 0
+        ));
+        return !hasInvalidPage;
+    } catch {
+        return false;
+    }
+}
+
 function isPageSpecPath(path: string) {
     const normalized = (path || "").replace(/\\/g, "/");
     if (/^app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
@@ -3123,10 +3419,12 @@ function runGenerationPreflight(input: {
 
     const uiSpecValid = validateUiSpecContent(getFileContentByPath(input.tree, "docs/UI_SPEC.md"));
     const styleGuideValid = validateStyleGuideContent(getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md"));
-    if (!uiSpecValid || !styleGuideValid) {
+    const pageContractsValid = validatePageContractsContent(getFileContentByPath(input.tree, "design/page-contracts.json"));
+    if (!uiSpecValid || !styleGuideValid || !pageContractsValid) {
         const missingDocs: string[] = [];
         if (!uiSpecValid) missingDocs.push("docs/UI_SPEC.md");
         if (!styleGuideValid) missingDocs.push("docs/STYLE_GUIDE.md");
+        if (!pageContractsValid) missingDocs.push("design/page-contracts.json");
         issues.push({
             code: "MISSING_UI_SPEC",
             severity: "error",

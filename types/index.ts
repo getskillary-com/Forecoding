@@ -10,6 +10,26 @@ export interface UiRequirements {
     statesAndFeedback: string[];
 }
 
+export type UiRequirementKey = keyof UiRequirements;
+
+export type DesignStage =
+    | "functional_architecture"
+    | "ui_design"
+    | "ready_to_generate";
+
+export interface UiReadinessReport {
+    score: number;
+    completed: boolean;
+    missingKeys: UiRequirementKey[];
+    missingLabels: string[];
+    updatedAt: number;
+}
+
+export interface UiDesignState {
+    needsResync: boolean;
+    readiness: UiReadinessReport;
+}
+
 export interface Analysis {
     clarified: string[];
     missing: string[];
@@ -146,6 +166,10 @@ export interface ProjectVersionData {
     tasks: Task[];
     paymentStatus?: "paid" | "unpaid";
     diagramGovernance?: DiagramGovernance;
+    designStage?: DesignStage;
+    uiDesignState?: UiDesignState;
+    functionalLockedAt?: number | null;
+    uiReadyAt?: number | null;
 }
 
 // Represents a specific snapshot/iteration of a project

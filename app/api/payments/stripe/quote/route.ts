@@ -63,6 +63,17 @@ export async function POST(req: Request) {
                     displayAmount: formatCurrencyCents(0, currency),
                     complexityScore: 0,
                     complexityTier: "simple",
+                    uiDesignScore: 0,
+                    pricingBreakdown: {
+                        conversationScore: 0,
+                        detailScore: 0,
+                        requirementScore: 0,
+                        architectureScore: 0,
+                        maturityScore: 0,
+                        keywordScore: 0,
+                        uiDesignScore: 0,
+                        totalScore: 0
+                    },
                     factors: ["Admin bypass enabled."]
                 }
             });
@@ -76,7 +87,7 @@ export async function POST(req: Request) {
 
         const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
         const projectFromWorkspace = await loadProjectForUser(user.uid, projectId);
-        const project = projectFromSnapshot || projectFromWorkspace;
+        const project = projectFromWorkspace || projectFromSnapshot;
         const currency = getStripeCurrency();
         const quote = quoteProjectCreditPrice(project, {
             baseAmountCents: getStripeUnitAmountCents(),
@@ -93,6 +104,8 @@ export async function POST(req: Request) {
                 displayAmount: formatCurrencyCents(quote.unitAmountCents, quote.currency),
                 complexityScore: quote.complexityScore,
                 complexityTier: quote.complexityTier,
+                uiDesignScore: quote.uiDesignScore,
+                pricingBreakdown: quote.pricingBreakdown,
                 factors: quote.factors
             }
         });

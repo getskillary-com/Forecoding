@@ -11,7 +11,7 @@ import {
     getStripeUnitAmountCents,
     isStripeDynamicPricingEnabled
 } from "@/lib/stripe";
-import { formatCurrencyCents, quoteProjectCreditPrice } from "@/lib/pricing";
+import { formatCurrencyCents, inferProjectDesignStage, quoteProjectCreditPrice } from "@/lib/pricing";
 import { getWorkspaceByUserId } from "@/lib/data/workspaces";
 
 export const runtime = "nodejs";
@@ -99,7 +99,23 @@ export async function POST(req: Request) {
         const projectId = sanitizeText(body.projectId, "project-credit");
         const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
         const projectFromWorkspace = await loadProjectForUser(user.uid, projectId);
-        const project = projectFromSnapshot || projectFromWorkspace;
+        const project = projectFromWorkspace || projectFromSnapshot;
+        if (!project) {
+            return NextResponse.json(
+                { error: "Project context not found for checkout." },
+                { status: 404 }
+            );
+        }
+        const designStage = inferProjectDesignStage(project);
+        if (designStage !== "ready_to_generate") {
+            return NextResponse.json(
+                {
+                    error: "UI design is not complete. Finish UI stage before checkout.",
+                    designStage
+                },
+                { status: 409 }
+            );
+        }
         const projectName = sanitizeText(project?.name || body.projectName, "Project Credit");
         const currency = getStripeCurrency();
         const quote = quoteProjectCreditPrice(project, {
@@ -143,7 +159,8 @@ export async function POST(req: Request) {
                 projectId,
                 projectName,
                 complexityScore: String(quote.complexityScore),
-                complexityTier: quote.complexityTier
+                complexityTier: quote.complexityTier,
+                uiDesignScore: String(quote.uiDesignScore)
             }
         });
 
@@ -160,7 +177,9 @@ export async function POST(req: Request) {
                 currency: quote.currency,
                 displayAmount: formatCurrencyCents(quote.unitAmountCents, quote.currency),
                 complexityScore: quote.complexityScore,
-                complexityTier: quote.complexityTier
+                complexityTier: quote.complexityTier,
+                uiDesignScore: quote.uiDesignScore,
+                pricingBreakdown: quote.pricingBreakdown
             }
         });
     } catch (error) {

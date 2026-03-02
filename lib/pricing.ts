@@ -1,4 +1,4 @@
-import type { FileNode, Message, Project, ProjectVersion } from "@/types";
+import type { DesignStage, FileNode, Message, Project, ProjectVersion, UiRequirements } from "@/types";
 
 export type ComplexityTier =
     | "simple"
@@ -12,6 +12,17 @@ export type ProjectPricingQuote = {
     currency: string;
     complexityScore: number;
     complexityTier: ComplexityTier;
+    uiDesignScore: number;
+    pricingBreakdown: {
+        conversationScore: number;
+        detailScore: number;
+        requirementScore: number;
+        architectureScore: number;
+        maturityScore: number;
+        keywordScore: number;
+        uiDesignScore: number;
+        totalScore: number;
+    };
     factors: string[];
 };
 
@@ -125,6 +136,106 @@ function normalizeAmount(value: number, fallback: number) {
     return Math.max(1, Math.round(value));
 }
 
+function roundToTenth(value: number) {
+    return Math.round(value * 10) / 10;
+}
+
+const UI_REQUIREMENT_KEYS: Array<keyof UiRequirements> = [
+    "visualStyle",
+    "colorSystem",
+    "typography",
+    "keyScreens",
+    "uiComponents",
+    "responsiveStrategy",
+    "interactionMotion",
+    "statesAndFeedback"
+];
+
+function normalizeUiList(value: unknown) {
+    if (!Array.isArray(value)) return [] as string[];
+    return value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+        .slice(0, 60);
+}
+
+function normalizeUiRequirements(value: unknown): UiRequirements {
+    const candidate = (value && typeof value === "object" ? value : {}) as Partial<UiRequirements>;
+    return {
+        visualStyle: normalizeUiList(candidate.visualStyle),
+        colorSystem: normalizeUiList(candidate.colorSystem),
+        typography: normalizeUiList(candidate.typography),
+        keyScreens: normalizeUiList(candidate.keyScreens),
+        uiComponents: normalizeUiList(candidate.uiComponents),
+        responsiveStrategy: normalizeUiList(candidate.responsiveStrategy),
+        interactionMotion: normalizeUiList(candidate.interactionMotion),
+        statesAndFeedback: normalizeUiList(candidate.statesAndFeedback)
+    };
+}
+
+export function computeUiDesignScore(value: unknown) {
+    const ui = normalizeUiRequirements(value);
+
+    const filledCount = UI_REQUIREMENT_KEYS.filter((key) => ui[key].length > 0).length;
+    const uiCoverageScore = Math.min(8, filledCount);
+    const uiScreenScore = Math.min(5, ui.keyScreens.length);
+
+    const stateText = ui.statesAndFeedback.join(" ").toLowerCase();
+    const stateChecks = [
+        /\bloading\b|加载|载入|skeleton/,
+        /\bempty\b|空状态|无数据/,
+        /\berror\b|失败|异常|错误/,
+        /\bsuccess\b|成功|完成/
+    ];
+    const uiStateScore = Math.min(4, stateChecks.reduce((sum, pattern) => (
+        sum + (pattern.test(stateText) ? 1 : 0)
+    ), 0));
+
+    const responsiveText = ui.responsiveStrategy.join(" ").toLowerCase();
+    const hasMobile = /\bmobile\b|phone|ios|android|移动|手机/.test(responsiveText);
+    const hasDesktop = /\bdesktop\b|pc|web|large screen|桌面/.test(responsiveText);
+    const uiResponsiveScore = Number(hasMobile) + Number(hasDesktop);
+
+    const uiInteractionScore = ui.interactionMotion.length > 0 ? 1 : 0;
+    const uiDesignScore = Math.min(
+        20,
+        uiCoverageScore + uiScreenScore + uiStateScore + uiResponsiveScore + uiInteractionScore
+    );
+
+    return {
+        uiDesignScore,
+        completed: filledCount === UI_REQUIREMENT_KEYS.length,
+        breakdown: {
+            uiCoverageScore,
+            uiScreenScore,
+            uiStateScore,
+            uiResponsiveScore,
+            uiInteractionScore
+        }
+    };
+}
+
+function isDesignStage(value: unknown): value is DesignStage {
+    return (
+        value === "functional_architecture" ||
+        value === "ui_design" ||
+        value === "ready_to_generate"
+    );
+}
+
+export function inferProjectDesignStage(project: Project | null): DesignStage {
+    const latest = resolveLatestVersion(project);
+    if (!latest) return "functional_architecture";
+    const rawStage = latest.data.designStage;
+    if (isDesignStage(rawStage)) return rawStage;
+
+    const density = latest.data.evaluation?.density_score ?? 0;
+    if (density < 100) return "functional_architecture";
+
+    const uiScore = computeUiDesignScore(latest.data.evaluation?.analysis?.ui);
+    return uiScore.completed ? "ready_to_generate" : "ui_design";
+}
+
 export function formatCurrencyCents(cents: number, currency: string) {
     const normalized = (currency || "usd").trim().toUpperCase();
     try {
@@ -154,6 +265,17 @@ export function quoteProjectCreditPrice(
             currency,
             complexityScore: 0,
             complexityTier: "simple",
+            uiDesignScore: 0,
+            pricingBreakdown: {
+                conversationScore: 0,
+                detailScore: 0,
+                requirementScore: 0,
+                architectureScore: 0,
+                maturityScore: 0,
+                keywordScore: 0,
+                uiDesignScore: 0,
+                totalScore: 0
+            },
             factors: ["Dynamic pricing disabled or project data not found."]
         };
     }
@@ -185,17 +307,23 @@ export function quoteProjectCreditPrice(
         treeStats.fileCount * 0.35 + treeStats.folderCount * 0.2 + treeStats.maxDepth * 2.2
     );
     const maturityScore = Math.min(10, Math.max(0, densityScore) * 0.1);
+    const uiScore = computeUiDesignScore(latest?.data.evaluation?.analysis?.ui);
 
+    const existingScore = clamp(
+        10 +
+            conversationScore +
+            detailScore +
+            attachmentScore +
+            requirementScore +
+            architectureScore +
+            maturityScore +
+            keywordSignals.score,
+        8,
+        100
+    );
     const complexityScore = Math.round(
         clamp(
-            10 +
-                conversationScore +
-                detailScore +
-                attachmentScore +
-                requirementScore +
-                architectureScore +
-                maturityScore +
-                keywordSignals.score,
+            existingScore + uiScore.uiDesignScore,
             8,
             100
         )
@@ -213,7 +341,8 @@ export function quoteProjectCreditPrice(
         `Attachments: ${attachmentCount}.`,
         `Unresolved questions: ${missingCount}.`,
         `Generated structure: ${treeStats.fileCount} files, depth ${treeStats.maxDepth}.`,
-        `Detected scope tags: ${keywordSignals.labels.length ? keywordSignals.labels.join(", ") : "none"}.`
+        `Detected scope tags: ${keywordSignals.labels.length ? keywordSignals.labels.join(", ") : "none"}.`,
+        `UI design score: ${uiScore.uiDesignScore}/20 (coverage ${uiScore.breakdown.uiCoverageScore}/8, screens ${uiScore.breakdown.uiScreenScore}/5, states ${uiScore.breakdown.uiStateScore}/4, responsive ${uiScore.breakdown.uiResponsiveScore}/2, interaction ${uiScore.breakdown.uiInteractionScore}/1).`
     ];
 
     return {
@@ -221,6 +350,17 @@ export function quoteProjectCreditPrice(
         currency,
         complexityScore,
         complexityTier,
+        uiDesignScore: uiScore.uiDesignScore,
+        pricingBreakdown: {
+            conversationScore: roundToTenth(conversationScore),
+            detailScore: roundToTenth(detailScore),
+            requirementScore: roundToTenth(requirementScore),
+            architectureScore: roundToTenth(architectureScore),
+            maturityScore: roundToTenth(maturityScore),
+            keywordScore: keywordSignals.score,
+            uiDesignScore: uiScore.uiDesignScore,
+            totalScore: complexityScore
+        },
         factors
     };
 }

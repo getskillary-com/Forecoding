@@ -7,6 +7,10 @@ import {
     EvaluationResponse,
     GenerationResponse,
     DiagramGovernance,
+    DesignStage,
+    UiDesignState,
+    UiReadinessReport,
+    UiRequirementKey,
     UiRequirements,
     Project,
     Task,
@@ -70,7 +74,7 @@ const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
 const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
-const UI_REQUIREMENT_KEYS: Array<keyof UiRequirements> = [
+const UI_REQUIREMENT_KEYS: UiRequirementKey[] = [
     "visualStyle",
     "colorSystem",
     "typography",
@@ -81,7 +85,7 @@ const UI_REQUIREMENT_KEYS: Array<keyof UiRequirements> = [
     "statesAndFeedback"
 ];
 
-const UI_REQUIREMENT_LABELS: Record<keyof UiRequirements, string> = {
+const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     visualStyle: "Visual style",
     colorSystem: "Color system",
     typography: "Typography",
@@ -90,6 +94,12 @@ const UI_REQUIREMENT_LABELS: Record<keyof UiRequirements, string> = {
     responsiveStrategy: "Responsive strategy",
     interactionMotion: "Interaction motion",
     statesAndFeedback: "States and feedback"
+};
+
+const DESIGN_STAGE_LABELS: Record<DesignStage, string> = {
+    functional_architecture: "Functional Architecture",
+    ui_design: "UI Design",
+    ready_to_generate: "Ready to Generate"
 };
 
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
@@ -195,6 +205,103 @@ function getMissingUiRequirementLabels(evaluation: EvaluationResponse | null) {
     return UI_REQUIREMENT_KEYS
         .filter((key) => ui[key].length === 0)
         .map((key) => UI_REQUIREMENT_LABELS[key]);
+}
+
+function createUiReadinessReport(
+    evaluation: EvaluationResponse | null,
+    updatedAt: number = Date.now()
+): UiReadinessReport {
+    const ui = normalizeUiRequirements(evaluation?.analysis?.ui);
+    const missingKeys = UI_REQUIREMENT_KEYS.filter((key) => ui[key].length === 0);
+    const completed = missingKeys.length === 0;
+    const filledCount = UI_REQUIREMENT_KEYS.length - missingKeys.length;
+    return {
+        score: Math.round((filledCount / UI_REQUIREMENT_KEYS.length) * 100),
+        completed,
+        missingKeys,
+        missingLabels: missingKeys.map((key) => UI_REQUIREMENT_LABELS[key]),
+        updatedAt
+    };
+}
+
+function isDesignStage(value: unknown): value is DesignStage {
+    return (
+        value === "functional_architecture" ||
+        value === "ui_design" ||
+        value === "ready_to_generate"
+    );
+}
+
+function inferDesignStageFromEvaluation(
+    evaluation: EvaluationResponse | null,
+    readiness?: UiReadinessReport
+): DesignStage {
+    const density = evaluation?.density_score ?? 0;
+    if (density < 100) return "functional_architecture";
+    const resolvedReadiness = readiness || createUiReadinessReport(evaluation, 0);
+    return resolvedReadiness.completed ? "ready_to_generate" : "ui_design";
+}
+
+function normalizeUiReadinessReport(
+    raw: unknown,
+    evaluation: EvaluationResponse | null
+): UiReadinessReport {
+    const fallback = createUiReadinessReport(evaluation);
+    if (!raw || typeof raw !== "object") return fallback;
+    const candidate = raw as Partial<UiReadinessReport>;
+    const computed = createUiReadinessReport(evaluation, typeof candidate.updatedAt === "number" ? candidate.updatedAt : Date.now());
+    return {
+        score: computed.score,
+        completed: computed.completed,
+        missingKeys: computed.missingKeys,
+        missingLabels: computed.missingLabels,
+        updatedAt: typeof candidate.updatedAt === "number" ? candidate.updatedAt : computed.updatedAt
+    };
+}
+
+function normalizeUiDesignState(
+    raw: unknown,
+    evaluation: EvaluationResponse | null
+): UiDesignState {
+    if (!raw || typeof raw !== "object") {
+        return {
+            needsResync: false,
+            readiness: createUiReadinessReport(evaluation)
+        };
+    }
+    const candidate = raw as Partial<UiDesignState>;
+    return {
+        needsResync: candidate.needsResync === true,
+        readiness: normalizeUiReadinessReport(candidate.readiness, evaluation)
+    };
+}
+
+function areArrayValuesEqual(a: string[], b: string[]) {
+    if (a.length !== b.length) return false;
+    return a.every((item, idx) => item === b[idx]);
+}
+
+function normalizeVersionDesignState(data: ProjectVersion["data"]) {
+    const evaluation = normalizeEvaluation(data?.evaluation ?? null);
+    const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation);
+    const inferredStage = inferDesignStageFromEvaluation(evaluation, uiDesignState.readiness);
+    const designStage = isDesignStage(data?.designStage) ? data.designStage : inferredStage;
+    const functionalLockedAt =
+        typeof data?.functionalLockedAt === "number"
+            ? data.functionalLockedAt
+            : (designStage !== "functional_architecture" ? Date.now() : null);
+    const uiReadyAt =
+        typeof data?.uiReadyAt === "number"
+            ? data.uiReadyAt
+            : (designStage === "ready_to_generate" ? Date.now() : null);
+
+    return {
+        evaluation,
+        designStage,
+        uiDesignState,
+        functionalLockedAt,
+        uiReadyAt
+    };
 }
 
 function buildUiRequirementErrorMessage(evaluation: EvaluationResponse | null) {
@@ -480,6 +587,17 @@ type CheckoutQuote = {
     displayAmount: string;
     complexityScore: number;
     complexityTier: "simple" | "standard" | "advanced" | "professional" | "enterprise";
+    uiDesignScore?: number;
+    pricingBreakdown?: {
+        conversationScore: number;
+        detailScore: number;
+        requirementScore: number;
+        architectureScore: number;
+        maturityScore: number;
+        keywordScore: number;
+        uiDesignScore: number;
+        totalScore: number;
+    };
     factors?: string[];
 };
 
@@ -732,7 +850,11 @@ function buildPricingProjectSnapshot(
     generation: GenerationResponse | null,
     currentDiagram: string,
     diagramGovernance: DiagramGovernance,
-    tasks: Task[]
+    tasks: Task[],
+    designStage: DesignStage,
+    uiDesignState: UiDesignState,
+    functionalLockedAt: number | null,
+    uiReadyAt: number | null
 ): Project | null {
     if (!project || !currentVersion) return null;
 
@@ -764,7 +886,11 @@ function buildPricingProjectSnapshot(
             currentDiagram,
             diagramGovernance,
             tasks,
-            paymentStatus: currentVersion.data.paymentStatus
+            paymentStatus: currentVersion.data.paymentStatus,
+            designStage,
+            uiDesignState,
+            functionalLockedAt,
+            uiReadyAt
         }
     };
 
@@ -786,6 +912,17 @@ function WizardContent() {
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
     const cachedSnapshot = getCachedProjectSnapshot(projectId);
+    const initialEvaluation = normalizeEvaluation(cachedSnapshot?.data.evaluation ?? null);
+    const initialUiDesignState = normalizeUiDesignState(cachedSnapshot?.data.uiDesignState, initialEvaluation);
+    const initialDesignStage = isDesignStage(cachedSnapshot?.data.designStage)
+        ? cachedSnapshot.data.designStage
+        : inferDesignStageFromEvaluation(initialEvaluation, initialUiDesignState.readiness);
+    const initialFunctionalLockedAt = typeof cachedSnapshot?.data.functionalLockedAt === "number"
+        ? cachedSnapshot.data.functionalLockedAt
+        : (initialDesignStage !== "functional_architecture" ? Date.now() : null);
+    const initialUiReadyAt = typeof cachedSnapshot?.data.uiReadyAt === "number"
+        ? cachedSnapshot.data.uiReadyAt
+        : (initialDesignStage === "ready_to_generate" ? Date.now() : null);
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
     const MAIN_MIN = 420;
@@ -803,11 +940,13 @@ function WizardContent() {
     const [messageWindow, setMessageWindow] = useState(MESSAGE_WINDOW_SIZE);
 
     // Core Domain State
-    const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(
-        normalizeEvaluation(cachedSnapshot?.data.evaluation ?? null)
-    );
+    const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(initialEvaluation);
     const [generation, setGeneration] = useState<GenerationResponse | null>(cachedSnapshot?.data.generation ?? null);
     const [tasks, setTasks] = useState<Task[]>(cachedSnapshot?.data.tasks ?? []);
+    const [designStage, setDesignStage] = useState<DesignStage>(initialDesignStage);
+    const [uiDesignState, setUiDesignState] = useState<UiDesignState>(initialUiDesignState);
+    const [functionalLockedAt, setFunctionalLockedAt] = useState<number | null>(initialFunctionalLockedAt);
+    const [uiReadyAt, setUiReadyAt] = useState<number | null>(initialUiReadyAt);
 
     // UI State
     const [isGenerating, setIsGenerating] = useState(false);
@@ -844,9 +983,10 @@ function WizardContent() {
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
-    const uiMissingRequirements = getMissingUiRequirementLabels(evaluation);
-    const hasCompleteUiRequirements = uiMissingRequirements.length === 0;
-    const isScaffoldReady = Boolean(evaluation?.is_ready && hasCompleteUiRequirements);
+    const functionalDensity = evaluation?.density_score ?? 0;
+    const isFunctionalArchitectureReady = functionalDensity >= 100;
+    const hasCompleteUiRequirements = uiDesignState.readiness.completed;
+    const isReadyToGenerateStage = designStage === "ready_to_generate";
     const architectureViewerCode = currentDiagram;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
@@ -912,13 +1052,18 @@ function WizardContent() {
             setLoadedVersionId(latestVersion.id);
 
             const data = latestVersion.data;
+            const normalizedDesignState = normalizeVersionDesignState(data);
             setMessages(data.messages);
             setMessageWindow(MESSAGE_WINDOW_SIZE);
-            setEvaluation(normalizeEvaluation(data.evaluation));
+            setEvaluation(normalizedDesignState.evaluation);
             setGeneration(data.generation);
             setCurrentDiagram(data.currentDiagram);
             setDiagramGovernance(normalizeDiagramGovernance(data.diagramGovernance));
             setTasks(data.tasks);
+            setDesignStage(normalizedDesignState.designStage);
+            setUiDesignState(normalizedDesignState.uiDesignState);
+            setFunctionalLockedAt(normalizedDesignState.functionalLockedAt);
+            setUiReadyAt(normalizedDesignState.uiReadyAt);
 
             if (data.generation) setActiveTab("files");
 
@@ -1008,9 +1153,69 @@ function WizardContent() {
         router.replace(`/wizard?${params.toString()}`);
     }, [searchParams, currentVersion, projectId, router, isAdmin]);
 
-    // 1f. Fetch complexity-based quote for unpaid projects
+    // 1f. Derive design stage from density + structured UI readiness
     useEffect(() => {
-        if (!projectId || !isScaffoldReady || hasPaid || isAdmin || !isAdminStatusLoaded) {
+        const now = Date.now();
+        const nextReadiness = createUiReadinessReport(evaluation, now);
+        const readinessChanged =
+            nextReadiness.score !== uiDesignState.readiness.score ||
+            nextReadiness.completed !== uiDesignState.readiness.completed ||
+            !areArrayValuesEqual(nextReadiness.missingKeys, uiDesignState.readiness.missingKeys) ||
+            !areArrayValuesEqual(nextReadiness.missingLabels, uiDesignState.readiness.missingLabels);
+        const canClearResync =
+            uiDesignState.needsResync &&
+            readinessChanged &&
+            nextReadiness.completed;
+
+        let nextStage = inferDesignStageFromEvaluation(evaluation, nextReadiness);
+        if (designStage === "functional_architecture" && uiDesignState.needsResync) {
+            nextStage = "functional_architecture";
+        }
+        if (nextStage === "ready_to_generate" && uiDesignState.needsResync && !canClearResync) {
+            nextStage = "ui_design";
+        }
+
+        const rolledBackToFunctional =
+            designStage !== "functional_architecture" &&
+            nextStage === "functional_architecture";
+        const nextNeedsResync = rolledBackToFunctional
+            ? true
+            : (nextStage === "ready_to_generate" ? !canClearResync && uiDesignState.needsResync : uiDesignState.needsResync);
+
+        const stageChanged = nextStage !== designStage;
+        const needsResyncChanged = nextNeedsResync !== uiDesignState.needsResync;
+
+        const density = evaluation?.density_score ?? 0;
+        const shouldHoldFunctionalUnlocked =
+            designStage === "functional_architecture" &&
+            uiDesignState.needsResync;
+        const nextFunctionalLockedAt = density >= 100 && !shouldHoldFunctionalUnlocked
+            ? (functionalLockedAt ?? now)
+            : null;
+        const functionalLockedAtChanged = nextFunctionalLockedAt !== functionalLockedAt;
+
+        const nextUiReadyAt = nextStage === "ready_to_generate" ? (uiReadyAt ?? now) : null;
+        const uiReadyAtChanged = nextUiReadyAt !== uiReadyAt;
+
+        if (!readinessChanged && !stageChanged && !needsResyncChanged && !functionalLockedAtChanged && !uiReadyAtChanged) {
+            return;
+        }
+
+        setHasUserEdited(true);
+        if (stageChanged) setDesignStage(nextStage);
+        if (readinessChanged || needsResyncChanged) {
+            setUiDesignState({
+                needsResync: nextNeedsResync,
+                readiness: readinessChanged ? nextReadiness : uiDesignState.readiness
+            });
+        }
+        if (functionalLockedAtChanged) setFunctionalLockedAt(nextFunctionalLockedAt);
+        if (uiReadyAtChanged) setUiReadyAt(nextUiReadyAt);
+    }, [evaluation, designStage, uiDesignState, functionalLockedAt, uiReadyAt]);
+
+    // 1g. Fetch complexity-based quote for unpaid projects
+    useEffect(() => {
+        if (!projectId || !isReadyToGenerateStage || hasPaid || isAdmin || !isAdminStatusLoaded) {
             setCheckoutQuote(null);
             setIsQuoteLoading(false);
             return;
@@ -1034,7 +1239,11 @@ function WizardContent() {
                             generation,
                             currentDiagram,
                             diagramGovernance,
-                            tasks
+                            tasks,
+                            designStage,
+                            uiDesignState,
+                            functionalLockedAt,
+                            uiReadyAt
                         )
                     }),
                     signal: controller.signal
@@ -1076,7 +1285,7 @@ function WizardContent() {
         };
     }, [
         projectId,
-        isScaffoldReady,
+        isReadyToGenerateStage,
         hasPaid,
         isAdmin,
         isAdminStatusLoaded,
@@ -1087,7 +1296,11 @@ function WizardContent() {
         generation,
         currentDiagram,
         diagramGovernance,
-        tasks
+        tasks,
+        designStage,
+        uiDesignState,
+        functionalLockedAt,
+        uiReadyAt
     ]);
 
     // 1b. Load persisted sidebar width
@@ -1168,7 +1381,11 @@ function WizardContent() {
                 currentDiagram,
                 diagramGovernance,
                 tasks,
-                paymentStatus: currentVersion.data.paymentStatus
+                paymentStatus: currentVersion.data.paymentStatus,
+                designStage,
+                uiDesignState,
+                functionalLockedAt,
+                uiReadyAt
             }
         };
 
@@ -1209,6 +1426,10 @@ function WizardContent() {
         currentDiagram,
         diagramGovernance,
         tasks,
+        designStage,
+        uiDesignState,
+        functionalLockedAt,
+        uiReadyAt,
         project,
         currentVersion,
         projectId,
@@ -1738,7 +1959,11 @@ function WizardContent() {
                         generation,
                         currentDiagram,
                         diagramGovernance,
-                        tasks
+                        tasks,
+                        designStage,
+                        uiDesignState,
+                        functionalLockedAt,
+                        uiReadyAt
                     )
                 })
             });
@@ -1767,6 +1992,14 @@ function WizardContent() {
         if (isGenerating || isCheckingOut) return;
 
         setGenerateError(null);
+        if (designStage !== "ready_to_generate") {
+            if (designStage === "functional_architecture") {
+                setGenerateError("Complete functional architecture first (Information Density must reach 100).");
+                return;
+            }
+            setGenerateError(buildUiRequirementErrorMessage(evaluation) || "Complete UI design requirements before generation.");
+            return;
+        }
         if (!hasCompleteUiRequirements) {
             setGenerateError(buildUiRequirementErrorMessage(evaluation));
             return;
@@ -1776,6 +2009,31 @@ function WizardContent() {
             return;
         }
         await generateScaffold();
+    };
+
+    const handleRollbackToFunctional = () => {
+        const nextReadiness = createUiReadinessReport(evaluation);
+        setHasUserEdited(true);
+        setDesignStage("functional_architecture");
+        setFunctionalLockedAt(null);
+        setUiReadyAt(null);
+        setUiDesignState({
+            needsResync: true,
+            readiness: nextReadiness
+        });
+        setGenerateError("Returned to Functional Architecture stage. UI specs are kept as draft and marked for resync.");
+        setActiveTab("architecture");
+    };
+
+    const handleResumeUiDesign = () => {
+        if (!isFunctionalArchitectureReady) {
+            setGenerateError("Functional architecture is not complete yet. Reach Information Density 100 before UI design.");
+            return;
+        }
+        setHasUserEdited(true);
+        setDesignStage("ui_design");
+        setGenerateError(null);
+        setActiveTab("prd");
     };
 
     if (!project || !currentVersion) return <WizardSkeleton />;
@@ -1835,7 +2093,15 @@ function WizardContent() {
 
                             {/* Input Area */}
                             <div className="border-t border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/75">
-                                {evaluation?.is_ready ? (
+                                <div className="mb-2 text-[11px] font-medium text-slate-500 dark:text-slate-300">
+                                    Stage: {DESIGN_STAGE_LABELS[designStage]}
+                                    {designStage === "functional_architecture"
+                                        ? (isFunctionalArchitectureReady
+                                            ? " | Transitioning to UI Design..."
+                                            : ` | Density ${Math.round(functionalDensity)}/100`)
+                                        : ""}
+                                </div>
+                                {(isReadyToGenerateStage || Boolean(generation)) ? (
                                     <div className="flex flex-col gap-2">
                                         {generation ? (
                                             <>
@@ -1849,7 +2115,7 @@ function WizardContent() {
                                             <>
                                             <button
                                                 onClick={handleGenerate}
-                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded || !hasCompleteUiRequirements}
+                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded}
                                                 className="fc-button-primary flex w-full items-center justify-center gap-2 px-6 py-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 {isGenerating || isCheckingOut
@@ -1857,8 +2123,6 @@ function WizardContent() {
                                                     : <Sparkles className="w-5 h-5" />}
                                                 {!isAdminStatusLoaded
                                                     ? "Checking access..."
-                                                    : !hasCompleteUiRequirements
-                                                        ? "Complete UI Requirements First"
                                                     : isCheckingOut
                                                     ? "Redirecting to Payment..."
                                                     : isGenerating
@@ -1877,8 +2141,6 @@ function WizardContent() {
                                             <p className="text-center text-xs text-slate-500 dark:text-slate-300">
                                                 {!isAdminStatusLoaded
                                                     ? "Checking permissions..."
-                                                    : !hasCompleteUiRequirements
-                                                        ? `Missing UI details: ${uiMissingRequirements.join(", ")}.`
                                                     : isAdmin
                                                     ? "Admin mode: payment bypass enabled"
                                                     : hasPaid
@@ -1894,6 +2156,17 @@ function WizardContent() {
                                     </div>
                                 ) : (
                                     <div className="flex flex-col gap-2">
+                                        {designStage === "functional_architecture" ? (
+                                            <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
+                                                Continue clarifying functional architecture until Information Density reaches 100.
+                                            </p>
+                                        ) : (
+                                            <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
+                                                {uiDesignState.needsResync
+                                                    ? "UI specs are marked for resync after architecture rollback. Update UI details before pricing is shown."
+                                                    : "UI design in progress. Pricing is hidden until UI readiness is complete."}
+                                            </p>
+                                        )}
                                         {/* Pending Attachments Preview */}
                                         {pendingAttachments.length > 0 && (
                                             <div className="flex gap-2 overflow-x-auto px-1 pb-2">
@@ -2095,7 +2368,28 @@ function WizardContent() {
                                 </div>
 
                                 <div className="space-y-3">
-                                    <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-500 dark:text-blue-400">UI Requirement Profile</h4>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-500 dark:text-blue-400">UI Requirement Profile</h4>
+                                        {designStage !== "functional_architecture" && (
+                                            <button
+                                                onClick={handleRollbackToFunctional}
+                                                className="rounded-md border border-[color:var(--border)] px-2 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                            >
+                                                Back To Functional
+                                            </button>
+                                        )}
+                                        {designStage === "functional_architecture" && uiDesignState.needsResync && (
+                                            <button
+                                                onClick={handleResumeUiDesign}
+                                                className="rounded-md border border-[color:var(--border)] px-2 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                            >
+                                                Resume UI Design
+                                            </button>
+                                        )}
+                                    </div>
+                                    <p className="text-xs text-slate-500 dark:text-slate-300">
+                                        Stage: {DESIGN_STAGE_LABELS[designStage]} | UI readiness: {uiDesignState.readiness.score}%{uiDesignState.needsResync ? " | Needs resync" : ""}
+                                    </p>
                                     <ul className="space-y-2">
                                         {UI_REQUIREMENT_KEYS.map((key) => {
                                             const items = normalizeUiRequirements(evaluation?.analysis.ui)[key];
