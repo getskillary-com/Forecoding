@@ -11,6 +11,17 @@ const EVALUATE_TOTAL_TIMEOUT_MS = Math.max(
     readBoundedIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 70_000, 20_000, 90_000),
     EVALUATE_MODEL_IDLE_TIMEOUT_MS + 5_000
 );
+// ChatGPT via Responses API can take longer before first meaningful chunk on large system prompts.
+const EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS = readBoundedIntEnv(
+    "EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS",
+    45_000,
+    20_000,
+    120_000
+);
+const EVALUATE_CHATGPT_TOTAL_TIMEOUT_MS = Math.max(
+    readBoundedIntEnv("EVALUATE_CHATGPT_TOTAL_TIMEOUT_MS", 130_000, 45_000, 240_000),
+    EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS + 5_000
+);
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
@@ -181,9 +192,23 @@ async function* streamWithTimeGuards(
     messages: Message[],
     contextText: string | undefined,
     generationReady: boolean,
-    options?: { preferBackupModel?: boolean; designMemory?: string; diagramPolicy?: string }
+    options?: {
+        preferBackupModel?: boolean;
+        designMemory?: string;
+        diagramPolicy?: string;
+        idleTimeoutMs?: number;
+        totalTimeoutMs?: number;
+    }
 ) {
     const startedAt = Date.now();
+    const idleTimeoutMs = Math.max(
+        1_000,
+        Math.floor(options?.idleTimeoutMs ?? EVALUATE_MODEL_IDLE_TIMEOUT_MS)
+    );
+    const totalTimeoutMs = Math.max(
+        idleTimeoutMs + 1_000,
+        Math.floor(options?.totalTimeoutMs ?? EVALUATE_TOTAL_TIMEOUT_MS)
+    );
     const iterator = streamEvaluateInput(messages, contextText, {
         generationReady,
         preferBackupModel: options?.preferBackupModel === true,
@@ -193,7 +218,7 @@ async function* streamWithTimeGuards(
     try {
         while (true) {
             const elapsedMs = Date.now() - startedAt;
-            const remainingTotalMs = EVALUATE_TOTAL_TIMEOUT_MS - elapsedMs;
+            const remainingTotalMs = totalTimeoutMs - elapsedMs;
             if (remainingTotalMs <= 0) {
                 throw new Error("EVALUATE_TOTAL_TIMEOUT");
             }
@@ -201,10 +226,10 @@ async function* streamWithTimeGuards(
             // Cap each next() wait by the remaining total budget to avoid timeout overshoot.
             const nextTimeoutMs = Math.max(
                 1_000,
-                Math.min(EVALUATE_MODEL_IDLE_TIMEOUT_MS, remainingTotalMs)
+                Math.min(idleTimeoutMs, remainingTotalMs)
             );
             const timeoutMessage =
-                nextTimeoutMs < EVALUATE_MODEL_IDLE_TIMEOUT_MS
+                nextTimeoutMs < idleTimeoutMs
                     ? "EVALUATE_TOTAL_TIMEOUT"
                     : "EVALUATE_MODEL_IDLE_TIMEOUT";
 
@@ -308,9 +333,19 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
         const provider = getActiveAiProvider();
+        const timeoutBudget =
+            provider === "chatgpt"
+                ? {
+                    idleTimeoutMs: EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS,
+                    totalTimeoutMs: EVALUATE_CHATGPT_TOTAL_TIMEOUT_MS
+                }
+                : {
+                    idleTimeoutMs: EVALUATE_MODEL_IDLE_TIMEOUT_MS,
+                    totalTimeoutMs: EVALUATE_TOTAL_TIMEOUT_MS
+                };
         const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
+            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
         );
 
         const stream = new ReadableStream({
@@ -352,7 +387,9 @@ export async function POST(req: Request) {
                         generationReady === true,
                         {
                             designMemory: designMemoryText,
-                            diagramPolicy: normalizedDiagramPolicy
+                            diagramPolicy: normalizedDiagramPolicy,
+                            idleTimeoutMs: timeoutBudget.idleTimeoutMs,
+                            totalTimeoutMs: timeoutBudget.totalTimeoutMs
                         }
                     )) {
                         tagScanBuffer = (tagScanBuffer + chunk).slice(-8192);
@@ -383,7 +420,7 @@ export async function POST(req: Request) {
                             isUpstreamOverloadError(e))
                     ) {
                         console.warn(
-                            `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}; retrying compact payload`
+                            `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}; retrying compact payload`
                         );
                         try {
                             const retryMessages = buildRetryMessages(messages);
@@ -401,7 +438,9 @@ export async function POST(req: Request) {
                                 {
                                     preferBackupModel: true,
                                     designMemory: retryDesignMemory,
-                                    diagramPolicy: normalizedDiagramPolicy
+                                    diagramPolicy: normalizedDiagramPolicy,
+                                    idleTimeoutMs: timeoutBudget.idleTimeoutMs,
+                                    totalTimeoutMs: timeoutBudget.totalTimeoutMs
                                 }
                             )) {
                                 if (retryChunk.trim().length > 0) {
@@ -420,7 +459,7 @@ export async function POST(req: Request) {
                             );
                         } catch (retryError) {
                             console.error(
-                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${EVALUATE_MODEL_IDLE_TIMEOUT_MS} totalTimeoutMs=${EVALUATE_TOTAL_TIMEOUT_MS}`
+                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
                             );
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(retryError)

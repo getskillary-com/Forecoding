@@ -432,6 +432,14 @@ function buildOpenAiCompatTranscript(systemInstructionText: string, messages: Me
     return lines.join("\n\n");
 }
 
+function splitSseEvents(buffer: string) {
+    // Some gateways normalize SSE lines to CRLF. Normalize before event splitting.
+    const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const events = normalized.split("\n\n");
+    const remainder = events.pop() || "";
+    return { events, remainder };
+}
+
 function normalizeOpenAiCompatContent(content: unknown): string {
     if (typeof content === "string") {
         return content;
@@ -692,8 +700,9 @@ async function* streamWithOpenAiCompat(
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
-            const events = buffer.split("\n\n");
-            buffer = events.pop() || "";
+            const split = splitSseEvents(buffer);
+            const events = split.events;
+            buffer = split.remainder;
 
             for (const rawEvent of events) {
                 const parsed = parseOpenAiResponsesSseChunk(rawEvent);
@@ -754,8 +763,9 @@ async function* streamWithOpenAiCompat(
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() || "";
+        const split = splitSseEvents(buffer);
+        const events = split.events;
+        buffer = split.remainder;
 
         for (const rawEvent of events) {
             const parsed = parseOpenAiCompatChatSseChunk(rawEvent);
@@ -916,8 +926,9 @@ async function* streamWithClaude(messages: Message[], systemInstructionText: str
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() || "";
+        const split = splitSseEvents(buffer);
+        const events = split.events;
+        buffer = split.remainder;
 
         for (const rawEvent of events) {
             const parsed = parseClaudeSseChunk(rawEvent);
