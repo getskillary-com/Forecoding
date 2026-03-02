@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText, Square, Lock } from "lucide-react";
 import {
     Message,
     EvaluationResponse,
@@ -19,7 +19,6 @@ import {
     FileNode
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
-import { DensityProgress } from "@/components/DensityProgress";
 import dynamic from "next/dynamic";
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
@@ -316,6 +315,21 @@ type UiWireframeScreen = {
     interactions: string[];
 };
 
+type UiViewMode = "wireframe" | "render";
+
+type UiTheme = {
+    accent: string;
+    accentSoft: string;
+    surface: string;
+    surfaceAlt: string;
+    text: string;
+    muted: string;
+    border: string;
+    gradient: string;
+};
+
+type StudioFocus = "split" | "architecture" | "ui";
+
 function tokenizeUiHints(items: string[], maxItems: number) {
     const dedupe = new Set<string>();
     const result: string[] = [];
@@ -363,6 +377,73 @@ function buildUiWireframeScreens(ui: UiRequirements): UiWireframeScreen[] {
         states: pickCyclicSlice(states, idx, 3, ["loading", "empty", "success"]),
         interactions: pickCyclicSlice(interactions, idx, 2, ["tap interactions", "micro animation"])
     }));
+}
+
+function resolveUiTheme(ui: UiRequirements): UiTheme {
+    const descriptor = `${ui.colorSystem.join(" ")} ${ui.visualStyle.join(" ")}`.toLowerCase();
+
+    if (descriptor.includes("neon") || descriptor.includes("cyber") || descriptor.includes("vibrant")) {
+        return {
+            accent: "#22d3ee",
+            accentSoft: "#0ea5e9",
+            surface: "rgba(15, 23, 42, 0.92)",
+            surfaceAlt: "rgba(30, 41, 59, 0.86)",
+            text: "#e2e8f0",
+            muted: "#94a3b8",
+            border: "rgba(34, 211, 238, 0.35)",
+            gradient: "linear-gradient(135deg, rgba(14, 165, 233, 0.35), rgba(34, 211, 238, 0.12))"
+        };
+    }
+
+    if (descriptor.includes("pastel") || descriptor.includes("soft")) {
+        return {
+            accent: "#f97316",
+            accentSoft: "#fb7185",
+            surface: "rgba(255, 255, 255, 0.92)",
+            surfaceAlt: "rgba(248, 250, 252, 0.92)",
+            text: "#0f172a",
+            muted: "#64748b",
+            border: "rgba(251, 113, 133, 0.35)",
+            gradient: "linear-gradient(135deg, rgba(251, 113, 133, 0.22), rgba(253, 186, 116, 0.22))"
+        };
+    }
+
+    if (descriptor.includes("mono") || descriptor.includes("minimal") || descriptor.includes("black")) {
+        return {
+            accent: "#0ea5e9",
+            accentSoft: "#38bdf8",
+            surface: "rgba(15, 23, 42, 0.92)",
+            surfaceAlt: "rgba(30, 41, 59, 0.9)",
+            text: "#e2e8f0",
+            muted: "#94a3b8",
+            border: "rgba(148, 163, 184, 0.35)",
+            gradient: "linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(2, 6, 23, 0.85))"
+        };
+    }
+
+    if (descriptor.includes("warm") || descriptor.includes("earth")) {
+        return {
+            accent: "#f59e0b",
+            accentSoft: "#f97316",
+            surface: "rgba(20, 24, 32, 0.9)",
+            surfaceAlt: "rgba(31, 41, 55, 0.85)",
+            text: "#f8fafc",
+            muted: "#a3b1c6",
+            border: "rgba(245, 158, 11, 0.3)",
+            gradient: "linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(251, 146, 60, 0.18))"
+        };
+    }
+
+    return {
+        accent: "#3b82f6",
+        accentSoft: "#22c55e",
+        surface: "rgba(15, 23, 42, 0.92)",
+        surfaceAlt: "rgba(30, 41, 59, 0.86)",
+        text: "#e2e8f0",
+        muted: "#94a3b8",
+        border: "rgba(59, 130, 246, 0.35)",
+        gradient: "linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(34, 197, 94, 0.12))"
+    };
 }
 
 function normalizeMatchValue(value: string) {
@@ -1029,6 +1110,7 @@ function WizardContent() {
     const initialUiReadyAt = typeof cachedSnapshot?.data.uiReadyAt === "number"
         ? cachedSnapshot.data.uiReadyAt
         : (initialDesignStage === "ready_to_generate" ? Date.now() : null);
+    const initialStudioFocus: StudioFocus = (initialEvaluation?.density_score ?? 0) >= 100 ? "split" : "architecture";
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
     const MAIN_MIN = 420;
@@ -1053,6 +1135,9 @@ function WizardContent() {
     const [uiDesignState, setUiDesignState] = useState<UiDesignState>(initialUiDesignState);
     const [functionalLockedAt, setFunctionalLockedAt] = useState<number | null>(initialFunctionalLockedAt);
     const [uiReadyAt, setUiReadyAt] = useState<number | null>(initialUiReadyAt);
+    const [studioFocus, setStudioFocus] = useState<StudioFocus>(initialStudioFocus);
+    const [studioFocusAuto, setStudioFocusAuto] = useState(true);
+    const [isWideLayout, setIsWideLayout] = useState(true);
 
     // UI State
     const [isGenerating, setIsGenerating] = useState(false);
@@ -1098,6 +1183,15 @@ function WizardContent() {
     const architectureViewerCode = currentDiagram;
     const uiRequirements = normalizeUiRequirements(evaluation?.analysis?.ui);
     const uiWireframes = buildUiWireframeScreens(uiRequirements);
+    const uiDesignUnlocked = designStage !== "functional_architecture";
+    const splitAllowed = isWideLayout && uiDesignUnlocked;
+    const effectiveStudioFocus = isWideLayout
+        ? studioFocus
+        : (studioFocus === "split"
+            ? (uiDesignUnlocked ? "ui" : "architecture")
+            : studioFocus);
+    const showArchitecture = effectiveStudioFocus !== "ui";
+    const showUi = effectiveStudioFocus !== "architecture";
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -1143,6 +1237,32 @@ function WizardContent() {
             cancelled = true;
         };
     }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const query = window.matchMedia("(min-width: 1024px)");
+        const updateLayout = () => setIsWideLayout(query.matches);
+        updateLayout();
+        if (typeof query.addEventListener === "function") {
+            query.addEventListener("change", updateLayout);
+            return () => query.removeEventListener("change", updateLayout);
+        }
+        // Legacy Safari support
+        query.addListener(updateLayout);
+        return () => query.removeListener(updateLayout);
+    }, []);
+
+    useEffect(() => {
+        if (!studioFocusAuto) return;
+        setStudioFocus(isFunctionalArchitectureReady ? "split" : "architecture");
+    }, [isFunctionalArchitectureReady, studioFocusAuto]);
+
+    useEffect(() => {
+        if (isWideLayout) return;
+        if (studioFocus === "split") {
+            setStudioFocus(isFunctionalArchitectureReady ? "ui" : "architecture");
+        }
+    }, [isWideLayout, studioFocus, isFunctionalArchitectureReady]);
 
     useEffect(() => {
         if (selectedUiScreenIndex === null) return;
@@ -2140,6 +2260,8 @@ function WizardContent() {
         });
         setGenerateError("Returned to Functional Architecture stage. UI specs are kept as draft and marked for resync.");
         setActiveTab("architecture");
+        setStudioFocus("architecture");
+        setStudioFocusAuto(true);
     };
 
     const handleResumeUiDesign = () => {
@@ -2151,6 +2273,13 @@ function WizardContent() {
         setDesignStage("ui_design");
         setGenerateError(null);
         setActiveTab("architecture");
+        setStudioFocus(isWideLayout ? "split" : "ui");
+        setStudioFocusAuto(false);
+    };
+
+    const handleStudioFocusChange = (next: StudioFocus) => {
+        setStudioFocus(next);
+        setStudioFocusAuto(false);
     };
 
     const handleArchitectureNodeSelect = (node: { id: string; label: string }) => {
@@ -2184,10 +2313,10 @@ function WizardContent() {
                         >
                             {/* Header */}
                             <div className="flex items-center justify-between border-b border-[color:var(--border)] bg-white/70 px-4 py-3 backdrop-blur-sm dark:bg-slate-900/75">
-                                <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
-                                    {project.name} Workspace
-                                </span>
-                                {evaluation && <DensityProgress score={evaluation.density_score} />}
+                                <div className="space-y-1">
+                                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-400">Project</p>
+                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</p>
+                                </div>
                             </div>
 
                             {/* Chat Area */}
@@ -2435,29 +2564,110 @@ function WizardContent() {
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
                         <div className="absolute inset-0 p-4 flex flex-col gap-3">
-                            <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
-                                <span>System + UI Design Studio</span>
-                                <span className="flex items-center gap-1">
-                                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                                    Auto Updating
-                                </span>
+                            <div className="fc-surface flex flex-col gap-4 rounded-2xl p-4">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex flex-wrap items-center gap-4">
+                                        <div>
+                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">Design Stage</p>
+                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{DESIGN_STAGE_LABELS[designStage]}</p>
+                                        </div>
+                                        <div className="hidden sm:block h-8 w-px bg-[color:var(--border)]" />
+                                        <div>
+                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">Information Density</p>
+                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{Math.round(functionalDensity)}%</p>
+                                        </div>
+                                        <div className="hidden md:flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-300">
+                                            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                            Auto Updating
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        {designStage !== "functional_architecture" && (
+                                            <button
+                                                onClick={handleRollbackToFunctional}
+                                                className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                            >
+                                                Back To Functional
+                                            </button>
+                                        )}
+                                        {designStage === "functional_architecture" && uiDesignState.needsResync && (
+                                            <button
+                                                onClick={handleResumeUiDesign}
+                                                className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                            >
+                                                Resume UI Design
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={handleGenerate}
+                                            disabled={!isAdminStatusLoaded || isGenerating || isCheckingOut || !isReadyToGenerateStage || !hasCompleteUiRequirements}
+                                            className="fc-button-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            {!isAdminStatusLoaded
+                                                ? "Checking Access..."
+                                                : isCheckingOut
+                                                ? "Redirecting..."
+                                                : isGenerating
+                                                    ? "Generating..."
+                                                    : requiresPayment
+                                                        ? "Checkout & Generate"
+                                                        : "Generate"}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
+                                    <span>System + UI Design Studio</span>
+                                    <div className="inline-flex items-center rounded-lg border border-[color:var(--border)] bg-white/80 p-1 text-[11px] font-semibold dark:bg-slate-900/60">
+                                        <button
+                                            onClick={() => handleStudioFocusChange("architecture")}
+                                            className={`rounded-md px-3 py-1 transition-colors ${effectiveStudioFocus === "architecture"
+                                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
+                                        >
+                                            Architecture
+                                        </button>
+                                        <button
+                                            onClick={() => handleStudioFocusChange("split")}
+                                            disabled={!splitAllowed}
+                                            className={`rounded-md px-3 py-1 transition-colors ${effectiveStudioFocus === "split"
+                                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"} ${!splitAllowed ? "cursor-not-allowed opacity-40" : ""}`}
+                                        >
+                                            Split
+                                        </button>
+                                        <button
+                                            onClick={() => handleStudioFocusChange("ui")}
+                                            disabled={!uiDesignUnlocked}
+                                            className={`rounded-md px-3 py-1 transition-colors ${effectiveStudioFocus === "ui"
+                                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"} ${!uiDesignUnlocked ? "cursor-not-allowed opacity-40" : ""}`}
+                                        >
+                                            UI Design
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
 
-                            <div className="grid flex-1 min-h-0 gap-3 lg:grid-cols-[1.2fr_1fr]">
-                                <div className="relative min-h-0 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
-                                </div>
-                                <div className="relative min-h-0 overflow-hidden rounded-xl border border-[color:var(--border)] bg-white/75 dark:bg-slate-900/65">
-                                    <UiDesignWorkbench
-                                        designStage={designStage}
-                                        uiDesignState={uiDesignState}
-                                        uiRequirements={uiRequirements}
-                                        wireframes={uiWireframes}
-                                        activeScreenIndex={selectedUiScreenIndex}
-                                        focusLabel={uiFocusLabel}
-                                        onSelectScreen={handleUiScreenSelect}
-                                    />
-                                </div>
+                            <div className={`${showArchitecture && showUi ? "grid gap-3 lg:grid-cols-[1.2fr_1fr]" : "flex flex-col"} flex-1 min-h-0`}>
+                                {showArchitecture && (
+                                    <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
+                                        <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
+                                    </div>
+                                )}
+                                {showUi && (
+                                    <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-[color:var(--border)] bg-white/75 dark:bg-slate-900/65">
+                                        <UiDesignWorkbench
+                                            designStage={designStage}
+                                            uiDesignState={uiDesignState}
+                                            uiRequirements={uiRequirements}
+                                            wireframes={uiWireframes}
+                                            activeScreenIndex={selectedUiScreenIndex}
+                                            focusLabel={uiFocusLabel}
+                                            densityScore={functionalDensity}
+                                            onSelectScreen={handleUiScreenSelect}
+                                        />
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
@@ -2574,6 +2784,7 @@ function UiDesignWorkbench({
     wireframes,
     activeScreenIndex,
     focusLabel,
+    densityScore,
     onSelectScreen
 }: {
     designStage: DesignStage;
@@ -2582,6 +2793,7 @@ function UiDesignWorkbench({
     wireframes: UiWireframeScreen[];
     activeScreenIndex: number | null;
     focusLabel: string | null;
+    densityScore: number;
     onSelectScreen: (index: number) => void;
 }) {
     const ui = uiRequirements;
@@ -2589,6 +2801,10 @@ function UiDesignWorkbench({
     const colorSystem = ui.colorSystem[0] || "Not defined";
     const typography = ui.typography[0] || "Not defined";
     const responsive = ui.responsiveStrategy[0] || "Not defined";
+    const [viewMode, setViewMode] = useState<UiViewMode>("render");
+    const uiDesignActive = designStage !== "functional_architecture";
+    const missingLabels = uiDesignState.readiness.missingLabels || [];
+    const theme = resolveUiTheme(ui);
     const screenRefs = useRef<(HTMLElement | null)[]>([]);
 
     useEffect(() => {
@@ -2607,9 +2823,9 @@ function UiDesignWorkbench({
                     UI Design Workbench
                 </h3>
                 <p className="text-sm text-slate-600 dark:text-slate-300">
-                    {designStage === "functional_architecture"
-                        ? "UI preview is collecting style intent. It becomes actionable after Information Density reaches 100."
-                        : "UI preview is active. Refine screens and interaction states until readiness reaches 100%."}
+                    {uiDesignActive
+                        ? "UI design mode is active. Refine screens and interaction states until readiness reaches 100%."
+                        : "UI design unlocks after Information Density reaches 100."}
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                     Stage: {DESIGN_STAGE_LABELS[designStage]} | UI readiness: {uiDesignState.readiness.score}%{uiDesignState.needsResync ? " | Needs resync" : ""}
@@ -2619,72 +2835,154 @@ function UiDesignWorkbench({
                         Focus: {focusLabel}{activeScreenIndex !== null && wireframes[activeScreenIndex] ? ` -> ${wireframes[activeScreenIndex].name}` : " (no matching screen)"}
                     </p>
                 )}
+                {uiDesignActive && (
+                    <div className="mt-2 inline-flex rounded-lg border border-[color:var(--border)] p-1 text-xs">
+                        <button
+                            onClick={() => setViewMode("wireframe")}
+                            className={`px-3 py-1 rounded-md font-semibold transition-colors ${viewMode === "wireframe"
+                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
+                        >
+                            Wireframe
+                        </button>
+                        <button
+                            onClick={() => setViewMode("render")}
+                            className={`px-3 py-1 rounded-md font-semibold transition-colors ${viewMode === "render"
+                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
+                        >
+                            Render
+                        </button>
+                    </div>
+                )}
             </div>
 
-            <div className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 dark:border-blue-800/40 dark:bg-blue-900/15">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-blue-600 dark:text-blue-300">Style</p>
-                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{visualStyle}</p>
-                </div>
-                <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 dark:border-indigo-800/40 dark:bg-indigo-900/15">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-600 dark:text-indigo-300">Color</p>
-                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{colorSystem}</p>
-                </div>
-                <div className="rounded-xl border border-purple-100 bg-purple-50 p-3 dark:border-purple-800/40 dark:bg-purple-900/15">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-purple-600 dark:text-purple-300">Typography</p>
-                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{typography}</p>
-                </div>
-                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-800/40 dark:bg-emerald-900/15">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-600 dark:text-emerald-300">Responsive</p>
-                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{responsive}</p>
-                </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-                {wireframes.map((screen, index) => (
-                    <section
-                        key={`${screen.name}-${index}`}
-                        ref={(el) => {
-                            screenRefs.current[index] = el;
-                        }}
-                        onClick={() => onSelectScreen(index)}
-                        className={`cursor-pointer rounded-2xl border bg-white/80 p-4 shadow-sm transition-all dark:bg-slate-900/50 ${activeScreenIndex === index
-                            ? "border-blue-300 ring-2 ring-blue-300/70 dark:border-blue-500/70 dark:ring-blue-500/60"
-                            : "border-[color:var(--border)] hover:border-blue-200 dark:hover:border-blue-500/40"}`}
-                    >
-                        <div className="mb-3 flex items-center justify-between">
-                            <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{screen.name}</h4>
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                                Screen {index + 1}
-                            </span>
+            {uiDesignActive ? (
+                <>
+                    <div className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 dark:border-blue-800/40 dark:bg-blue-900/15">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-blue-600 dark:text-blue-300">Style</p>
+                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{visualStyle}</p>
                         </div>
+                        <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 dark:border-indigo-800/40 dark:bg-indigo-900/15">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-600 dark:text-indigo-300">Color</p>
+                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{colorSystem}</p>
+                        </div>
+                        <div className="rounded-xl border border-purple-100 bg-purple-50 p-3 dark:border-purple-800/40 dark:bg-purple-900/15">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-purple-600 dark:text-purple-300">Typography</p>
+                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{typography}</p>
+                        </div>
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-800/40 dark:bg-emerald-900/15">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-600 dark:text-emerald-300">Responsive</p>
+                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{responsive}</p>
+                        </div>
+                    </div>
 
-                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/45">
-                            <div className="mb-2 h-2.5 w-24 rounded bg-slate-300/80 dark:bg-slate-600/80" />
-                            <div className="mb-3 h-7 rounded-md border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900/50" />
-                            <div className="space-y-2">
-                                {screen.modules.map((module, moduleIndex) => (
-                                    <div
-                                        key={`${screen.name}-module-${moduleIndex}`}
-                                        className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
-                                    >
-                                        {module}
+                    <div className="grid gap-4 md:grid-cols-2">
+                        {wireframes.map((screen, index) => (
+                            <section
+                                key={`${screen.name}-${index}`}
+                                ref={(el) => {
+                                    screenRefs.current[index] = el;
+                                }}
+                                onClick={() => onSelectScreen(index)}
+                                className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${viewMode === "render" ? "" : "bg-white/80 dark:bg-slate-900/50"} ${activeScreenIndex === index
+                                    ? "border-blue-300 ring-2 ring-blue-300/70 dark:border-blue-500/70 dark:ring-blue-500/60"
+                                    : "border-[color:var(--border)] hover:border-blue-200 dark:hover:border-blue-500/40"}`}
+                                style={viewMode === "render" ? { borderColor: theme.border, background: theme.surfaceAlt } : undefined}
+                            >
+                                <div className="mb-3 flex items-center justify-between">
+                                    <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100" style={viewMode === "render" ? { color: theme.text } : undefined}>{screen.name}</h4>
+                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                                        Screen {index + 1}
+                                    </span>
+                                </div>
+
+                                {viewMode === "wireframe" ? (
+                                    <>
+                                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/45">
+                                            <div className="mb-2 h-2.5 w-24 rounded bg-slate-300/80 dark:bg-slate-600/80" />
+                                            <div className="mb-3 h-7 rounded-md border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900/50" />
+                                            <div className="space-y-2">
+                                                {screen.modules.map((module, moduleIndex) => (
+                                                    <div
+                                                        key={`${screen.name}-module-${moduleIndex}`}
+                                                        className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
+                                                    >
+                                                        {module}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="rounded-xl border p-3" style={{ borderColor: theme.border, background: theme.gradient }}>
+                                        <div className="flex items-center justify-between">
+                                            <div className="h-2.5 w-16 rounded-full" style={{ background: theme.accentSoft }} />
+                                            <div className="h-2.5 w-10 rounded-full" style={{ background: theme.muted }} />
+                                        </div>
+                                        <div className="mt-3 rounded-lg p-3" style={{ background: theme.surface }}>
+                                            <div className="h-3 w-24 rounded-full" style={{ background: theme.muted }} />
+                                            <div className="mt-2 h-8 rounded-lg" style={{ border: `1px solid ${theme.border}`, background: theme.surfaceAlt }} />
+                                            <div className="mt-3 grid gap-2">
+                                                {screen.modules.map((module, moduleIndex) => (
+                                                    <div
+                                                        key={`${screen.name}-render-${moduleIndex}`}
+                                                        className="rounded-md px-2 py-1.5 text-xs font-medium"
+                                                        style={{ background: theme.surfaceAlt, color: theme.text, border: `1px solid ${theme.border}` }}
+                                                    >
+                                                        {module}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <div className="mt-3 flex gap-2">
+                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ background: theme.accent, color: "#0b1120" }}>
+                                                    Primary
+                                                </span>
+                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${theme.accent}`, color: theme.accent }}>
+                                                    Secondary
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                ))}
-                            </div>
-                        </div>
+                                )}
 
-                        <div className="mt-3 space-y-1 text-[11px] text-slate-500 dark:text-slate-300">
-                            <p>
-                                <span className="font-semibold text-slate-700 dark:text-slate-200">States:</span> {screen.states.join(" | ")}
-                            </p>
-                            <p>
-                                <span className="font-semibold text-slate-700 dark:text-slate-200">Interactions:</span> {screen.interactions.join(" | ")}
-                            </p>
+                                <div className="mt-3 space-y-1 text-[11px]" style={viewMode === "render" ? { color: theme.muted } : undefined}>
+                                    <p>
+                                        <span className="font-semibold" style={viewMode === "render" ? { color: theme.text } : undefined}>States:</span> {screen.states.join(" | ")}
+                                    </p>
+                                    <p>
+                                        <span className="font-semibold" style={viewMode === "render" ? { color: theme.text } : undefined}>Interactions:</span> {screen.interactions.join(" | ")}
+                                    </p>
+                                </div>
+                            </section>
+                        ))}
+                    </div>
+                </>
+            ) : (
+                <div className="rounded-2xl border border-dashed border-[color:var(--border)] bg-slate-50/60 p-6 text-center text-slate-500 dark:bg-slate-900/40 dark:text-slate-300">
+                    <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-200">
+                        <Lock className="h-5 w-5" />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">UI Design Mode Locked</p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        Information Density must reach 100 to begin UI design. Current: {Math.round(densityScore)}%
+                    </p>
+                    {uiDesignState.needsResync && (
+                        <p className="mt-2 text-xs text-amber-500">UI draft exists and needs resync after returning to functional architecture.</p>
+                    )}
+                    {missingLabels.length > 0 && (
+                        <div className="mt-4 text-left">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Pending UI Requirements</p>
+                            <ul className="mt-2 space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                                {missingLabels.slice(0, 6).map((label) => (
+                                    <li key={label}>- {label}</li>
+                                ))}
+                            </ul>
                         </div>
-                    </section>
-                ))}
-            </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 }
