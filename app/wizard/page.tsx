@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText, Square, Lock } from "lucide-react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
 import {
     Message,
     EvaluationResponse,
@@ -12,6 +12,7 @@ import {
     UiReadinessReport,
     UiRequirementKey,
     UiRequirements,
+    UiDesignSpec,
     Project,
     Task,
     ProjectVersion,
@@ -19,6 +20,7 @@ import {
     FileNode
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
+import { UiDesignWorkbench, UiWireframeScreen } from "@/components/UiDesignWorkbench";
 import dynamic from "next/dynamic";
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
@@ -51,6 +53,13 @@ import {
     readProjectsFromLocalStorage,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
+import {
+    buildMinimalUiDesignSpec,
+    deriveUiRequirements,
+    normalizeUiDesignSpec,
+    parseUiDesignSpecBlock,
+    validateUiDesignSpec
+} from "@/lib/ui-spec";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
 const MESSAGE_WINDOW_SIZE = 60;
@@ -198,23 +207,30 @@ function parseAnalysisUiBlock(raw: string): UiRequirements {
     return createEmptyUiRequirements();
 }
 
-function getMissingUiRequirementLabels(evaluation: EvaluationResponse | null) {
-    const ui = normalizeUiRequirements(evaluation?.analysis?.ui);
+function getMissingUiRequirementLabels(
+    uiDesignSpec: UiDesignSpec | null,
+    evaluation: EvaluationResponse | null
+) {
+    const ui = uiDesignSpec ? deriveUiRequirements(uiDesignSpec) : normalizeUiRequirements(evaluation?.analysis?.ui);
     return UI_REQUIREMENT_KEYS
         .filter((key) => ui[key].length === 0)
         .map((key) => UI_REQUIREMENT_LABELS[key]);
 }
 
 function createUiReadinessReport(
+    uiDesignSpec: UiDesignSpec | null,
     evaluation: EvaluationResponse | null,
     updatedAt: number = Date.now()
 ): UiReadinessReport {
-    const ui = normalizeUiRequirements(evaluation?.analysis?.ui);
+    const ui = uiDesignSpec ? deriveUiRequirements(uiDesignSpec) : normalizeUiRequirements(evaluation?.analysis?.ui);
     const missingKeys = UI_REQUIREMENT_KEYS.filter((key) => ui[key].length === 0);
-    const completed = missingKeys.length === 0;
+    const errors = validateUiDesignSpec(uiDesignSpec);
+    const completed = errors.length === 0;
     const filledCount = UI_REQUIREMENT_KEYS.length - missingKeys.length;
     return {
-        score: Math.round((filledCount / UI_REQUIREMENT_KEYS.length) * 100),
+        score: completed
+            ? 100
+            : Math.min(99, Math.round((filledCount / UI_REQUIREMENT_KEYS.length) * 100)),
         completed,
         missingKeys,
         missingLabels: missingKeys.map((key) => UI_REQUIREMENT_LABELS[key]),
@@ -236,18 +252,23 @@ function inferDesignStageFromEvaluation(
 ): DesignStage {
     const density = evaluation?.density_score ?? 0;
     if (density < 100) return "functional_architecture";
-    const resolvedReadiness = readiness || createUiReadinessReport(evaluation, 0);
+    const resolvedReadiness = readiness || createUiReadinessReport(null, evaluation, 0);
     return resolvedReadiness.completed ? "ready_to_generate" : "ui_design";
 }
 
 function normalizeUiReadinessReport(
     raw: unknown,
-    evaluation: EvaluationResponse | null
+    evaluation: EvaluationResponse | null,
+    uiDesignSpec: UiDesignSpec | null
 ): UiReadinessReport {
-    const fallback = createUiReadinessReport(evaluation);
+    const fallback = createUiReadinessReport(uiDesignSpec, evaluation);
     if (!raw || typeof raw !== "object") return fallback;
     const candidate = raw as Partial<UiReadinessReport>;
-    const computed = createUiReadinessReport(evaluation, typeof candidate.updatedAt === "number" ? candidate.updatedAt : Date.now());
+    const computed = createUiReadinessReport(
+        uiDesignSpec,
+        evaluation,
+        typeof candidate.updatedAt === "number" ? candidate.updatedAt : Date.now()
+    );
     return {
         score: computed.score,
         completed: computed.completed,
@@ -259,18 +280,19 @@ function normalizeUiReadinessReport(
 
 function normalizeUiDesignState(
     raw: unknown,
-    evaluation: EvaluationResponse | null
+    evaluation: EvaluationResponse | null,
+    uiDesignSpec: UiDesignSpec | null
 ): UiDesignState {
     if (!raw || typeof raw !== "object") {
         return {
             needsResync: false,
-            readiness: createUiReadinessReport(evaluation)
+            readiness: createUiReadinessReport(uiDesignSpec, evaluation)
         };
     }
     const candidate = raw as Partial<UiDesignState>;
     return {
         needsResync: candidate.needsResync === true,
-        readiness: normalizeUiReadinessReport(candidate.readiness, evaluation)
+        readiness: normalizeUiReadinessReport(candidate.readiness, evaluation, uiDesignSpec)
     };
 }
 
@@ -281,7 +303,8 @@ function areArrayValuesEqual(a: string[], b: string[]) {
 
 function normalizeVersionDesignState(data: ProjectVersion["data"]) {
     const evaluation = normalizeEvaluation(data?.evaluation ?? null);
-    const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation);
+    const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
+    const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
     const inferredStage = inferDesignStageFromEvaluation(evaluation, uiDesignState.readiness);
     const designStage = isDesignStage(data?.designStage) ? data.designStage : inferredStage;
     const functionalLockedAt =
@@ -297,36 +320,24 @@ function normalizeVersionDesignState(data: ProjectVersion["data"]) {
         evaluation,
         designStage,
         uiDesignState,
+        uiDesignSpec,
         functionalLockedAt,
         uiReadyAt
     };
 }
 
-function buildUiRequirementErrorMessage(evaluation: EvaluationResponse | null) {
-    const missing = getMissingUiRequirementLabels(evaluation);
+function buildUiRequirementErrorMessage(
+    uiDesignSpec: UiDesignSpec | null,
+    evaluation: EvaluationResponse | null
+) {
+    const errors = validateUiDesignSpec(uiDesignSpec);
+    if (errors.length > 0) {
+        return `UI spec is incomplete: ${errors.slice(0, 3).join("; ")}.`;
+    }
+    const missing = getMissingUiRequirementLabels(uiDesignSpec, evaluation);
     if (missing.length === 0) return "";
     return `UI requirements are incomplete: ${missing.join(", ")}. Please clarify these items before generating scaffold.`;
 }
-
-type UiWireframeScreen = {
-    name: string;
-    modules: string[];
-    states: string[];
-    interactions: string[];
-};
-
-type UiViewMode = "wireframe" | "render";
-
-type UiTheme = {
-    accent: string;
-    accentSoft: string;
-    surface: string;
-    surfaceAlt: string;
-    text: string;
-    muted: string;
-    border: string;
-    gradient: string;
-};
 
 type StudioFocus = "split" | "architecture" | "ui";
 
@@ -377,73 +388,6 @@ function buildUiWireframeScreens(ui: UiRequirements): UiWireframeScreen[] {
         states: pickCyclicSlice(states, idx, 3, ["loading", "empty", "success"]),
         interactions: pickCyclicSlice(interactions, idx, 2, ["tap interactions", "micro animation"])
     }));
-}
-
-function resolveUiTheme(ui: UiRequirements): UiTheme {
-    const descriptor = `${ui.colorSystem.join(" ")} ${ui.visualStyle.join(" ")}`.toLowerCase();
-
-    if (descriptor.includes("neon") || descriptor.includes("cyber") || descriptor.includes("vibrant")) {
-        return {
-            accent: "#22d3ee",
-            accentSoft: "#0ea5e9",
-            surface: "rgba(15, 23, 42, 0.92)",
-            surfaceAlt: "rgba(30, 41, 59, 0.86)",
-            text: "#e2e8f0",
-            muted: "#94a3b8",
-            border: "rgba(34, 211, 238, 0.35)",
-            gradient: "linear-gradient(135deg, rgba(14, 165, 233, 0.35), rgba(34, 211, 238, 0.12))"
-        };
-    }
-
-    if (descriptor.includes("pastel") || descriptor.includes("soft")) {
-        return {
-            accent: "#f97316",
-            accentSoft: "#fb7185",
-            surface: "rgba(255, 255, 255, 0.92)",
-            surfaceAlt: "rgba(248, 250, 252, 0.92)",
-            text: "#0f172a",
-            muted: "#64748b",
-            border: "rgba(251, 113, 133, 0.35)",
-            gradient: "linear-gradient(135deg, rgba(251, 113, 133, 0.22), rgba(253, 186, 116, 0.22))"
-        };
-    }
-
-    if (descriptor.includes("mono") || descriptor.includes("minimal") || descriptor.includes("black")) {
-        return {
-            accent: "#0ea5e9",
-            accentSoft: "#38bdf8",
-            surface: "rgba(15, 23, 42, 0.92)",
-            surfaceAlt: "rgba(30, 41, 59, 0.9)",
-            text: "#e2e8f0",
-            muted: "#94a3b8",
-            border: "rgba(148, 163, 184, 0.35)",
-            gradient: "linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(2, 6, 23, 0.85))"
-        };
-    }
-
-    if (descriptor.includes("warm") || descriptor.includes("earth")) {
-        return {
-            accent: "#f59e0b",
-            accentSoft: "#f97316",
-            surface: "rgba(20, 24, 32, 0.9)",
-            surfaceAlt: "rgba(31, 41, 55, 0.85)",
-            text: "#f8fafc",
-            muted: "#a3b1c6",
-            border: "rgba(245, 158, 11, 0.3)",
-            gradient: "linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(251, 146, 60, 0.18))"
-        };
-    }
-
-    return {
-        accent: "#3b82f6",
-        accentSoft: "#22c55e",
-        surface: "rgba(15, 23, 42, 0.92)",
-        surfaceAlt: "rgba(30, 41, 59, 0.86)",
-        text: "#e2e8f0",
-        muted: "#94a3b8",
-        border: "rgba(59, 130, 246, 0.35)",
-        gradient: "linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(34, 197, 94, 0.12))"
-    };
 }
 
 function normalizeMatchValue(value: string) {
@@ -701,6 +645,7 @@ function extractFallbackAssistantText(raw: string) {
         .replace(/<analysis_clarified>[\s\S]*?(?:<\/analysis_clarified>|$)/gi, " ")
         .replace(/<analysis_missing>[\s\S]*?(?:<\/analysis_missing>|$)/gi, " ")
         .replace(/<analysis_ui>[\s\S]*?(?:<\/analysis_ui>|$)/gi, " ")
+        .replace(/<analysis_ui_spec>[\s\S]*?(?:<\/analysis_ui_spec>|$)/gi, " ")
         .replace(/<density>[\s\S]*?(?:<\/density>|$)/gi, " ")
         .replace(/<is_ready>[\s\S]*?(?:<\/is_ready>|$)/gi, " ")
         .replace(/<options>[\s\S]*?(?:<\/options>|$)/gi, " ")
@@ -1040,6 +985,7 @@ function buildPricingProjectSnapshot(
     tasks: Task[],
     designStage: DesignStage,
     uiDesignState: UiDesignState,
+    uiDesignSpec: UiDesignSpec | null,
     functionalLockedAt: number | null,
     uiReadyAt: number | null
 ): Project | null {
@@ -1076,6 +1022,7 @@ function buildPricingProjectSnapshot(
             paymentStatus: currentVersion.data.paymentStatus,
             designStage,
             uiDesignState,
+            uiDesignSpec: uiDesignSpec ?? undefined,
             functionalLockedAt,
             uiReadyAt
         }
@@ -1100,7 +1047,8 @@ function WizardContent() {
     const versionId = searchParams.get("versionId");
     const cachedSnapshot = getCachedProjectSnapshot(projectId);
     const initialEvaluation = normalizeEvaluation(cachedSnapshot?.data.evaluation ?? null);
-    const initialUiDesignState = normalizeUiDesignState(cachedSnapshot?.data.uiDesignState, initialEvaluation);
+    const initialUiDesignSpec = normalizeUiDesignSpec(cachedSnapshot?.data.uiDesignSpec, initialEvaluation?.analysis?.ui);
+    const initialUiDesignState = normalizeUiDesignState(cachedSnapshot?.data.uiDesignState, initialEvaluation, initialUiDesignSpec);
     const initialDesignStage = isDesignStage(cachedSnapshot?.data.designStage)
         ? cachedSnapshot.data.designStage
         : inferDesignStageFromEvaluation(initialEvaluation, initialUiDesignState.readiness);
@@ -1133,6 +1081,7 @@ function WizardContent() {
     const [tasks, setTasks] = useState<Task[]>(cachedSnapshot?.data.tasks ?? []);
     const [designStage, setDesignStage] = useState<DesignStage>(initialDesignStage);
     const [uiDesignState, setUiDesignState] = useState<UiDesignState>(initialUiDesignState);
+    const [uiDesignSpec, setUiDesignSpec] = useState<UiDesignSpec | null>(initialUiDesignSpec);
     const [functionalLockedAt, setFunctionalLockedAt] = useState<number | null>(initialFunctionalLockedAt);
     const [uiReadyAt, setUiReadyAt] = useState<number | null>(initialUiReadyAt);
     const [studioFocus, setStudioFocus] = useState<StudioFocus>(initialStudioFocus);
@@ -1181,7 +1130,9 @@ function WizardContent() {
     const hasCompleteUiRequirements = uiDesignState.readiness.completed;
     const isReadyToGenerateStage = designStage === "ready_to_generate";
     const architectureViewerCode = currentDiagram;
-    const uiRequirements = normalizeUiRequirements(evaluation?.analysis?.ui);
+    const uiRequirements = uiDesignSpec
+        ? deriveUiRequirements(uiDesignSpec)
+        : normalizeUiRequirements(evaluation?.analysis?.ui);
     const uiWireframes = buildUiWireframeScreens(uiRequirements);
     const uiDesignUnlocked = designStage !== "functional_architecture";
     const splitAllowed = isWideLayout && uiDesignUnlocked;
@@ -1299,6 +1250,7 @@ function WizardContent() {
             setTasks(data.tasks);
             setDesignStage(normalizedDesignState.designStage);
             setUiDesignState(normalizedDesignState.uiDesignState);
+            setUiDesignSpec(normalizedDesignState.uiDesignSpec);
             setFunctionalLockedAt(normalizedDesignState.functionalLockedAt);
             setUiReadyAt(normalizedDesignState.uiReadyAt);
 
@@ -1393,7 +1345,7 @@ function WizardContent() {
     // 1f. Derive design stage from density + structured UI readiness
     useEffect(() => {
         const now = Date.now();
-        const nextReadiness = createUiReadinessReport(evaluation, now);
+        const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation, now);
         const readinessChanged =
             nextReadiness.score !== uiDesignState.readiness.score ||
             nextReadiness.completed !== uiDesignState.readiness.completed ||
@@ -1448,7 +1400,7 @@ function WizardContent() {
         }
         if (functionalLockedAtChanged) setFunctionalLockedAt(nextFunctionalLockedAt);
         if (uiReadyAtChanged) setUiReadyAt(nextUiReadyAt);
-    }, [evaluation, designStage, uiDesignState, functionalLockedAt, uiReadyAt]);
+    }, [evaluation, uiDesignSpec, designStage, uiDesignState, functionalLockedAt, uiReadyAt]);
 
     // 1g. Fetch complexity-based quote for unpaid projects
     useEffect(() => {
@@ -1479,6 +1431,7 @@ function WizardContent() {
                             tasks,
                             designStage,
                             uiDesignState,
+                            uiDesignSpec,
                             functionalLockedAt,
                             uiReadyAt
                         )
@@ -1621,6 +1574,7 @@ function WizardContent() {
                 paymentStatus: currentVersion.data.paymentStatus,
                 designStage,
                 uiDesignState,
+                uiDesignSpec: uiDesignSpec ?? undefined,
                 functionalLockedAt,
                 uiReadyAt
             }
@@ -1665,6 +1619,7 @@ function WizardContent() {
         tasks,
         designStage,
         uiDesignState,
+        uiDesignSpec,
         functionalLockedAt,
         uiReadyAt,
         project,
@@ -2013,9 +1968,19 @@ function WizardContent() {
                     currentEval.analysis.missing = parseAnalysisList(missingMatch[1]);
                 }
 
+                const uiSpecMatch = buffer.match(/<analysis_ui_spec>([\s\S]*?)<\/analysis_ui_spec>/i);
+                if (uiSpecMatch) {
+                    const parsedSpec = parseUiDesignSpecBlock(uiSpecMatch[1]);
+                    if (parsedSpec) {
+                        setUiDesignSpec(parsedSpec);
+                        currentEval.analysis.ui = deriveUiRequirements(parsedSpec);
+                    }
+                }
+
                 const uiMatch = buffer.match(/<analysis_ui>([\s\S]*?)<\/analysis_ui>/i);
                 if (uiMatch) {
                     currentEval.analysis.ui = parseAnalysisUiBlock(uiMatch[1]);
+                    setUiDesignSpec((prev) => prev ?? buildMinimalUiDesignSpec(currentEval.analysis.ui));
                 }
 
                 // Options
@@ -2118,6 +2083,7 @@ function WizardContent() {
                     oneClickMode: GENERATE_ONE_CLICK_MODE,
                     ideProfile: GENERATE_IDE_PROFILE,
                     templateKindHint,
+                    uiDesignSpec,
                     // If this version has a generation already (or base version had one), we can pass it?
                     // Actually, for v2, `generation` state was initialized from base. That is our "existingProjectTree".
                     currentProjectTree: generation?.projectTree
@@ -2188,21 +2154,22 @@ function WizardContent() {
                     projectName: project?.name || "Project Credit",
                     successPath,
                     cancelPath,
-                    projectSnapshot: buildPricingProjectSnapshot(
-                        project,
-                        currentVersion,
-                        messages,
-                        evaluation,
-                        generation,
-                        currentDiagram,
-                        diagramGovernance,
-                        tasks,
-                        designStage,
-                        uiDesignState,
-                        functionalLockedAt,
-                        uiReadyAt
-                    )
-                })
+                        projectSnapshot: buildPricingProjectSnapshot(
+                            project,
+                            currentVersion,
+                            messages,
+                            evaluation,
+                            generation,
+                            currentDiagram,
+                            diagramGovernance,
+                            tasks,
+                            designStage,
+                            uiDesignState,
+                            uiDesignSpec,
+                            functionalLockedAt,
+                            uiReadyAt
+                        )
+                    })
             });
 
             if (res.status === 401) {
@@ -2234,11 +2201,16 @@ function WizardContent() {
                 setGenerateError("Complete functional architecture first (Information Density must reach 100).");
                 return;
             }
-            setGenerateError(buildUiRequirementErrorMessage(evaluation) || "Complete UI design requirements before generation.");
+            setGenerateError(buildUiRequirementErrorMessage(uiDesignSpec, evaluation) || "Complete UI design requirements before generation.");
+            return;
+        }
+        const uiSpecErrors = validateUiDesignSpec(uiDesignSpec);
+        if (uiSpecErrors.length > 0) {
+            setGenerateError(`UI spec is incomplete: ${uiSpecErrors.slice(0, 3).join("; ")}`);
             return;
         }
         if (!hasCompleteUiRequirements) {
-            setGenerateError(buildUiRequirementErrorMessage(evaluation));
+            setGenerateError(buildUiRequirementErrorMessage(uiDesignSpec, evaluation));
             return;
         }
         if (requiresPayment) {
@@ -2249,7 +2221,7 @@ function WizardContent() {
     };
 
     const handleRollbackToFunctional = () => {
-        const nextReadiness = createUiReadinessReport(evaluation);
+        const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation);
         setHasUserEdited(true);
         setDesignStage("functional_architecture");
         setFunctionalLockedAt(null);
@@ -2659,12 +2631,14 @@ function WizardContent() {
                                         <UiDesignWorkbench
                                             designStage={designStage}
                                             uiDesignState={uiDesignState}
+                                            uiDesignSpec={uiDesignSpec}
                                             uiRequirements={uiRequirements}
                                             wireframes={uiWireframes}
                                             activeScreenIndex={selectedUiScreenIndex}
                                             focusLabel={uiFocusLabel}
                                             densityScore={functionalDensity}
                                             onSelectScreen={handleUiScreenSelect}
+                                            onSpecChange={setUiDesignSpec}
                                         />
                                     </div>
                                 )}
@@ -2738,7 +2712,7 @@ function WizardContent() {
                                     </p>
                                     <ul className="space-y-2">
                                         {UI_REQUIREMENT_KEYS.map((key) => {
-                                            const items = normalizeUiRequirements(evaluation?.analysis.ui)[key];
+                                            const items = uiRequirements[key];
                                             return (
                                                 <li key={key} className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-slate-700 dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-slate-200">
                                                     <span className="font-semibold text-blue-600 dark:text-blue-300">{UI_REQUIREMENT_LABELS[key]}: </span>
@@ -2774,216 +2748,6 @@ function WizardContent() {
                 </main>
             </div>
         </>
-    );
-}
-
-function UiDesignWorkbench({
-    designStage,
-    uiDesignState,
-    uiRequirements,
-    wireframes,
-    activeScreenIndex,
-    focusLabel,
-    densityScore,
-    onSelectScreen
-}: {
-    designStage: DesignStage;
-    uiDesignState: UiDesignState;
-    uiRequirements: UiRequirements;
-    wireframes: UiWireframeScreen[];
-    activeScreenIndex: number | null;
-    focusLabel: string | null;
-    densityScore: number;
-    onSelectScreen: (index: number) => void;
-}) {
-    const ui = uiRequirements;
-    const visualStyle = ui.visualStyle[0] || "Not defined";
-    const colorSystem = ui.colorSystem[0] || "Not defined";
-    const typography = ui.typography[0] || "Not defined";
-    const responsive = ui.responsiveStrategy[0] || "Not defined";
-    const [viewMode, setViewMode] = useState<UiViewMode>("render");
-    const uiDesignActive = designStage !== "functional_architecture";
-    const missingLabels = uiDesignState.readiness.missingLabels || [];
-    const theme = resolveUiTheme(ui);
-    const screenRefs = useRef<(HTMLElement | null)[]>([]);
-
-    useEffect(() => {
-        if (activeScreenIndex === null) return;
-        const target = screenRefs.current[activeScreenIndex];
-        if (target) {
-            target.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
-    }, [activeScreenIndex, wireframes.length]);
-
-    return (
-        <div className="absolute inset-0 overflow-y-auto p-6 custom-scrollbar">
-            <div className="mb-5 space-y-2">
-                <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                    <Sparkles className="h-5 w-5 text-pink-500" />
-                    UI Design Workbench
-                </h3>
-                <p className="text-sm text-slate-600 dark:text-slate-300">
-                    {uiDesignActive
-                        ? "UI design mode is active. Refine screens and interaction states until readiness reaches 100%."
-                        : "UI design unlocks after Information Density reaches 100."}
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Stage: {DESIGN_STAGE_LABELS[designStage]} | UI readiness: {uiDesignState.readiness.score}%{uiDesignState.needsResync ? " | Needs resync" : ""}
-                </p>
-                {focusLabel && (
-                    <p className="text-xs text-slate-500 dark:text-slate-300">
-                        Focus: {focusLabel}{activeScreenIndex !== null && wireframes[activeScreenIndex] ? ` -> ${wireframes[activeScreenIndex].name}` : " (no matching screen)"}
-                    </p>
-                )}
-                {uiDesignActive && (
-                    <div className="mt-2 inline-flex rounded-lg border border-[color:var(--border)] p-1 text-xs">
-                        <button
-                            onClick={() => setViewMode("wireframe")}
-                            className={`px-3 py-1 rounded-md font-semibold transition-colors ${viewMode === "wireframe"
-                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
-                        >
-                            Wireframe
-                        </button>
-                        <button
-                            onClick={() => setViewMode("render")}
-                            className={`px-3 py-1 rounded-md font-semibold transition-colors ${viewMode === "render"
-                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
-                        >
-                            Render
-                        </button>
-                    </div>
-                )}
-            </div>
-
-            {uiDesignActive ? (
-                <>
-                    <div className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                        <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 dark:border-blue-800/40 dark:bg-blue-900/15">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-blue-600 dark:text-blue-300">Style</p>
-                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{visualStyle}</p>
-                        </div>
-                        <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 dark:border-indigo-800/40 dark:bg-indigo-900/15">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-600 dark:text-indigo-300">Color</p>
-                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{colorSystem}</p>
-                        </div>
-                        <div className="rounded-xl border border-purple-100 bg-purple-50 p-3 dark:border-purple-800/40 dark:bg-purple-900/15">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-purple-600 dark:text-purple-300">Typography</p>
-                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{typography}</p>
-                        </div>
-                        <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-800/40 dark:bg-emerald-900/15">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-600 dark:text-emerald-300">Responsive</p>
-                            <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{responsive}</p>
-                        </div>
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                        {wireframes.map((screen, index) => (
-                            <section
-                                key={`${screen.name}-${index}`}
-                                ref={(el) => {
-                                    screenRefs.current[index] = el;
-                                }}
-                                onClick={() => onSelectScreen(index)}
-                                className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${viewMode === "render" ? "" : "bg-white/80 dark:bg-slate-900/50"} ${activeScreenIndex === index
-                                    ? "border-blue-300 ring-2 ring-blue-300/70 dark:border-blue-500/70 dark:ring-blue-500/60"
-                                    : "border-[color:var(--border)] hover:border-blue-200 dark:hover:border-blue-500/40"}`}
-                                style={viewMode === "render" ? { borderColor: theme.border, background: theme.surfaceAlt } : undefined}
-                            >
-                                <div className="mb-3 flex items-center justify-between">
-                                    <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100" style={viewMode === "render" ? { color: theme.text } : undefined}>{screen.name}</h4>
-                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                                        Screen {index + 1}
-                                    </span>
-                                </div>
-
-                                {viewMode === "wireframe" ? (
-                                    <>
-                                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/45">
-                                            <div className="mb-2 h-2.5 w-24 rounded bg-slate-300/80 dark:bg-slate-600/80" />
-                                            <div className="mb-3 h-7 rounded-md border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900/50" />
-                                            <div className="space-y-2">
-                                                {screen.modules.map((module, moduleIndex) => (
-                                                    <div
-                                                        key={`${screen.name}-module-${moduleIndex}`}
-                                                        className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
-                                                    >
-                                                        {module}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <div className="rounded-xl border p-3" style={{ borderColor: theme.border, background: theme.gradient }}>
-                                        <div className="flex items-center justify-between">
-                                            <div className="h-2.5 w-16 rounded-full" style={{ background: theme.accentSoft }} />
-                                            <div className="h-2.5 w-10 rounded-full" style={{ background: theme.muted }} />
-                                        </div>
-                                        <div className="mt-3 rounded-lg p-3" style={{ background: theme.surface }}>
-                                            <div className="h-3 w-24 rounded-full" style={{ background: theme.muted }} />
-                                            <div className="mt-2 h-8 rounded-lg" style={{ border: `1px solid ${theme.border}`, background: theme.surfaceAlt }} />
-                                            <div className="mt-3 grid gap-2">
-                                                {screen.modules.map((module, moduleIndex) => (
-                                                    <div
-                                                        key={`${screen.name}-render-${moduleIndex}`}
-                                                        className="rounded-md px-2 py-1.5 text-xs font-medium"
-                                                        style={{ background: theme.surfaceAlt, color: theme.text, border: `1px solid ${theme.border}` }}
-                                                    >
-                                                        {module}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                            <div className="mt-3 flex gap-2">
-                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ background: theme.accent, color: "#0b1120" }}>
-                                                    Primary
-                                                </span>
-                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${theme.accent}`, color: theme.accent }}>
-                                                    Secondary
-                                                </span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
-                                <div className="mt-3 space-y-1 text-[11px]" style={viewMode === "render" ? { color: theme.muted } : undefined}>
-                                    <p>
-                                        <span className="font-semibold" style={viewMode === "render" ? { color: theme.text } : undefined}>States:</span> {screen.states.join(" | ")}
-                                    </p>
-                                    <p>
-                                        <span className="font-semibold" style={viewMode === "render" ? { color: theme.text } : undefined}>Interactions:</span> {screen.interactions.join(" | ")}
-                                    </p>
-                                </div>
-                            </section>
-                        ))}
-                    </div>
-                </>
-            ) : (
-                <div className="rounded-2xl border border-dashed border-[color:var(--border)] bg-slate-50/60 p-6 text-center text-slate-500 dark:bg-slate-900/40 dark:text-slate-300">
-                    <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-200">
-                        <Lock className="h-5 w-5" />
-                    </div>
-                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">UI Design Mode Locked</p>
-                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                        Information Density must reach 100 to begin UI design. Current: {Math.round(densityScore)}%
-                    </p>
-                    {uiDesignState.needsResync && (
-                        <p className="mt-2 text-xs text-amber-500">UI draft exists and needs resync after returning to functional architecture.</p>
-                    )}
-                    {missingLabels.length > 0 && (
-                        <div className="mt-4 text-left">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Pending UI Requirements</p>
-                            <ul className="mt-2 space-y-1 text-xs text-slate-600 dark:text-slate-300">
-                                {missingLabels.slice(0, 6).map((label) => (
-                                    <li key={label}>- {label}</li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
-                </div>
-            )}
-        </div>
     );
 }
 

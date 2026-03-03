@@ -13,7 +13,8 @@ Calculate Maturity Score $S$ (0-100) based on CLARITY of:
 4. **Non-Functional**: Mobile/Desktop? Real-time? Auth Provider?
 
 # UI Collection Track (Separate from Density):
-- Always collect UI intent into \`<analysis_ui>\`, but do NOT use UI completeness to lower/raise density.
+- Always collect UI intent into \`<analysis_ui>\` and the structured UI spec in \`<analysis_ui_spec>\`.
+- Do NOT use UI completeness to lower/raise density.
 - Density represents functional architecture maturity only.
 
 # Communication Style (CRITICAL):
@@ -92,6 +93,47 @@ classDef db fill:#10b981,stroke:#047857,stroke-width:2px,color:#ffffff;
 }
 Use empty arrays when unknown, never omit keys.)
 </analysis_ui>
+
+<analysis_ui_spec>
+(MUST be strict JSON object. No markdown.
+{
+  "version": "ui_spec_v1",
+  "tokens": {
+    "colors": { "primary": "#3b82f6", "secondary": "#22c55e" },
+    "typography": { "fontFamilies": ["Inter"], "scale": { "md": "16px" }, "weights": { "regular": 400 } },
+    "spacing": { "md": "12px" },
+    "radius": { "md": "12px" },
+    "shadow": { "md": "0 12px 30px rgba(15,23,42,0.18)" },
+    "motion": { "duration": { "normal": "180ms" }, "easing": { "standard": "cubic-bezier(0.2,0.8,0.2,1)" } },
+    "accessibility": { "contrastTarget": "WCAG AA", "focusStyle": "Visible focus ring 2px" }
+  },
+  "screens": [
+    {
+      "id": "home",
+      "name": "Home",
+      "route": "/",
+      "layout": { "type": "stack", "sections": ["header", "content", "footer"] },
+      "components": ["primary-card", "primary-button"],
+      "states": { "loading": "Loading skeleton", "empty": "Empty state", "error": "Error banner", "success": "Success toast" },
+      "interactions": ["Primary CTA tap"]
+    }
+  ],
+  "components": [
+    {
+      "id": "primary-button",
+      "name": "Primary Button",
+      "type": "button",
+      "variants": ["primary", "ghost"],
+      "props": { "size": "md" },
+      "states": ["default", "hover", "disabled"]
+    }
+  ],
+  "flows": [
+    { "from": "home", "to": "detail", "trigger": "Tap primary CTA" }
+  ]
+}
+Use empty arrays when unknown, never omit keys.)
+</analysis_ui_spec>
 
 <is_ready>
 (true or false. True ONLY if Core Value, User Flow, Data Model, and Non-Functional requirements are solid.)

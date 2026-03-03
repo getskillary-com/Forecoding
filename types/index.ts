@@ -30,6 +30,71 @@ export interface UiDesignState {
     readiness: UiReadinessReport;
 }
 
+export interface UiDesignTokens {
+    colors: Record<string, string>;
+    typography: {
+        fontFamilies: string[];
+        scale: Record<string, string>;
+        weights: Record<string, string | number>;
+    };
+    spacing: Record<string, string>;
+    radius: Record<string, string>;
+    shadow: Record<string, string>;
+    motion: {
+        duration: Record<string, string>;
+        easing: Record<string, string>;
+    };
+    accessibility: {
+        contrastTarget: string;
+        focusStyle: string;
+    };
+}
+
+export interface UiDesignScreenLayout {
+    type: string;
+    sections: string[];
+}
+
+export interface UiDesignScreenStates {
+    loading: string;
+    empty: string;
+    error: string;
+    success: string;
+}
+
+export interface UiDesignScreen {
+    id: string;
+    name: string;
+    route: string;
+    layout: UiDesignScreenLayout;
+    components: string[];
+    states: UiDesignScreenStates;
+    interactions: string[];
+}
+
+export interface UiDesignComponent {
+    id: string;
+    name: string;
+    type: string;
+    variants: string[];
+    props: Record<string, string>;
+    states: string[];
+}
+
+export interface UiDesignFlow {
+    from: string;
+    to: string;
+    trigger: string;
+}
+
+export interface UiDesignSpec {
+    version: "ui_spec_v1";
+    tokens: UiDesignTokens;
+    screens: UiDesignScreen[];
+    components: UiDesignComponent[];
+    flows: UiDesignFlow[];
+}
+
 export interface Analysis {
     clarified: string[];
     missing: string[];
@@ -168,6 +233,7 @@ export interface ProjectVersionData {
     diagramGovernance?: DiagramGovernance;
     designStage?: DesignStage;
     uiDesignState?: UiDesignState;
+    uiDesignSpec?: UiDesignSpec;
     functionalLockedAt?: number | null;
     uiReadyAt?: number | null;
 }

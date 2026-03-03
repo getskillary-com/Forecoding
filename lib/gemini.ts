@@ -9,8 +9,10 @@ import type {
     PhasePlan,
     PreflightIssue,
     PreflightReport,
-    TemplateKind
+    TemplateKind,
+    UiDesignSpec
 } from "@/types";
+import { normalizeUiDesignSpec, validateUiDesignSpec } from "@/lib/ui-spec";
 
 type OutputLanguage = "zh" | "en";
 type OneClickMode = "strict_build_v1";
@@ -1468,6 +1470,7 @@ type GenerateProjectResourcesOptions = {
     oneClickMode?: OneClickMode;
     ideProfile?: IdeProfile;
     templateKindHint?: TemplateKind;
+    uiDesignSpec?: UiDesignSpec | null;
 };
 
 const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
@@ -1560,7 +1563,8 @@ export async function generateProjectResources(
             resolvedOutputLanguage,
             templateKind,
             resolvedOneClickMode,
-            resolvedIdeProfile
+            resolvedIdeProfile,
+            options?.uiDesignSpec ?? null
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
@@ -1618,7 +1622,8 @@ export async function generateProjectResources(
                     outputLanguage: resolvedOutputLanguage,
                     projectName: resolvedProjectName || "generated-project",
                     toolStack: data.toolStack,
-                    history
+                    history,
+                    uiDesignSpec: options?.uiDesignSpec ?? null
                 });
                 ensurePageUiRequirementSections(data.projectTree);
 
@@ -1974,7 +1979,8 @@ const ZIP_REAL_CONTENT_PATHS = new Set([
     "ONE_CLICK_PROMPT.md",
     "GENERATION_MANIFEST.json",
     "design/tokens.json",
-    "design/page-contracts.json"
+    "design/page-contracts.json",
+    "design/ui-spec.json"
 ]);
 
 function shouldWriteRealContentByPath(path: string) {
@@ -2093,7 +2099,8 @@ function ensureCoreConfigFiles(
     outputLanguage: OutputLanguage,
     templateKind: TemplateKind,
     oneClickMode: OneClickMode,
-    ideProfile: IdeProfile
+    ideProfile: IdeProfile,
+    uiDesignSpec?: UiDesignSpec | null
 ): any[] {
     const tree = Array.isArray(projectTree) ? projectTree : [];
     const treeText = collectProjectTreeText(tree);
@@ -2151,7 +2158,8 @@ function ensureCoreConfigFiles(
         outputLanguage,
         projectName,
         toolStack,
-        history
+        history,
+        uiDesignSpec: uiDesignSpec ?? null
     });
     ensurePageUiRequirementSections(finalTree);
 
@@ -2290,6 +2298,205 @@ function buildStyleGuideDoc(input: {
         stackLine,
         ""
     ].join("\n");
+}
+
+function normalizeScreenId(screen: UiDesignSpec["screens"][number], index: number) {
+    const base = (screen.id || screen.name || `screen-${index + 1}`).toLowerCase();
+    return base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function routeToPagePath(route: string) {
+    const cleaned = (route || "").trim();
+    if (!cleaned || cleaned === "/") return "app/page.tsx";
+    const normalized = cleaned.replace(/^\/+/, "").replace(/\/+$/, "");
+    return `app/${normalized}/page.tsx`;
+}
+
+function buildUiSpecDocFromSpec(input: {
+    projectName: string;
+    spec: UiDesignSpec;
+    outputLanguage: OutputLanguage;
+}) {
+    const lines: string[] = [];
+    lines.push(`# ${input.projectName || "generated-project"} UI Specification`);
+    lines.push("");
+    lines.push("## Product Surface");
+    lines.push(`- Screens: ${input.spec.screens.length}`);
+    lines.push(`- Components: ${input.spec.components.length}`);
+    lines.push(`- Tokens: ${Object.keys(input.spec.tokens.colors || {}).length} colors, ${(input.spec.tokens.typography.fontFamilies || []).join(", ") || "font families TBD"}.`);
+    lines.push("");
+    lines.push("## Key Screens");
+    if (input.spec.screens.length === 0) {
+        lines.push("- No screens defined yet.");
+    } else {
+        input.spec.screens.forEach((screen) => {
+            lines.push(`- ${screen.name} (${screen.route}) | layout: ${screen.layout.type} | sections: ${screen.layout.sections.join(", ")}`);
+        });
+    }
+    lines.push("");
+    lines.push("## Interaction States");
+    if (input.spec.screens.length === 0) {
+        lines.push("- Define loading/empty/error/success per screen.");
+    } else {
+        input.spec.screens.forEach((screen) => {
+            const states = screen.states ? Object.values(screen.states).join(" | ") : "loading | empty | error | success";
+            lines.push(`- ${screen.name}: ${states}`);
+        });
+    }
+    lines.push("");
+    lines.push("## Responsive Strategy");
+    lines.push("- Responsive layout rules should be captured per screen and validated in implementation.");
+    lines.push("- Default: mobile single-column, desktop split panels where context helps.");
+    lines.push("");
+    lines.push("## Component Inventory");
+    if (input.spec.components.length === 0) {
+        lines.push("- No components defined yet.");
+    } else {
+        input.spec.components.forEach((component) => {
+            const variants = component.variants.length > 0 ? component.variants.join(", ") : "default";
+            lines.push(`- ${component.name} (${component.type}) | variants: ${variants}`);
+        });
+    }
+    lines.push("");
+    lines.push("## Accessibility");
+    lines.push(`- Contrast target: ${input.spec.tokens.accessibility?.contrastTarget || "WCAG AA"}`);
+    lines.push(`- Focus style: ${input.spec.tokens.accessibility?.focusStyle || "Visible focus ring"}`);
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildStyleGuideDocFromSpec(input: {
+    projectName: string;
+    spec: UiDesignSpec;
+}) {
+    const colors = Object.entries(input.spec.tokens.colors || {})
+        .map(([key, value]) => `- ${key}: ${value}`)
+        .join("\n");
+    const typography = [
+        `- Font families: ${(input.spec.tokens.typography.fontFamilies || []).join(", ") || "TBD"}`,
+        `- Scale: ${Object.entries(input.spec.tokens.typography.scale || {}).map(([key, value]) => `${key} ${value}`).join(", ") || "TBD"}`
+    ].join("\n");
+    const spacing = Object.entries(input.spec.tokens.spacing || {}).map(([key, value]) => `- ${key}: ${value}`).join("\n");
+    const motion = [
+        `- Durations: ${Object.entries(input.spec.tokens.motion.duration || {}).map(([key, value]) => `${key} ${value}`).join(", ") || "TBD"}`,
+        `- Easing: ${Object.entries(input.spec.tokens.motion.easing || {}).map(([key, value]) => `${key} ${value}`).join(", ") || "TBD"}`
+    ].join("\n");
+
+    return [
+        `# ${input.projectName || "generated-project"} Style Guide`,
+        "",
+        "## Color Tokens",
+        colors || "- Define color tokens for primary, secondary, background, surface, and text.",
+        "",
+        "## Typography",
+        typography,
+        "",
+        "## Spacing",
+        spacing || "- Define spacing scale tokens.",
+        "",
+        "## Motion",
+        motion,
+        "",
+        "## Accessibility",
+        `- Contrast target: ${input.spec.tokens.accessibility?.contrastTarget || "WCAG AA"}`,
+        `- Focus style: ${input.spec.tokens.accessibility?.focusStyle || "Visible focus ring"}`,
+        "",
+        "## Component Behavior",
+        "- Define button, form, and data display states from spec.",
+        ""
+    ].join("\n");
+}
+
+function buildInteractionStatesDocFromSpec(spec: UiDesignSpec) {
+    const lines: string[] = [];
+    lines.push("# Interaction States");
+    lines.push("");
+    if (spec.screens.length === 0) {
+        lines.push("No screens defined yet.");
+        return lines.join("\n");
+    }
+    spec.screens.forEach((screen) => {
+        lines.push(`- ${screen.name}: ${Object.values(screen.states || {}).join(" | ")}`);
+    });
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildComponentMapDocFromSpec(spec: UiDesignSpec) {
+    const lines: string[] = [];
+    lines.push("# Component Map");
+    lines.push("");
+    lines.push("## Components");
+    if (spec.components.length === 0) {
+        lines.push("- No components defined yet.");
+    } else {
+        spec.components.forEach((component) => {
+            lines.push(`- ${component.name} (${component.type})`);
+        });
+    }
+    lines.push("");
+    lines.push("## Screen Mapping");
+    if (spec.screens.length === 0) {
+        lines.push("- No screens defined yet.");
+    } else {
+        spec.screens.forEach((screen) => {
+            lines.push(`- ${screen.name}: ${screen.components.join(", ") || "components TBD"}`);
+        });
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildUiFlowDocFromSpec(spec: UiDesignSpec) {
+    const lines: string[] = [];
+    lines.push("# UI Flow");
+    lines.push("");
+    if (spec.flows.length === 0) {
+        lines.push("## Primary Flow");
+        spec.screens.forEach((screen, index) => {
+            const next = spec.screens[index + 1];
+            if (next) {
+                lines.push(`- ${screen.name} -> ${next.name}`);
+            }
+        });
+    } else {
+        lines.push("## Flow Map");
+        spec.flows.forEach((flow) => {
+            lines.push(`- ${flow.from} -> ${flow.to} (${flow.trigger})`);
+        });
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+
+function buildDesignTokensJsonFromSpec(spec: UiDesignSpec) {
+    return JSON.stringify(
+        {
+            version: "design_tokens_v1",
+            ...spec.tokens
+        },
+        null,
+        2
+    );
+}
+
+function buildPageContractsJsonFromSpec(spec: UiDesignSpec) {
+    const pages = spec.screens.map((screen, index) => ({
+        id: normalizeScreenId(screen, index),
+        path: routeToPagePath(screen.route),
+        requiredSections: ["Role & Responsibility", "UI Requirements", "Core Interactions"],
+        requiredStates: ["loading", "empty", "error", "success"],
+        responsiveRequired: true
+    }));
+
+    return JSON.stringify(
+        {
+            version: "ui_page_contracts_v1",
+            pages
+        },
+        null,
+        2
+    );
 }
 
 function hasMinimumDocContent(text: string, minChars: number = 160) {
@@ -2513,30 +2720,77 @@ function ensureUiDesignDocs(input: {
     history: string;
     toolStack: string;
     outputLanguage: OutputLanguage;
+    uiDesignSpec?: UiDesignSpec | null;
 }) {
-    const uiSpec = getFileContentByPath(input.tree, "docs/UI_SPEC.md");
-    if (!validateUiSpecContent(uiSpec)) {
+    const spec = input.uiDesignSpec ?? null;
+    const specErrors = validateUiDesignSpec(spec);
+    const hasValidSpec = specErrors.length === 0 && Boolean(spec);
+
+    if (spec) {
+        upsertFileByPath(input.tree, "design/ui-spec.json", JSON.stringify(spec, null, 2));
+    }
+
+    if (hasValidSpec && spec) {
         upsertFileByPath(
             input.tree,
             "docs/UI_SPEC.md",
-            buildUiSpecDoc({
+            buildUiSpecDocFromSpec({
                 projectName: input.projectName,
-                history: input.history,
+                spec,
                 outputLanguage: input.outputLanguage
             })
         );
-    }
-
-    const styleGuide = getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md");
-    if (!validateStyleGuideContent(styleGuide)) {
         upsertFileByPath(
             input.tree,
             "docs/STYLE_GUIDE.md",
-            buildStyleGuideDoc({
+            buildStyleGuideDocFromSpec({
                 projectName: input.projectName,
-                toolStack: input.toolStack
+                spec
             })
         );
+        upsertFileByPath(input.tree, "docs/UI_FLOW.md", buildUiFlowDocFromSpec(spec));
+        upsertFileByPath(input.tree, "docs/COMPONENT_MAP.md", buildComponentMapDocFromSpec(spec));
+        upsertFileByPath(input.tree, "docs/INTERACTION_STATES.md", buildInteractionStatesDocFromSpec(spec));
+    } else {
+        const uiSpec = getFileContentByPath(input.tree, "docs/UI_SPEC.md");
+        if (!validateUiSpecContent(uiSpec)) {
+            upsertFileByPath(
+                input.tree,
+                "docs/UI_SPEC.md",
+                buildUiSpecDoc({
+                    projectName: input.projectName,
+                    history: input.history,
+                    outputLanguage: input.outputLanguage
+                })
+            );
+        }
+
+        const styleGuide = getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md");
+        if (!validateStyleGuideContent(styleGuide)) {
+            upsertFileByPath(
+                input.tree,
+                "docs/STYLE_GUIDE.md",
+                buildStyleGuideDoc({
+                    projectName: input.projectName,
+                    toolStack: input.toolStack
+                })
+            );
+        }
+
+        const uiFlow = getFileContentByPath(input.tree, "docs/UI_FLOW.md");
+        if (!hasMinimumDocContent(uiFlow)) {
+            upsertFileByPath(input.tree, "docs/UI_FLOW.md", buildUiFlowDoc(input.tree));
+        }
+
+        const componentMap = getFileContentByPath(input.tree, "docs/COMPONENT_MAP.md");
+        if (!hasMinimumDocContent(componentMap)) {
+            upsertFileByPath(input.tree, "docs/COMPONENT_MAP.md", buildComponentMapDoc(input.tree));
+        }
+
+        const interactionStates = getFileContentByPath(input.tree, "docs/INTERACTION_STATES.md");
+        if (!hasMinimumDocContent(interactionStates)) {
+            upsertFileByPath(input.tree, "docs/INTERACTION_STATES.md", buildInteractionStatesDoc(input.tree));
+        }
     }
 
     const functionalArchitecture = getFileContentByPath(input.tree, "docs/FUNCTIONAL_ARCHITECTURE.md");
@@ -2552,21 +2806,6 @@ function ensureUiDesignDocs(input: {
         );
     }
 
-    const uiFlow = getFileContentByPath(input.tree, "docs/UI_FLOW.md");
-    if (!hasMinimumDocContent(uiFlow)) {
-        upsertFileByPath(input.tree, "docs/UI_FLOW.md", buildUiFlowDoc(input.tree));
-    }
-
-    const componentMap = getFileContentByPath(input.tree, "docs/COMPONENT_MAP.md");
-    if (!hasMinimumDocContent(componentMap)) {
-        upsertFileByPath(input.tree, "docs/COMPONENT_MAP.md", buildComponentMapDoc(input.tree));
-    }
-
-    const interactionStates = getFileContentByPath(input.tree, "docs/INTERACTION_STATES.md");
-    if (!hasMinimumDocContent(interactionStates)) {
-        upsertFileByPath(input.tree, "docs/INTERACTION_STATES.md", buildInteractionStatesDoc(input.tree));
-    }
-
     const routeMap = getFileContentByPath(input.tree, "docs/ROUTE_MAP.md");
     if (!hasMinimumDocContent(routeMap)) {
         upsertFileByPath(input.tree, "docs/ROUTE_MAP.md", buildRouteMapDoc(input.tree));
@@ -2577,21 +2816,26 @@ function ensureUiDesignDocs(input: {
         upsertFileByPath(input.tree, "docs/ACCEPTANCE_UI.md", buildAcceptanceUiDoc(input.tree));
     }
 
-    const designTokens = getFileContentByPath(input.tree, "design/tokens.json");
-    let tokensValid = false;
-    try {
-        JSON.parse(designTokens);
-        tokensValid = designTokens.trim().length > 0;
-    } catch {
-        tokensValid = false;
-    }
-    if (!tokensValid) {
-        upsertFileByPath(input.tree, "design/tokens.json", buildDesignTokensJson());
-    }
+    if (hasValidSpec && spec) {
+        upsertFileByPath(input.tree, "design/tokens.json", buildDesignTokensJsonFromSpec(spec));
+        upsertFileByPath(input.tree, "design/page-contracts.json", buildPageContractsJsonFromSpec(spec));
+    } else {
+        const designTokens = getFileContentByPath(input.tree, "design/tokens.json");
+        let tokensValid = false;
+        try {
+            JSON.parse(designTokens);
+            tokensValid = designTokens.trim().length > 0;
+        } catch {
+            tokensValid = false;
+        }
+        if (!tokensValid) {
+            upsertFileByPath(input.tree, "design/tokens.json", buildDesignTokensJson());
+        }
 
-    const pageContracts = getFileContentByPath(input.tree, "design/page-contracts.json");
-    if (!validatePageContractsContent(pageContracts)) {
-        upsertFileByPath(input.tree, "design/page-contracts.json", buildPageContractsJson(input.tree));
+        const pageContracts = getFileContentByPath(input.tree, "design/page-contracts.json");
+        if (!validatePageContractsContent(pageContracts)) {
+            upsertFileByPath(input.tree, "design/page-contracts.json", buildPageContractsJson(input.tree));
+        }
     }
 }
 
@@ -4139,6 +4383,17 @@ function detectDocumentLanguage(text: string): OutputLanguage {
     return "en";
 }
 
+function parseUiDesignSpecJson(text: string) {
+    const source = (text || "").trim();
+    if (!source) return null;
+    try {
+        const parsed = JSON.parse(source) as unknown;
+        return normalizeUiDesignSpec(parsed, null);
+    } catch {
+        return null;
+    }
+}
+
 function validateNextConfigContent(text: string) {
     const source = (text || "").trim();
     if (!source) return false;
@@ -4271,8 +4526,11 @@ function runGenerationPreflight(input: {
     const uiSpecValid = validateUiSpecContent(getFileContentByPath(input.tree, "docs/UI_SPEC.md"));
     const styleGuideValid = validateStyleGuideContent(getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md"));
     const pageContractsValid = validatePageContractsContent(getFileContentByPath(input.tree, "design/page-contracts.json"));
-    if (!uiSpecValid || !styleGuideValid || !pageContractsValid) {
+    const uiSpecJson = parseUiDesignSpecJson(getFileContentByPath(input.tree, "design/ui-spec.json"));
+    const uiSpecJsonValid = validateUiDesignSpec(uiSpecJson).length === 0;
+    if (!uiSpecValid || !styleGuideValid || !pageContractsValid || !uiSpecJsonValid) {
         const missingDocs: string[] = [];
+        if (!uiSpecJsonValid) missingDocs.push("design/ui-spec.json");
         if (!uiSpecValid) missingDocs.push("docs/UI_SPEC.md");
         if (!styleGuideValid) missingDocs.push("docs/STYLE_GUIDE.md");
         if (!pageContractsValid) missingDocs.push("design/page-contracts.json");

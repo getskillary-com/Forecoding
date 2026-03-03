@@ -1,4 +1,5 @@
 import type { DesignStage, FileNode, Message, Project, ProjectVersion, UiRequirements } from "@/types";
+import { deriveUiRequirements, isUiDesignSpec, validateUiDesignSpec } from "@/lib/ui-spec";
 
 export type ComplexityTier =
     | "simple"
@@ -174,7 +175,8 @@ function normalizeUiRequirements(value: unknown): UiRequirements {
 }
 
 export function computeUiDesignScore(value: unknown) {
-    const ui = normalizeUiRequirements(value);
+    const isSpec = isUiDesignSpec(value);
+    const ui = isSpec ? deriveUiRequirements(value) : normalizeUiRequirements(value);
 
     const filledCount = UI_REQUIREMENT_KEYS.filter((key) => ui[key].length > 0).length;
     const uiCoverageScore = Math.min(8, filledCount);
@@ -202,9 +204,11 @@ export function computeUiDesignScore(value: unknown) {
         uiCoverageScore + uiScreenScore + uiStateScore + uiResponsiveScore + uiInteractionScore
     );
 
+    const completed = isSpec ? validateUiDesignSpec(value).length === 0 : filledCount === UI_REQUIREMENT_KEYS.length;
+
     return {
         uiDesignScore,
-        completed: filledCount === UI_REQUIREMENT_KEYS.length,
+        completed,
         breakdown: {
             uiCoverageScore,
             uiScreenScore,
@@ -232,7 +236,7 @@ export function inferProjectDesignStage(project: Project | null): DesignStage {
     const density = latest.data.evaluation?.density_score ?? 0;
     if (density < 100) return "functional_architecture";
 
-    const uiScore = computeUiDesignScore(latest.data.evaluation?.analysis?.ui);
+    const uiScore = computeUiDesignScore(latest.data.uiDesignSpec ?? latest.data.evaluation?.analysis?.ui);
     return uiScore.completed ? "ready_to_generate" : "ui_design";
 }
 
@@ -307,7 +311,7 @@ export function quoteProjectCreditPrice(
         treeStats.fileCount * 0.35 + treeStats.folderCount * 0.2 + treeStats.maxDepth * 2.2
     );
     const maturityScore = Math.min(10, Math.max(0, densityScore) * 0.1);
-    const uiScore = computeUiDesignScore(latest?.data.evaluation?.analysis?.ui);
+    const uiScore = computeUiDesignScore(latest?.data.uiDesignSpec ?? latest?.data.evaluation?.analysis?.ui);
 
     const existingScore = clamp(
         10 +
