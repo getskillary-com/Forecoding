@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Activity, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
 import {
     Message,
     EvaluationResponse,
@@ -338,8 +338,6 @@ function buildUiRequirementErrorMessage(
     if (missing.length === 0) return "";
     return `UI requirements are incomplete: ${missing.join(", ")}. Please clarify these items before generating scaffold.`;
 }
-
-type StudioFocus = "split" | "architecture" | "ui";
 
 function tokenizeUiHints(items: string[], maxItems: number) {
     const dedupe = new Set<string>();
@@ -1058,7 +1056,6 @@ function WizardContent() {
     const initialUiReadyAt = typeof cachedSnapshot?.data.uiReadyAt === "number"
         ? cachedSnapshot.data.uiReadyAt
         : (initialDesignStage === "ready_to_generate" ? Date.now() : null);
-    const initialStudioFocus: StudioFocus = (initialEvaluation?.density_score ?? 0) >= 100 ? "split" : "architecture";
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
     const MAIN_MIN = 420;
@@ -1084,9 +1081,6 @@ function WizardContent() {
     const [uiDesignSpec, setUiDesignSpec] = useState<UiDesignSpec | null>(initialUiDesignSpec);
     const [functionalLockedAt, setFunctionalLockedAt] = useState<number | null>(initialFunctionalLockedAt);
     const [uiReadyAt, setUiReadyAt] = useState<number | null>(initialUiReadyAt);
-    const [studioFocus, setStudioFocus] = useState<StudioFocus>(initialStudioFocus);
-    const [studioFocusAuto, setStudioFocusAuto] = useState(true);
-    const [isWideLayout, setIsWideLayout] = useState(true);
 
     // UI State
     const [isGenerating, setIsGenerating] = useState(false);
@@ -1113,7 +1107,7 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'prd' | 'architecture' | 'roadmap' | 'files' | 'stack'>(
+    const [activeTab, setActiveTab] = useState<'architecture' | 'ui' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
     const [selectedUiScreenIndex, setSelectedUiScreenIndex] = useState<number | null>(null);
@@ -1134,15 +1128,9 @@ function WizardContent() {
         ? deriveUiRequirements(uiDesignSpec)
         : normalizeUiRequirements(evaluation?.analysis?.ui);
     const uiWireframes = buildUiWireframeScreens(uiRequirements);
-    const uiDesignUnlocked = designStage !== "functional_architecture";
-    const splitAllowed = isWideLayout && uiDesignUnlocked;
-    const effectiveStudioFocus = isWideLayout
-        ? studioFocus
-        : (studioFocus === "split"
-            ? (uiDesignUnlocked ? "ui" : "architecture")
-            : studioFocus);
-    const showArchitecture = effectiveStudioFocus !== "ui";
-    const showUi = effectiveStudioFocus !== "architecture";
+    const uiSpecErrors = validateUiDesignSpec(uiDesignSpec);
+    const canConfirmUiDesign = hasCompleteUiRequirements && uiSpecErrors.length === 0;
+    const canRollback = !hasPaid || isAdmin;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -1188,32 +1176,6 @@ function WizardContent() {
             cancelled = true;
         };
     }, []);
-
-    useEffect(() => {
-        if (typeof window === "undefined") return;
-        const query = window.matchMedia("(min-width: 1024px)");
-        const updateLayout = () => setIsWideLayout(query.matches);
-        updateLayout();
-        if (typeof query.addEventListener === "function") {
-            query.addEventListener("change", updateLayout);
-            return () => query.removeEventListener("change", updateLayout);
-        }
-        // Legacy Safari support
-        query.addListener(updateLayout);
-        return () => query.removeListener(updateLayout);
-    }, []);
-
-    useEffect(() => {
-        if (!studioFocusAuto) return;
-        setStudioFocus(isFunctionalArchitectureReady ? "split" : "architecture");
-    }, [isFunctionalArchitectureReady, studioFocusAuto]);
-
-    useEffect(() => {
-        if (isWideLayout) return;
-        if (studioFocus === "split") {
-            setStudioFocus(isFunctionalArchitectureReady ? "ui" : "architecture");
-        }
-    }, [isWideLayout, studioFocus, isFunctionalArchitectureReady]);
 
     useEffect(() => {
         if (selectedUiScreenIndex === null) return;
@@ -1342,7 +1304,7 @@ function WizardContent() {
         router.replace(`/wizard?${params.toString()}`);
     }, [searchParams, currentVersion, projectId, router, isAdmin]);
 
-    // 1f. Derive design stage from density + structured UI readiness
+    // 1f. Refresh UI readiness, and only downgrade stage if UI spec becomes invalid before payment
     useEffect(() => {
         const now = Date.now();
         const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation, now);
@@ -1351,36 +1313,18 @@ function WizardContent() {
             nextReadiness.completed !== uiDesignState.readiness.completed ||
             !areArrayValuesEqual(nextReadiness.missingKeys, uiDesignState.readiness.missingKeys) ||
             !areArrayValuesEqual(nextReadiness.missingLabels, uiDesignState.readiness.missingLabels);
-        const canClearResync =
-            uiDesignState.needsResync &&
-            readinessChanged &&
-            nextReadiness.completed;
 
-        let nextStage = inferDesignStageFromEvaluation(evaluation, nextReadiness);
-        if (designStage === "functional_architecture" && uiDesignState.needsResync) {
-            nextStage = "functional_architecture";
-        }
-        if (nextStage === "ready_to_generate" && uiDesignState.needsResync && !canClearResync) {
-            nextStage = "ui_design";
-        }
-
-        const rolledBackToFunctional =
-            designStage !== "functional_architecture" &&
-            nextStage === "functional_architecture";
-        const nextNeedsResync = rolledBackToFunctional
-            ? true
-            : (nextStage === "ready_to_generate" ? !canClearResync && uiDesignState.needsResync : uiDesignState.needsResync);
-
-        const stageChanged = nextStage !== designStage;
+        const canClearResync = uiDesignState.needsResync && nextReadiness.completed && designStage !== "functional_architecture";
+        const nextNeedsResync = canClearResync ? false : uiDesignState.needsResync;
         const needsResyncChanged = nextNeedsResync !== uiDesignState.needsResync;
 
-        const density = evaluation?.density_score ?? 0;
-        const shouldHoldFunctionalUnlocked =
-            designStage === "functional_architecture" &&
-            uiDesignState.needsResync;
-        const nextFunctionalLockedAt = density >= 100 && !shouldHoldFunctionalUnlocked
-            ? (functionalLockedAt ?? now)
-            : null;
+        let nextStage = designStage;
+        if (designStage === "ready_to_generate" && !nextReadiness.completed && canRollback) {
+            nextStage = "ui_design";
+        }
+        const stageChanged = nextStage !== designStage;
+
+        const nextFunctionalLockedAt = nextStage === "functional_architecture" ? null : (functionalLockedAt ?? now);
         const functionalLockedAtChanged = nextFunctionalLockedAt !== functionalLockedAt;
 
         const nextUiReadyAt = nextStage === "ready_to_generate" ? (uiReadyAt ?? now) : null;
@@ -1400,7 +1344,7 @@ function WizardContent() {
         }
         if (functionalLockedAtChanged) setFunctionalLockedAt(nextFunctionalLockedAt);
         if (uiReadyAtChanged) setUiReadyAt(nextUiReadyAt);
-    }, [evaluation, uiDesignSpec, designStage, uiDesignState, functionalLockedAt, uiReadyAt]);
+    }, [evaluation, uiDesignSpec, designStage, uiDesignState, functionalLockedAt, uiReadyAt, canRollback]);
 
     // 1g. Fetch complexity-based quote for unpaid projects
     useEffect(() => {
@@ -2127,6 +2071,13 @@ function WizardContent() {
         }
     };
 
+    useEffect(() => {
+        if (!hasPaid || isAdmin) return;
+        if (!isReadyToGenerateStage) return;
+        if (generation || isGenerating || generateInFlightRef.current) return;
+        void generateScaffold();
+    }, [hasPaid, isAdmin, isReadyToGenerateStage, generation, isGenerating]);
+
     const startCheckout = async () => {
         if (!projectId || !currentVersion) {
             setGenerateError("Missing project context for checkout.");
@@ -2220,7 +2171,42 @@ function WizardContent() {
         await generateScaffold();
     };
 
+    const handleConfirmFunctionalArchitecture = () => {
+        if (!isFunctionalArchitectureReady) {
+            setGenerateError("Information Density must reach 100 before confirming functional architecture.");
+            return;
+        }
+        setHasUserEdited(true);
+        setDesignStage("ui_design");
+        setFunctionalLockedAt(Date.now());
+        setGenerateError(null);
+        setActiveTab("ui");
+    };
+
+    const handleConfirmUiDesign = () => {
+        if (!canConfirmUiDesign) {
+            const uiSpecIssues = validateUiDesignSpec(uiDesignSpec);
+            setGenerateError(uiSpecIssues.length > 0
+                ? `UI spec is incomplete: ${uiSpecIssues.slice(0, 3).join("; ")}.`
+                : "UI readiness is not complete yet. Finish UI requirements before confirming.");
+            return;
+        }
+        setHasUserEdited(true);
+        setDesignStage("ready_to_generate");
+        setUiReadyAt(Date.now());
+        setUiDesignState({
+            needsResync: false,
+            readiness: createUiReadinessReport(uiDesignSpec, evaluation)
+        });
+        setGenerateError(null);
+        setActiveTab("ui");
+    };
+
     const handleRollbackToFunctional = () => {
+        if (!canRollback) {
+            setGenerateError("Payment completed. Rollback is disabled to protect paid scope.");
+            return;
+        }
         const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation);
         setHasUserEdited(true);
         setDesignStage("functional_architecture");
@@ -2232,26 +2218,6 @@ function WizardContent() {
         });
         setGenerateError("Returned to Functional Architecture stage. UI specs are kept as draft and marked for resync.");
         setActiveTab("architecture");
-        setStudioFocus("architecture");
-        setStudioFocusAuto(true);
-    };
-
-    const handleResumeUiDesign = () => {
-        if (!isFunctionalArchitectureReady) {
-            setGenerateError("Functional architecture is not complete yet. Reach Information Density 100 before UI design.");
-            return;
-        }
-        setHasUserEdited(true);
-        setDesignStage("ui_design");
-        setGenerateError(null);
-        setActiveTab("architecture");
-        setStudioFocus(isWideLayout ? "split" : "ui");
-        setStudioFocusAuto(false);
-    };
-
-    const handleStudioFocusChange = (next: StudioFocus) => {
-        setStudioFocus(next);
-        setStudioFocusAuto(false);
     };
 
     const handleArchitectureNodeSelect = (node: { id: string; label: string }) => {
@@ -2330,9 +2296,11 @@ function WizardContent() {
                                     Stage: {DESIGN_STAGE_LABELS[designStage]}
                                     {designStage === "functional_architecture"
                                         ? (isFunctionalArchitectureReady
-                                            ? " | Transitioning to UI Design..."
+                                            ? " | Ready to confirm architecture"
                                             : ` | Density ${Math.round(functionalDensity)}/100`)
-                                        : ""}
+                                        : designStage === "ui_design"
+                                            ? " | Confirm UI design to unlock payment"
+                                            : ""}
                                 </div>
                                 {(isReadyToGenerateStage || Boolean(generation)) ? (
                                     <div className="flex flex-col gap-2">
@@ -2391,13 +2359,13 @@ function WizardContent() {
                                     <div className="flex flex-col gap-2">
                                         {designStage === "functional_architecture" ? (
                                             <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                                Continue clarifying functional architecture until Information Density reaches 100.
+                                                Confirm functional architecture after Information Density reaches 100.
                                             </p>
                                         ) : (
                                             <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
                                                 {uiDesignState.needsResync
                                                     ? "UI specs are marked for resync after architecture rollback. Update UI details before pricing is shown."
-                                                    : "UI design in progress. Pricing is hidden until UI readiness is complete."}
+                                                    : "UI design in progress. Confirm UI design to unlock pricing."}
                                             </p>
                                         )}
                                         {/* Pending Attachments Preview */}
@@ -2509,10 +2477,10 @@ function WizardContent() {
                         label="Architecture"
                     />
                     <TabButton
-                        active={activeTab === 'prd'}
-                        onClick={() => setActiveTab('prd')}
-                        icon={<Activity className="w-4 h-4" />}
-                        label="Smart PRD"
+                        active={activeTab === 'ui'}
+                        onClick={() => setActiveTab('ui')}
+                        icon={<Sparkles className="w-4 h-4" />}
+                        label="UI Design"
                     />
                     <TabButton
                         active={activeTab === 'files'}
@@ -2554,7 +2522,16 @@ function WizardContent() {
                                         </div>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        {designStage !== "functional_architecture" && (
+                                        {designStage === "functional_architecture" && (
+                                            <button
+                                                onClick={handleConfirmFunctionalArchitecture}
+                                                disabled={!isFunctionalArchitectureReady}
+                                                className="fc-button-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                                Confirm Functional Architecture
+                                            </button>
+                                        )}
+                                        {designStage !== "functional_architecture" && canRollback && (
                                             <button
                                                 onClick={handleRollbackToFunctional}
                                                 className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -2562,166 +2539,85 @@ function WizardContent() {
                                                 Back To Functional
                                             </button>
                                         )}
-                                        {designStage === "functional_architecture" && uiDesignState.needsResync && (
-                                            <button
-                                                onClick={handleResumeUiDesign}
-                                                className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-                                            >
-                                                Resume UI Design
-                                            </button>
-                                        )}
-                                        <button
-                                            onClick={handleGenerate}
-                                            disabled={!isAdminStatusLoaded || isGenerating || isCheckingOut || !isReadyToGenerateStage || !hasCompleteUiRequirements}
-                                            className="fc-button-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            {!isAdminStatusLoaded
-                                                ? "Checking Access..."
-                                                : isCheckingOut
-                                                ? "Redirecting..."
-                                                : isGenerating
-                                                    ? "Generating..."
-                                                    : requiresPayment
-                                                        ? "Checkout & Generate"
-                                                        : "Generate"}
-                                        </button>
                                     </div>
                                 </div>
-                                <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
-                                    <span>System + UI Design Studio</span>
-                                    <div className="inline-flex items-center rounded-lg border border-[color:var(--border)] bg-white/80 p-1 text-[11px] font-semibold dark:bg-slate-900/60">
-                                        <button
-                                            onClick={() => handleStudioFocusChange("architecture")}
-                                            className={`rounded-md px-3 py-1 transition-colors ${effectiveStudioFocus === "architecture"
-                                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
-                                        >
-                                            Architecture
-                                        </button>
-                                        <button
-                                            onClick={() => handleStudioFocusChange("split")}
-                                            disabled={!splitAllowed}
-                                            className={`rounded-md px-3 py-1 transition-colors ${effectiveStudioFocus === "split"
-                                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"} ${!splitAllowed ? "cursor-not-allowed opacity-40" : ""}`}
-                                        >
-                                            Split
-                                        </button>
-                                        <button
-                                            onClick={() => handleStudioFocusChange("ui")}
-                                            disabled={!uiDesignUnlocked}
-                                            className={`rounded-md px-3 py-1 transition-colors ${effectiveStudioFocus === "ui"
-                                                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                                                : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"} ${!uiDesignUnlocked ? "cursor-not-allowed opacity-40" : ""}`}
-                                        >
-                                            UI Design
-                                        </button>
-                                    </div>
-                                </div>
+                                {designStage === "functional_architecture" && !isFunctionalArchitectureReady && (
+                                    <p className="text-xs text-slate-500 dark:text-slate-300">
+                                        Reach Information Density 100 to confirm architecture and unlock UI design.
+                                    </p>
+                                )}
+                                {designStage === "functional_architecture" && uiDesignState.needsResync && (
+                                    <p className="text-xs text-amber-500">UI draft exists from a previous cycle. Confirm architecture to resync UI design.</p>
+                                )}
                             </div>
 
-                            <div className={`${showArchitecture && showUi ? "grid gap-3 lg:grid-cols-[1.2fr_1fr]" : "flex flex-col"} flex-1 min-h-0`}>
-                                {showArchitecture && (
-                                    <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                        <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
-                                    </div>
-                                )}
-                                {showUi && (
-                                    <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-[color:var(--border)] bg-white/75 dark:bg-slate-900/65">
-                                        <UiDesignWorkbench
-                                            designStage={designStage}
-                                            uiDesignState={uiDesignState}
-                                            uiDesignSpec={uiDesignSpec}
-                                            uiRequirements={uiRequirements}
-                                            wireframes={uiWireframes}
-                                            activeScreenIndex={selectedUiScreenIndex}
-                                            focusLabel={uiFocusLabel}
-                                            densityScore={functionalDensity}
-                                            onSelectScreen={handleUiScreenSelect}
-                                            onSpecChange={setUiDesignSpec}
-                                        />
-                                    </div>
-                                )}
+                            <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
+                                <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
                             </div>
                         </div>
                     )}
 
-                    {/* PRD Tab */}
-                    {activeTab === 'prd' && (
-                        <div className="absolute inset-0 p-6 overflow-y-auto custom-scrollbar">
-                            <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                <Activity className="h-5 w-5 text-blue-500" />
-                                Feature Analysis
-                            </h3>
-
-                            <div className="grid gap-6">
-                                <div className="space-y-3">
-                                    <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-400">Confirmed Requirements</h4>
-                                    {evaluation?.analysis.clarified.length ? (
-                                        <ul className="space-y-2">
-                                            {evaluation.analysis.clarified.map((item, i) => (
-                                                <li key={i} className="flex gap-2 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm text-slate-700 dark:border-emerald-800/40 dark:bg-emerald-900/15 dark:text-slate-200">
-                                                    <span className="text-emerald-500">+</span>
-                                                    {item}
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    ) : (
-                                        <p className="text-sm italic text-slate-400">Waiting for details...</p>
-                                    )}
-                                </div>
-
-                                <div className="space-y-3">
-                                    <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-500 dark:text-amber-400">Pending Questions</h4>
-                                    {evaluation?.analysis.missing.length ? (
-                                        <ul className="space-y-2">
-                                            {evaluation.analysis.missing.map((item, i) => (
-                                                <li key={i} className="flex gap-2 rounded-lg border border-amber-100 bg-amber-50 p-3 text-sm text-slate-700 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-slate-200">
-                                                    <span className="text-amber-500">?</span>
-                                                    {item}
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    ) : (
-                                        <p className="text-sm italic text-slate-400">No missing info detected.</p>
-                                    )}
-                                </div>
-
-                                <div className="space-y-3">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-500 dark:text-blue-400">UI Requirement Profile</h4>
-                                        {designStage !== "functional_architecture" && (
+                    {/* UI Design Tab */}
+                    {activeTab === 'ui' && (
+                        <div className="absolute inset-0 p-4 flex flex-col gap-3">
+                            <div className="fc-surface flex flex-col gap-4 rounded-2xl p-4">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex flex-wrap items-center gap-4">
+                                        <div>
+                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">Design Stage</p>
+                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{DESIGN_STAGE_LABELS[designStage]}</p>
+                                        </div>
+                                        <div className="hidden sm:block h-8 w-px bg-[color:var(--border)]" />
+                                        <div>
+                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">UI Readiness</p>
+                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiDesignState.readiness.score}%</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        {designStage !== "functional_architecture" && canRollback && (
                                             <button
                                                 onClick={handleRollbackToFunctional}
-                                                className="rounded-md border border-[color:var(--border)] px-2 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                                className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
                                             >
                                                 Back To Functional
                                             </button>
                                         )}
-                                        {designStage === "functional_architecture" && uiDesignState.needsResync && (
+                                        {designStage === "ui_design" && (
                                             <button
-                                                onClick={handleResumeUiDesign}
-                                                className="rounded-md border border-[color:var(--border)] px-2 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                                onClick={handleConfirmUiDesign}
+                                                disabled={!canConfirmUiDesign}
+                                                className="fc-button-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                             >
-                                                Resume UI Design
+                                                Confirm UI Design
                                             </button>
                                         )}
                                     </div>
-                                    <p className="text-xs text-slate-500 dark:text-slate-300">
-                                        Stage: {DESIGN_STAGE_LABELS[designStage]} | UI readiness: {uiDesignState.readiness.score}%{uiDesignState.needsResync ? " | Needs resync" : ""}
-                                    </p>
-                                    <ul className="space-y-2">
-                                        {UI_REQUIREMENT_KEYS.map((key) => {
-                                            const items = uiRequirements[key];
-                                            return (
-                                                <li key={key} className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-slate-700 dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-slate-200">
-                                                    <span className="font-semibold text-blue-600 dark:text-blue-300">{UI_REQUIREMENT_LABELS[key]}: </span>
-                                                    {items.length > 0 ? items.join(" | ") : "(missing)"}
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
                                 </div>
+                                {designStage === "functional_architecture" && (
+                                    <p className="text-xs text-slate-500 dark:text-slate-300">
+                                        UI design unlocks after functional architecture is confirmed.
+                                    </p>
+                                )}
+                                {designStage !== "functional_architecture" && uiSpecErrors.length > 0 && (
+                                    <p className="text-xs text-amber-500">
+                                        UI spec needs updates before confirmation: {uiSpecErrors.slice(0, 2).join("; ")}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border border-[color:var(--border)] bg-white/75 dark:bg-slate-900/65">
+                                <UiDesignWorkbench
+                                    designStage={designStage}
+                                    uiDesignState={uiDesignState}
+                                    uiDesignSpec={uiDesignSpec}
+                                    uiRequirements={uiRequirements}
+                                    wireframes={uiWireframes}
+                                    activeScreenIndex={selectedUiScreenIndex}
+                                    focusLabel={uiFocusLabel}
+                                    densityScore={functionalDensity}
+                                    onSelectScreen={handleUiScreenSelect}
+                                    onSpecChange={setUiDesignSpec}
+                                />
                             </div>
                         </div>
                     )}
