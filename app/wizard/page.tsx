@@ -1010,13 +1010,6 @@ function WizardContent() {
     const isFunctionalArchitectureReady = functionalDensity >= 100;
     const isReadyToGenerateStage = designStage === "ready_to_generate";
     const architectureViewerCode = currentDiagram;
-    const uiRequirements = uiDesignSpec
-        ? deriveUiRequirements(uiDesignSpec)
-        : normalizeUiRequirements(evaluation?.analysis?.ui);
-    const designSummary = UI_REQUIREMENT_KEYS.map((key) => ({
-        label: UI_REQUIREMENT_LABELS[key],
-        values: uiRequirements[key]
-    })).filter((item) => item.values.length > 0);
     const canRollback = !hasPaid || isAdmin;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
@@ -2348,29 +2341,6 @@ function WizardContent() {
                                 )}
                                 {designStage === "functional_architecture" && uiDesignState.needsResync && (
                                     <p className="text-xs text-amber-500">Legacy UI draft data was detected and moved under architecture notes.</p>
-                                )}
-                            </div>
-
-                            <div className="fc-surface rounded-2xl border border-[color:var(--border)] p-4">
-                                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">
-                                    Design Notes (Analysis UI)
-                                </p>
-                                {designSummary.length === 0 ? (
-                                    <p className="mt-2 text-xs text-slate-500 dark:text-slate-300">
-                                        No structured design notes yet. Continue requirement clarification to enrich architecture guidance.
-                                    </p>
-                                ) : (
-                                    <div className="mt-3 grid gap-2">
-                                        {designSummary.map((item) => (
-                                            <div
-                                                key={item.label}
-                                                className="rounded-lg border border-[color:var(--border)] bg-white/70 px-3 py-2 text-xs dark:bg-slate-900/45"
-                                            >
-                                                <p className="font-semibold text-slate-700 dark:text-slate-200">{item.label}</p>
-                                                <p className="mt-1 text-slate-500 dark:text-slate-300">{item.values.join(" | ")}</p>
-                                            </div>
-                                        ))}
-                                    </div>
                                 )}
                             </div>
 
