@@ -137,7 +137,16 @@ export function FileTreeDisplay({ content, projectName }: Props) {
         "IMPLEMENTATION_PLAN.md",
         "_AI_PROMPT.md",
         "ONE_CLICK_PROMPT.md",
-        "GENERATION_MANIFEST.json"
+        "GENERATION_MANIFEST.json",
+        "app/globals.css",
+        "app/layout.tsx",
+        "app/page.tsx",
+        "src/app/globals.css",
+        "src/app/layout.tsx",
+        "src/app/page.tsx",
+        "apps/web/app/globals.css",
+        "apps/web/app/layout.tsx",
+        "apps/web/app/page.tsx"
     ]);
     const resolvedProjectName = projectName?.trim();
     const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-scaffold")
@@ -182,7 +191,7 @@ export function FileTreeDisplay({ content, projectName }: Props) {
     };
 
     const shouldWriteRealContent = (path: string, fileName: string) => {
-        if (ZIP_REAL_CONTENT_FILES.has(fileName)) return true;
+        if (ZIP_REAL_CONTENT_FILES.has(fileName) || ZIP_REAL_CONTENT_FILES.has(path)) return true;
         if (fileName.endsWith("_AI_PROMPT.md")) return true;
         if (path.startsWith("docs/")) return true;
         if (path.startsWith("config/integrations/") && /\.template\./.test(fileName)) return true;

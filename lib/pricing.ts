@@ -222,7 +222,6 @@ export function computeUiDesignScore(value: unknown) {
 function isDesignStage(value: unknown): value is DesignStage {
     return (
         value === "functional_architecture" ||
-        value === "ui_design" ||
         value === "ready_to_generate"
     );
 }
@@ -234,10 +233,7 @@ export function inferProjectDesignStage(project: Project | null): DesignStage {
     if (isDesignStage(rawStage)) return rawStage;
 
     const density = latest.data.evaluation?.density_score ?? 0;
-    if (density < 100) return "functional_architecture";
-
-    const uiScore = computeUiDesignScore(latest.data.uiDesignSpec ?? latest.data.evaluation?.analysis?.ui);
-    return uiScore.completed ? "ready_to_generate" : "ui_design";
+    return density < 100 ? "functional_architecture" : "ready_to_generate";
 }
 
 export function formatCurrencyCents(cents: number, currency: string) {

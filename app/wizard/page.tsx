@@ -20,7 +20,6 @@ import {
     FileNode
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
-import { UiDesignWorkbench, UiWireframeScreen } from "@/components/UiDesignWorkbench";
 import dynamic from "next/dynamic";
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
@@ -105,7 +104,6 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
 
 const DESIGN_STAGE_LABELS: Record<DesignStage, string> = {
     functional_architecture: "Functional Architecture",
-    ui_design: "UI Design",
     ready_to_generate: "Ready to Generate"
 };
 
@@ -241,19 +239,15 @@ function createUiReadinessReport(
 function isDesignStage(value: unknown): value is DesignStage {
     return (
         value === "functional_architecture" ||
-        value === "ui_design" ||
         value === "ready_to_generate"
     );
 }
 
 function inferDesignStageFromEvaluation(
-    evaluation: EvaluationResponse | null,
-    readiness?: UiReadinessReport
+    evaluation: EvaluationResponse | null
 ): DesignStage {
     const density = evaluation?.density_score ?? 0;
-    if (density < 100) return "functional_architecture";
-    const resolvedReadiness = readiness || createUiReadinessReport(null, evaluation, 0);
-    return resolvedReadiness.completed ? "ready_to_generate" : "ui_design";
+    return density < 100 ? "functional_architecture" : "ready_to_generate";
 }
 
 function normalizeUiReadinessReport(
@@ -305,15 +299,19 @@ function normalizeVersionDesignState(data: ProjectVersion["data"]) {
     const evaluation = normalizeEvaluation(data?.evaluation ?? null);
     const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
     const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
-    const inferredStage = inferDesignStageFromEvaluation(evaluation, uiDesignState.readiness);
-    const designStage = isDesignStage(data?.designStage) ? data.designStage : inferredStage;
+    const inferredStage = inferDesignStageFromEvaluation(evaluation);
+    const rawStoredStage = (data as { designStage?: unknown } | null | undefined)?.designStage;
+    const hasLegacyUiStage = rawStoredStage === "ui_design";
+    const designStage = hasLegacyUiStage
+        ? "functional_architecture"
+        : (isDesignStage(data?.designStage) ? data.designStage : inferredStage);
     const functionalLockedAt =
         typeof data?.functionalLockedAt === "number"
-            ? data.functionalLockedAt
+            ? (hasLegacyUiStage ? null : data.functionalLockedAt)
             : (designStage !== "functional_architecture" ? Date.now() : null);
     const uiReadyAt =
         typeof data?.uiReadyAt === "number"
-            ? data.uiReadyAt
+            ? (hasLegacyUiStage ? null : data.uiReadyAt)
             : (designStage === "ready_to_generate" ? Date.now() : null);
 
     return {
@@ -324,119 +322,6 @@ function normalizeVersionDesignState(data: ProjectVersion["data"]) {
         functionalLockedAt,
         uiReadyAt
     };
-}
-
-function buildUiRequirementErrorMessage(
-    uiDesignSpec: UiDesignSpec | null,
-    evaluation: EvaluationResponse | null
-) {
-    const errors = validateUiDesignSpec(uiDesignSpec);
-    if (errors.length > 0) {
-        return `UI spec is incomplete: ${errors.slice(0, 3).join("; ")}.`;
-    }
-    const missing = getMissingUiRequirementLabels(uiDesignSpec, evaluation);
-    if (missing.length === 0) return "";
-    return `UI requirements are incomplete: ${missing.join(", ")}. Please clarify these items before generating scaffold.`;
-}
-
-function tokenizeUiHints(items: string[], maxItems: number) {
-    const dedupe = new Set<string>();
-    const result: string[] = [];
-
-    for (const item of items) {
-        const tokens = item
-            .split(/[|,;/]+/)
-            .map((token) => token.trim())
-            .filter(Boolean);
-
-        for (const token of tokens) {
-            const key = token.toLowerCase();
-            if (dedupe.has(key)) continue;
-            dedupe.add(key);
-            result.push(token);
-            if (result.length >= maxItems) return result;
-        }
-    }
-
-    return result;
-}
-
-function pickCyclicSlice(source: string[], start: number, count: number, fallback: string[]) {
-    if (source.length === 0) return fallback.slice(0, count);
-    const values: string[] = [];
-    for (let i = 0; i < count; i += 1) {
-        values.push(source[(start + i) % source.length]);
-    }
-    return values;
-}
-
-function buildUiWireframeScreens(ui: UiRequirements): UiWireframeScreen[] {
-    const screenNames = tokenizeUiHints(ui.keyScreens, 8);
-    const modules = tokenizeUiHints(ui.uiComponents, 24);
-    const states = tokenizeUiHints(ui.statesAndFeedback, 10);
-    const interactions = tokenizeUiHints(ui.interactionMotion, 10);
-
-    const resolvedScreenNames = screenNames.length > 0
-        ? screenNames
-        : ["Home Feed", "Detail Page", "Profile Center"];
-
-    return resolvedScreenNames.slice(0, 6).map((name, idx) => ({
-        name,
-        modules: pickCyclicSlice(modules, idx * 2, 3, ["Header", "Primary Content", "Action Section"]),
-        states: pickCyclicSlice(states, idx, 3, ["loading", "empty", "success"]),
-        interactions: pickCyclicSlice(interactions, idx, 2, ["tap interactions", "micro animation"])
-    }));
-}
-
-function normalizeMatchValue(value: string) {
-    return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function getTokenOverlapScore(a: string, b: string) {
-    const aTokens = new Set(a.split(" ").filter(Boolean));
-    const bTokens = new Set(b.split(" ").filter(Boolean));
-    let score = 0;
-    aTokens.forEach((token) => {
-        if (bTokens.has(token)) score += 1;
-    });
-    return score;
-}
-
-function findBestScreenMatch(label: string, screens: UiWireframeScreen[]) {
-    const normalizedLabel = normalizeMatchValue(label);
-    if (!normalizedLabel) return null;
-
-    let bestIndex: number | null = null;
-    let bestScore = 0;
-
-    screens.forEach((screen, idx) => {
-        const normalizedScreen = normalizeMatchValue(screen.name);
-        if (!normalizedScreen) return;
-
-        if (normalizedScreen === normalizedLabel) {
-            bestIndex = idx;
-            bestScore = 999;
-            return;
-        }
-
-        if (normalizedScreen.includes(normalizedLabel) || normalizedLabel.includes(normalizedScreen)) {
-            if (bestScore < 50) {
-                bestScore = 50;
-                bestIndex = idx;
-            }
-            return;
-        }
-
-        const overlap = getTokenOverlapScore(normalizedLabel, normalizedScreen);
-        if (overlap > bestScore) {
-            bestScore = overlap;
-            bestIndex = idx;
-        }
-    });
-
-    if (!bestIndex && bestIndex !== 0) return null;
-    if (bestScore === 0) return null;
-    return bestIndex;
 }
 
 function summarizeStructureContent(content: string): string {
@@ -1044,17 +929,21 @@ function WizardContent() {
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
     const cachedSnapshot = getCachedProjectSnapshot(projectId);
+    const rawCachedStage = (cachedSnapshot?.data as { designStage?: unknown } | undefined)?.designStage;
     const initialEvaluation = normalizeEvaluation(cachedSnapshot?.data.evaluation ?? null);
     const initialUiDesignSpec = normalizeUiDesignSpec(cachedSnapshot?.data.uiDesignSpec, initialEvaluation?.analysis?.ui);
     const initialUiDesignState = normalizeUiDesignState(cachedSnapshot?.data.uiDesignState, initialEvaluation, initialUiDesignSpec);
-    const initialDesignStage = isDesignStage(cachedSnapshot?.data.designStage)
-        ? cachedSnapshot.data.designStage
-        : inferDesignStageFromEvaluation(initialEvaluation, initialUiDesignState.readiness);
+    const hasLegacyInitialUiStage = rawCachedStage === "ui_design";
+    const initialDesignStage = hasLegacyInitialUiStage
+        ? "functional_architecture"
+        : (isDesignStage(cachedSnapshot?.data.designStage)
+            ? cachedSnapshot.data.designStage
+            : inferDesignStageFromEvaluation(initialEvaluation));
     const initialFunctionalLockedAt = typeof cachedSnapshot?.data.functionalLockedAt === "number"
-        ? cachedSnapshot.data.functionalLockedAt
+        ? (hasLegacyInitialUiStage ? null : cachedSnapshot.data.functionalLockedAt)
         : (initialDesignStage !== "functional_architecture" ? Date.now() : null);
     const initialUiReadyAt = typeof cachedSnapshot?.data.uiReadyAt === "number"
-        ? cachedSnapshot.data.uiReadyAt
+        ? (hasLegacyInitialUiStage ? null : cachedSnapshot.data.uiReadyAt)
         : (initialDesignStage === "ready_to_generate" ? Date.now() : null);
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
@@ -1107,11 +996,9 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'architecture' | 'ui' | 'files' | 'stack'>(
+    const [activeTab, setActiveTab] = useState<'architecture' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
-    const [selectedUiScreenIndex, setSelectedUiScreenIndex] = useState<number | null>(null);
-    const [uiFocusLabel, setUiFocusLabel] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
@@ -1121,15 +1008,15 @@ function WizardContent() {
     const requiresPayment = !hasPaid && !isAdmin;
     const functionalDensity = evaluation?.density_score ?? 0;
     const isFunctionalArchitectureReady = functionalDensity >= 100;
-    const hasCompleteUiRequirements = uiDesignState.readiness.completed;
     const isReadyToGenerateStage = designStage === "ready_to_generate";
     const architectureViewerCode = currentDiagram;
     const uiRequirements = uiDesignSpec
         ? deriveUiRequirements(uiDesignSpec)
         : normalizeUiRequirements(evaluation?.analysis?.ui);
-    const uiWireframes = buildUiWireframeScreens(uiRequirements);
-    const uiSpecErrors = validateUiDesignSpec(uiDesignSpec);
-    const canConfirmUiDesign = hasCompleteUiRequirements && uiSpecErrors.length === 0;
+    const designSummary = UI_REQUIREMENT_KEYS.map((key) => ({
+        label: UI_REQUIREMENT_LABELS[key],
+        values: uiRequirements[key]
+    })).filter((item) => item.values.length > 0);
     const canRollback = !hasPaid || isAdmin;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
@@ -1176,13 +1063,6 @@ function WizardContent() {
             cancelled = true;
         };
     }, []);
-
-    useEffect(() => {
-        if (selectedUiScreenIndex === null) return;
-        if (selectedUiScreenIndex >= uiWireframes.length) {
-            setSelectedUiScreenIndex(null);
-        }
-    }, [selectedUiScreenIndex, uiWireframes.length]);
 
     // 1. Load Project & Version Data
     useEffect(() => {
@@ -1304,7 +1184,7 @@ function WizardContent() {
         router.replace(`/wizard?${params.toString()}`);
     }, [searchParams, currentVersion, projectId, router, isAdmin]);
 
-    // 1f. Refresh UI readiness, and only downgrade stage if UI spec becomes invalid before payment
+    // 1f. Refresh derived state: stage follows functional density only.
     useEffect(() => {
         const now = Date.now();
         const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation, now);
@@ -1314,15 +1194,12 @@ function WizardContent() {
             !areArrayValuesEqual(nextReadiness.missingKeys, uiDesignState.readiness.missingKeys) ||
             !areArrayValuesEqual(nextReadiness.missingLabels, uiDesignState.readiness.missingLabels);
 
-        const canClearResync = uiDesignState.needsResync && nextReadiness.completed && designStage !== "functional_architecture";
-        const nextNeedsResync = canClearResync ? false : uiDesignState.needsResync;
-        const needsResyncChanged = nextNeedsResync !== uiDesignState.needsResync;
-
-        let nextStage = designStage;
-        if (designStage === "ready_to_generate" && !nextReadiness.completed && canRollback) {
-            nextStage = "ui_design";
-        }
+        const nextStage = (evaluation?.density_score ?? 0) >= 100
+            ? "ready_to_generate"
+            : "functional_architecture";
         const stageChanged = nextStage !== designStage;
+        const nextNeedsResync = nextStage === "functional_architecture" ? uiDesignState.needsResync : false;
+        const needsResyncChanged = nextNeedsResync !== uiDesignState.needsResync;
 
         const nextFunctionalLockedAt = nextStage === "functional_architecture" ? null : (functionalLockedAt ?? now);
         const functionalLockedAtChanged = nextFunctionalLockedAt !== functionalLockedAt;
@@ -1344,7 +1221,7 @@ function WizardContent() {
         }
         if (functionalLockedAtChanged) setFunctionalLockedAt(nextFunctionalLockedAt);
         if (uiReadyAtChanged) setUiReadyAt(nextUiReadyAt);
-    }, [evaluation, uiDesignSpec, designStage, uiDesignState, functionalLockedAt, uiReadyAt, canRollback]);
+    }, [evaluation, uiDesignSpec, designStage, uiDesignState, functionalLockedAt, uiReadyAt]);
 
     // 1g. Fetch complexity-based quote for unpaid projects
     useEffect(() => {
@@ -2027,9 +1904,6 @@ function WizardContent() {
                     oneClickMode: GENERATE_ONE_CLICK_MODE,
                     ideProfile: GENERATE_IDE_PROFILE,
                     templateKindHint,
-                    uiDesignSpec,
-                    // If this version has a generation already (or base version had one), we can pass it?
-                    // Actually, for v2, `generation` state was initialized from base. That is our "existingProjectTree".
                     currentProjectTree: generation?.projectTree
                 }),
             });
@@ -2148,20 +2022,7 @@ function WizardContent() {
 
         setGenerateError(null);
         if (designStage !== "ready_to_generate") {
-            if (designStage === "functional_architecture") {
-                setGenerateError("Complete functional architecture first (Information Density must reach 100).");
-                return;
-            }
-            setGenerateError(buildUiRequirementErrorMessage(uiDesignSpec, evaluation) || "Complete UI design requirements before generation.");
-            return;
-        }
-        const uiSpecErrors = validateUiDesignSpec(uiDesignSpec);
-        if (uiSpecErrors.length > 0) {
-            setGenerateError(`UI spec is incomplete: ${uiSpecErrors.slice(0, 3).join("; ")}`);
-            return;
-        }
-        if (!hasCompleteUiRequirements) {
-            setGenerateError(buildUiRequirementErrorMessage(uiDesignSpec, evaluation));
+            setGenerateError("Complete functional architecture first (Information Density must reach 100).");
             return;
         }
         if (requiresPayment) {
@@ -2169,37 +2030,6 @@ function WizardContent() {
             return;
         }
         await generateScaffold();
-    };
-
-    const handleConfirmFunctionalArchitecture = () => {
-        if (!isFunctionalArchitectureReady) {
-            setGenerateError("Information Density must reach 100 before confirming functional architecture.");
-            return;
-        }
-        setHasUserEdited(true);
-        setDesignStage("ui_design");
-        setFunctionalLockedAt(Date.now());
-        setGenerateError(null);
-        setActiveTab("ui");
-    };
-
-    const handleConfirmUiDesign = () => {
-        if (!canConfirmUiDesign) {
-            const uiSpecIssues = validateUiDesignSpec(uiDesignSpec);
-            setGenerateError(uiSpecIssues.length > 0
-                ? `UI spec is incomplete: ${uiSpecIssues.slice(0, 3).join("; ")}.`
-                : "UI readiness is not complete yet. Finish UI requirements before confirming.");
-            return;
-        }
-        setHasUserEdited(true);
-        setDesignStage("ready_to_generate");
-        setUiReadyAt(Date.now());
-        setUiDesignState({
-            needsResync: false,
-            readiness: createUiReadinessReport(uiDesignSpec, evaluation)
-        });
-        setGenerateError(null);
-        setActiveTab("ui");
     };
 
     const handleRollbackToFunctional = () => {
@@ -2216,23 +2046,12 @@ function WizardContent() {
             needsResync: true,
             readiness: nextReadiness
         });
-        setGenerateError("Returned to Functional Architecture stage. UI specs are kept as draft and marked for resync.");
+        setGenerateError("Returned to Functional Architecture stage.");
         setActiveTab("architecture");
     };
 
-    const handleArchitectureNodeSelect = (node: { id: string; label: string }) => {
-        const matchIndex = findBestScreenMatch(node.label, uiWireframes);
-        setUiFocusLabel(node.label);
-        if (matchIndex === null) {
-            setSelectedUiScreenIndex(null);
-            return;
-        }
-        setSelectedUiScreenIndex(matchIndex);
-    };
-
-    const handleUiScreenSelect = (index: number) => {
-        setSelectedUiScreenIndex(index);
-        setUiFocusLabel(null);
+    const handleArchitectureNodeSelect = (_node: { id: string; label: string }) => {
+        setGenerateError(null);
     };
 
     if (!project || !currentVersion) return <WizardSkeleton />;
@@ -2296,11 +2115,9 @@ function WizardContent() {
                                     Stage: {DESIGN_STAGE_LABELS[designStage]}
                                     {designStage === "functional_architecture"
                                         ? (isFunctionalArchitectureReady
-                                            ? " | Ready to confirm architecture"
+                                            ? " | Auto-promoting to ready state"
                                             : ` | Density ${Math.round(functionalDensity)}/100`)
-                                        : designStage === "ui_design"
-                                            ? " | Confirm UI design to unlock payment"
-                                            : ""}
+                                        : " | Ready for payment and scaffold generation"}
                                 </div>
                                 {(isReadyToGenerateStage || Boolean(generation)) ? (
                                     <div className="flex flex-col gap-2">
@@ -2359,13 +2176,11 @@ function WizardContent() {
                                     <div className="flex flex-col gap-2">
                                         {designStage === "functional_architecture" ? (
                                             <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                                Confirm functional architecture after Information Density reaches 100.
+                                                Complete functional architecture until Information Density reaches 100.
                                             </p>
                                         ) : (
                                             <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                                {uiDesignState.needsResync
-                                                    ? "UI specs are marked for resync after architecture rollback. Update UI details before pricing is shown."
-                                                    : "UI design in progress. Confirm UI design to unlock pricing."}
+                                                Functional architecture is ready. You can generate scaffold or proceed to payment.
                                             </p>
                                         )}
                                         {/* Pending Attachments Preview */}
@@ -2477,12 +2292,6 @@ function WizardContent() {
                         label="Architecture"
                     />
                     <TabButton
-                        active={activeTab === 'ui'}
-                        onClick={() => setActiveTab('ui')}
-                        icon={<Sparkles className="w-4 h-4" />}
-                        label="UI Design"
-                    />
-                    <TabButton
                         active={activeTab === 'files'}
                         onClick={() => setActiveTab('files')}
                         icon={<FileCode className="w-4 h-4" />}
@@ -2522,15 +2331,6 @@ function WizardContent() {
                                         </div>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        {designStage === "functional_architecture" && (
-                                            <button
-                                                onClick={handleConfirmFunctionalArchitecture}
-                                                disabled={!isFunctionalArchitectureReady}
-                                                className="fc-button-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-                                            >
-                                                Confirm Functional Architecture
-                                            </button>
-                                        )}
                                         {designStage !== "functional_architecture" && canRollback && (
                                             <button
                                                 onClick={handleRollbackToFunctional}
@@ -2543,81 +2343,39 @@ function WizardContent() {
                                 </div>
                                 {designStage === "functional_architecture" && !isFunctionalArchitectureReady && (
                                     <p className="text-xs text-slate-500 dark:text-slate-300">
-                                        Reach Information Density 100 to confirm architecture and unlock UI design.
+                                        Reach Information Density 100 to unlock scaffold generation.
                                     </p>
                                 )}
                                 {designStage === "functional_architecture" && uiDesignState.needsResync && (
-                                    <p className="text-xs text-amber-500">UI draft exists from a previous cycle. Confirm architecture to resync UI design.</p>
+                                    <p className="text-xs text-amber-500">Legacy UI draft data was detected and moved under architecture notes.</p>
+                                )}
+                            </div>
+
+                            <div className="fc-surface rounded-2xl border border-[color:var(--border)] p-4">
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">
+                                    Design Notes (Analysis UI)
+                                </p>
+                                {designSummary.length === 0 ? (
+                                    <p className="mt-2 text-xs text-slate-500 dark:text-slate-300">
+                                        No structured design notes yet. Continue requirement clarification to enrich architecture guidance.
+                                    </p>
+                                ) : (
+                                    <div className="mt-3 grid gap-2">
+                                        {designSummary.map((item) => (
+                                            <div
+                                                key={item.label}
+                                                className="rounded-lg border border-[color:var(--border)] bg-white/70 px-3 py-2 text-xs dark:bg-slate-900/45"
+                                            >
+                                                <p className="font-semibold text-slate-700 dark:text-slate-200">{item.label}</p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">{item.values.join(" | ")}</p>
+                                            </div>
+                                        ))}
+                                    </div>
                                 )}
                             </div>
 
                             <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
                                 <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
-                            </div>
-                        </div>
-                    )}
-
-                    {/* UI Design Tab */}
-                    {activeTab === 'ui' && (
-                        <div className="absolute inset-0 p-4 flex flex-col gap-3">
-                            <div className="fc-surface flex flex-col gap-4 rounded-2xl p-4">
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex flex-wrap items-center gap-4">
-                                        <div>
-                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">Design Stage</p>
-                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{DESIGN_STAGE_LABELS[designStage]}</p>
-                                        </div>
-                                        <div className="hidden sm:block h-8 w-px bg-[color:var(--border)]" />
-                                        <div>
-                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">UI Readiness</p>
-                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiDesignState.readiness.score}%</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        {designStage !== "functional_architecture" && canRollback && (
-                                            <button
-                                                onClick={handleRollbackToFunctional}
-                                                className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-                                            >
-                                                Back To Functional
-                                            </button>
-                                        )}
-                                        {designStage === "ui_design" && (
-                                            <button
-                                                onClick={handleConfirmUiDesign}
-                                                disabled={!canConfirmUiDesign}
-                                                className="fc-button-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-                                            >
-                                                Confirm UI Design
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                                {designStage === "functional_architecture" && (
-                                    <p className="text-xs text-slate-500 dark:text-slate-300">
-                                        UI design unlocks after functional architecture is confirmed.
-                                    </p>
-                                )}
-                                {designStage !== "functional_architecture" && uiSpecErrors.length > 0 && (
-                                    <p className="text-xs text-amber-500">
-                                        UI spec needs updates before confirmation: {uiSpecErrors.slice(0, 2).join("; ")}
-                                    </p>
-                                )}
-                            </div>
-
-                            <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border border-[color:var(--border)] bg-white/75 dark:bg-slate-900/65">
-                                <UiDesignWorkbench
-                                    designStage={designStage}
-                                    uiDesignState={uiDesignState}
-                                    uiDesignSpec={uiDesignSpec}
-                                    uiRequirements={uiRequirements}
-                                    wireframes={uiWireframes}
-                                    activeScreenIndex={selectedUiScreenIndex}
-                                    focusLabel={uiFocusLabel}
-                                    densityScore={functionalDensity}
-                                    onSelectScreen={handleUiScreenSelect}
-                                    onSpecChange={setUiDesignSpec}
-                                />
                             </div>
                         </div>
                     )}

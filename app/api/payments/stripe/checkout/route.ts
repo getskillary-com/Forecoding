@@ -110,7 +110,7 @@ export async function POST(req: Request) {
         if (designStage !== "ready_to_generate") {
             return NextResponse.json(
                 {
-                    error: "UI design is not complete. Finish UI stage before checkout.",
+                    error: "Functional architecture is not confirmed. Reach density 100 before checkout.",
                     designStage
                 },
                 { status: 409 }

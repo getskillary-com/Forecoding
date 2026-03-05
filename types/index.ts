@@ -14,7 +14,6 @@ export type UiRequirementKey = keyof UiRequirements;
 
 export type DesignStage =
     | "functional_architecture"
-    | "ui_design"
     | "ready_to_generate";
 
 export interface UiReadinessReport {
@@ -158,7 +157,7 @@ export interface PreflightIssue {
         | "DUPLICATE_PATH_SEGMENT"
         | "LANGUAGE_MISMATCH"
         | "MISSING_STACK_DEPENDENCIES"
-        | "MISSING_UI_SPEC"
+        | "MISSING_CSS_BASELINE"
         | "MISSING_PAGE_UI_REQUIREMENTS";
     severity: "warning" | "error";
     message: string;

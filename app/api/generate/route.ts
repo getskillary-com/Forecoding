@@ -37,8 +37,7 @@ export async function POST(req: Request) {
             outputLanguage,
             oneClickMode,
             ideProfile,
-            templateKindHint,
-            uiDesignSpec
+            templateKindHint
         } = await req.json();
         if (!summary) {
             return NextResponse.json({ error: "No summary provided" }, { status: 400 });
@@ -55,8 +54,7 @@ export async function POST(req: Request) {
             outputLanguage: parsedOutputLanguage,
             oneClickMode: parsedOneClickMode,
             ideProfile: parsedIdeProfile,
-            templateKindHint: parsedTemplateKindHint,
-            uiDesignSpec: uiDesignSpec && typeof uiDesignSpec === "object" ? uiDesignSpec : undefined
+            templateKindHint: parsedTemplateKindHint
         });
         const preflight = resources.preflightReport;
         if (preflight) {

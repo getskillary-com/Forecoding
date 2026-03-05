@@ -1470,7 +1470,6 @@ type GenerateProjectResourcesOptions = {
     oneClickMode?: OneClickMode;
     ideProfile?: IdeProfile;
     templateKindHint?: TemplateKind;
-    uiDesignSpec?: UiDesignSpec | null;
 };
 
 const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
@@ -1479,7 +1478,7 @@ const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
     "INVALID_PROMPT_REFERENCE",
     "NEXT_CONFIG_CONTAMINATED",
     "MISSING_ENV_EXAMPLE",
-    "MISSING_UI_SPEC",
+    "MISSING_CSS_BASELINE",
     "MISSING_PAGE_UI_REQUIREMENTS"
 ] as const);
 
@@ -1563,8 +1562,7 @@ export async function generateProjectResources(
             resolvedOutputLanguage,
             templateKind,
             resolvedOneClickMode,
-            resolvedIdeProfile,
-            options?.uiDesignSpec ?? null
+            resolvedIdeProfile
         );
         data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
@@ -1617,13 +1615,18 @@ export async function generateProjectResources(
                     history,
                     force: true
                 });
-                ensureUiDesignDocs({
+                ensureArchitectureDocs({
                     tree: data.projectTree,
                     outputLanguage: resolvedOutputLanguage,
                     projectName: resolvedProjectName || "generated-project",
                     toolStack: data.toolStack,
-                    history,
-                    uiDesignSpec: options?.uiDesignSpec ?? null
+                    history
+                });
+                ensureCssRenderBaseline({
+                    tree: data.projectTree,
+                    templateKind,
+                    outputLanguage: resolvedOutputLanguage,
+                    projectName: resolvedProjectName || "generated-project"
                 });
                 ensurePageUiRequirementSections(data.projectTree);
 
@@ -1978,16 +1981,21 @@ const ZIP_REAL_CONTENT_PATHS = new Set([
     "_AI_PROMPT.md",
     "ONE_CLICK_PROMPT.md",
     "GENERATION_MANIFEST.json",
-    "design/tokens.json",
-    "design/page-contracts.json",
-    "design/ui-spec.json"
+    "app/globals.css",
+    "app/layout.tsx",
+    "app/page.tsx",
+    "src/app/globals.css",
+    "src/app/layout.tsx",
+    "src/app/page.tsx",
+    "apps/web/app/globals.css",
+    "apps/web/app/layout.tsx",
+    "apps/web/app/page.tsx"
 ]);
 
 function shouldWriteRealContentByPath(path: string) {
     if (ZIP_REAL_CONTENT_PATHS.has(path)) return true;
     if (path.endsWith("_AI_PROMPT.md")) return true;
     if (path.startsWith("docs/")) return true;
-    if (path.startsWith("design/")) return true;
     if (/^config\/integrations\/.+\.template\./.test(path)) return true;
     return false;
 }
@@ -2099,8 +2107,7 @@ function ensureCoreConfigFiles(
     outputLanguage: OutputLanguage,
     templateKind: TemplateKind,
     oneClickMode: OneClickMode,
-    ideProfile: IdeProfile,
-    uiDesignSpec?: UiDesignSpec | null
+    ideProfile: IdeProfile
 ): any[] {
     const tree = Array.isArray(projectTree) ? projectTree : [];
     const treeText = collectProjectTreeText(tree);
@@ -2153,13 +2160,18 @@ function ensureCoreConfigFiles(
         projectName,
         history
     });
-    ensureUiDesignDocs({
+    ensureArchitectureDocs({
         tree: finalTree,
         outputLanguage,
         projectName,
         toolStack,
-        history,
-        uiDesignSpec: uiDesignSpec ?? null
+        history
+    });
+    ensureCssRenderBaseline({
+        tree: finalTree,
+        templateKind,
+        outputLanguage,
+        projectName
     });
     ensurePageUiRequirementSections(finalTree);
 
@@ -2517,13 +2529,36 @@ function buildFunctionalArchitectureDoc(input: {
         `# ${input.projectName || "generated-project"} Functional Architecture`,
         "",
         "## Purpose",
-        "- Capture function-level architecture before UI implementation details.",
+        "- Capture function-level architecture with implementation-ready design constraints.",
         "",
         "## Core Functional Domains",
         "- Authentication and session flow",
         "- Primary business workflow",
         "- Data persistence and retrieval",
         "- Error handling and recovery",
+        "",
+        "## Page Structure Baseline",
+        "- Every page spec must define clear layout hierarchy and information priority.",
+        "- Every page must include a `## UI Requirements` section.",
+        "",
+        "## Interaction State Baseline",
+        "- Define loading, empty, error, and success behavior for each primary page.",
+        "- Retry and recovery actions must be explicit for error states.",
+        "",
+        "## Responsive Strategy",
+        "- Describe behavior for mobile, tablet, and desktop breakpoints.",
+        "- Avoid fixed-width layouts that break on small screens.",
+        "",
+        "## Visual Baseline",
+        "- Define typography, spacing rhythm, and component emphasis in plain language.",
+        "- Keep visual hierarchy consistent with business priorities.",
+        "",
+        "## CSS Baseline Constraints",
+        "- Scaffold must include app-router baseline files:",
+        "  - `app/globals.css` + `app/layout.tsx` + `app/page.tsx`",
+        "  - or equivalent `src/app/*` / `apps/web/app/*` for template variants.",
+        "- `layout.tsx` must import `./globals.css`.",
+        "- `globals.css` must include minimum reset + body/background/typography styles.",
         "",
         "## Key Requirement Signals",
         ...intentLines,
@@ -2714,85 +2749,13 @@ function buildPageContractsJson(tree: any[]) {
     );
 }
 
-function ensureUiDesignDocs(input: {
+function ensureArchitectureDocs(input: {
     tree: any[];
     projectName: string;
     history: string;
     toolStack: string;
     outputLanguage: OutputLanguage;
-    uiDesignSpec?: UiDesignSpec | null;
 }) {
-    const spec = input.uiDesignSpec ?? null;
-    const specErrors = validateUiDesignSpec(spec);
-    const hasValidSpec = specErrors.length === 0 && Boolean(spec);
-
-    if (spec) {
-        upsertFileByPath(input.tree, "design/ui-spec.json", JSON.stringify(spec, null, 2));
-    }
-
-    if (hasValidSpec && spec) {
-        upsertFileByPath(
-            input.tree,
-            "docs/UI_SPEC.md",
-            buildUiSpecDocFromSpec({
-                projectName: input.projectName,
-                spec,
-                outputLanguage: input.outputLanguage
-            })
-        );
-        upsertFileByPath(
-            input.tree,
-            "docs/STYLE_GUIDE.md",
-            buildStyleGuideDocFromSpec({
-                projectName: input.projectName,
-                spec
-            })
-        );
-        upsertFileByPath(input.tree, "docs/UI_FLOW.md", buildUiFlowDocFromSpec(spec));
-        upsertFileByPath(input.tree, "docs/COMPONENT_MAP.md", buildComponentMapDocFromSpec(spec));
-        upsertFileByPath(input.tree, "docs/INTERACTION_STATES.md", buildInteractionStatesDocFromSpec(spec));
-    } else {
-        const uiSpec = getFileContentByPath(input.tree, "docs/UI_SPEC.md");
-        if (!validateUiSpecContent(uiSpec)) {
-            upsertFileByPath(
-                input.tree,
-                "docs/UI_SPEC.md",
-                buildUiSpecDoc({
-                    projectName: input.projectName,
-                    history: input.history,
-                    outputLanguage: input.outputLanguage
-                })
-            );
-        }
-
-        const styleGuide = getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md");
-        if (!validateStyleGuideContent(styleGuide)) {
-            upsertFileByPath(
-                input.tree,
-                "docs/STYLE_GUIDE.md",
-                buildStyleGuideDoc({
-                    projectName: input.projectName,
-                    toolStack: input.toolStack
-                })
-            );
-        }
-
-        const uiFlow = getFileContentByPath(input.tree, "docs/UI_FLOW.md");
-        if (!hasMinimumDocContent(uiFlow)) {
-            upsertFileByPath(input.tree, "docs/UI_FLOW.md", buildUiFlowDoc(input.tree));
-        }
-
-        const componentMap = getFileContentByPath(input.tree, "docs/COMPONENT_MAP.md");
-        if (!hasMinimumDocContent(componentMap)) {
-            upsertFileByPath(input.tree, "docs/COMPONENT_MAP.md", buildComponentMapDoc(input.tree));
-        }
-
-        const interactionStates = getFileContentByPath(input.tree, "docs/INTERACTION_STATES.md");
-        if (!hasMinimumDocContent(interactionStates)) {
-            upsertFileByPath(input.tree, "docs/INTERACTION_STATES.md", buildInteractionStatesDoc(input.tree));
-        }
-    }
-
     const functionalArchitecture = getFileContentByPath(input.tree, "docs/FUNCTIONAL_ARCHITECTURE.md");
     if (!hasMinimumDocContent(functionalArchitecture)) {
         upsertFileByPath(
@@ -2811,31 +2774,19 @@ function ensureUiDesignDocs(input: {
         upsertFileByPath(input.tree, "docs/ROUTE_MAP.md", buildRouteMapDoc(input.tree));
     }
 
-    const acceptanceUi = getFileContentByPath(input.tree, "docs/ACCEPTANCE_UI.md");
-    if (!hasMinimumDocContent(acceptanceUi)) {
-        upsertFileByPath(input.tree, "docs/ACCEPTANCE_UI.md", buildAcceptanceUiDoc(input.tree));
-    }
-
-    if (hasValidSpec && spec) {
-        upsertFileByPath(input.tree, "design/tokens.json", buildDesignTokensJsonFromSpec(spec));
-        upsertFileByPath(input.tree, "design/page-contracts.json", buildPageContractsJsonFromSpec(spec));
-    } else {
-        const designTokens = getFileContentByPath(input.tree, "design/tokens.json");
-        let tokensValid = false;
-        try {
-            JSON.parse(designTokens);
-            tokensValid = designTokens.trim().length > 0;
-        } catch {
-            tokensValid = false;
-        }
-        if (!tokensValid) {
-            upsertFileByPath(input.tree, "design/tokens.json", buildDesignTokensJson());
-        }
-
-        const pageContracts = getFileContentByPath(input.tree, "design/page-contracts.json");
-        if (!validatePageContractsContent(pageContracts)) {
-            upsertFileByPath(input.tree, "design/page-contracts.json", buildPageContractsJson(input.tree));
-        }
+    const deprecatedPaths = [
+        "docs/UI_SPEC.md",
+        "docs/STYLE_GUIDE.md",
+        "docs/UI_FLOW.md",
+        "docs/COMPONENT_MAP.md",
+        "docs/INTERACTION_STATES.md",
+        "docs/ACCEPTANCE_UI.md",
+        "design/tokens.json",
+        "design/page-contracts.json",
+        "design/ui-spec.json"
+    ];
+    for (const path of deprecatedPaths) {
+        removeFileByPath(input.tree, path);
     }
 }
 
@@ -2844,6 +2795,7 @@ function ensurePageUiRequirementSections(tree: any[]) {
     for (const path of pagePaths) {
         const existing = getFileContentByPath(tree, path);
         if (!existing.trim()) continue;
+        if (!isSpecLikePageContent(existing)) continue;
         if (hasPageUiRequirements(existing)) continue;
         const appended = [
             existing.trim(),
@@ -3227,6 +3179,33 @@ function upsertFileByPath(tree: any[], filePath: string, content: string) {
             current = folder.children;
         }
     }
+}
+
+function removeFileByPath(tree: any[], filePath: string) {
+    const segments = filePath.split("/").filter(Boolean);
+    if (segments.length === 0) return;
+
+    const walk = (nodes: any[], depth: number): boolean => {
+        const segment = segments[depth];
+        const index = nodes.findIndex((node: any) => node?.name === segment);
+        if (index === -1) return false;
+
+        const isTarget = depth === segments.length - 1;
+        if (isTarget) {
+            nodes.splice(index, 1);
+            return nodes.length === 0;
+        }
+
+        const node = nodes[index];
+        if (node?.type !== "folder" || !Array.isArray(node.children)) return false;
+        const shouldPruneFolder = walk(node.children, depth + 1);
+        if (shouldPruneFolder) {
+            nodes.splice(index, 1);
+        }
+        return nodes.length === 0;
+    };
+
+    walk(tree, 0);
 }
 
 function getFileContentByPath(tree: any[], filePath: string): string {
@@ -4162,6 +4141,141 @@ function ensureMinimumActionableScaffold(input: {
     }
 }
 
+function resolveAppRouterBasePath(templateKind: TemplateKind) {
+    if (templateKind === "next_src") return "src/app";
+    if (templateKind === "monorepo_multiapp") return "apps/web/app";
+    return "app";
+}
+
+function buildCssBaselineGlobals() {
+    return [
+        "*,",
+        "*::before,",
+        "*::after {",
+        "  box-sizing: border-box;",
+        "}",
+        "",
+        ":root {",
+        "  --bg: #f8fafc;",
+        "  --surface: #ffffff;",
+        "  --text: #0f172a;",
+        "  --muted: #475569;",
+        "  --primary: #2563eb;",
+        "}",
+        "",
+        "html,",
+        "body {",
+        "  margin: 0;",
+        "  padding: 0;",
+        "}",
+        "",
+        "body {",
+        "  min-height: 100vh;",
+        "  font-family: \"Segoe UI\", \"Helvetica Neue\", Arial, sans-serif;",
+        "  background: radial-gradient(circle at top, rgba(37, 99, 235, 0.14), transparent 58%), var(--bg);",
+        "  color: var(--text);",
+        "}",
+        "",
+        ".app-shell {",
+        "  max-width: 960px;",
+        "  margin: 0 auto;",
+        "  padding: 48px 20px 64px;",
+        "}",
+        "",
+        ".hero-card {",
+        "  border: 1px solid rgba(15, 23, 42, 0.08);",
+        "  border-radius: 18px;",
+        "  background: var(--surface);",
+        "  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);",
+        "  padding: 28px;",
+        "}",
+        "",
+        ".hero-card h1 {",
+        "  margin: 0 0 12px;",
+        "  font-size: clamp(1.6rem, 2.5vw, 2.2rem);",
+        "}",
+        "",
+        ".hero-card p {",
+        "  margin: 0;",
+        "  line-height: 1.65;",
+        "  color: var(--muted);",
+        "}",
+        "",
+        "@media (max-width: 640px) {",
+        "  .app-shell {",
+        "    padding: 28px 14px 40px;",
+        "  }",
+        "  .hero-card {",
+        "    padding: 18px;",
+        "  }",
+        "}"
+    ].join("\\n");
+}
+
+function buildCssBaselineLayout(projectName: string, outputLanguage: OutputLanguage) {
+    const lang = outputLanguage === "zh" ? "zh-CN" : "en";
+    const title = projectName || "generated-project";
+    const description = outputLanguage === "zh"
+        ? "Forecoding 生成的可渲染脚手架基线。"
+        : "Renderable scaffold baseline generated by Forecoding.";
+    return [
+        "import type { Metadata } from \"next\";",
+        "import \"./globals.css\";",
+        "",
+        "export const metadata: Metadata = {",
+        `  title: ${JSON.stringify(title)},`,
+        `  description: ${JSON.stringify(description)}`,
+        "};",
+        "",
+        "export default function RootLayout({",
+        "  children",
+        "}: Readonly<{",
+        "  children: React.ReactNode;",
+        "}>) {",
+        "  return (",
+        `    <html lang=${JSON.stringify(lang)}>`,
+        "      <body>{children}</body>",
+        "    </html>",
+        "  );",
+        "}"
+    ].join("\\n");
+}
+
+function buildCssBaselinePage(outputLanguage: OutputLanguage) {
+    const title = outputLanguage === "zh" ? "应用骨架已就绪" : "Scaffold is ready";
+    const body = outputLanguage === "zh"
+        ? "该页面确保在 AI IDE 生成阶段也具备基础样式渲染能力。"
+        : "This page guarantees baseline visual rendering during AI IDE generation.";
+    return [
+        "export default function HomePage() {",
+        "  return (",
+        "    <main className=\"app-shell\">",
+        "      <section className=\"hero-card\">",
+        `        <h1>${title}</h1>`,
+        `        <p>${body}</p>`,
+        "      </section>",
+        "    </main>",
+        "  );",
+        "}"
+    ].join("\\n");
+}
+
+function ensureCssRenderBaseline(input: {
+    tree: any[];
+    templateKind: TemplateKind;
+    outputLanguage: OutputLanguage;
+    projectName: string;
+}) {
+    const base = resolveAppRouterBasePath(input.templateKind);
+    upsertFileByPath(input.tree, `${base}/globals.css`, buildCssBaselineGlobals());
+    upsertFileByPath(
+        input.tree,
+        `${base}/layout.tsx`,
+        buildCssBaselineLayout(input.projectName, input.outputLanguage)
+    );
+    upsertFileByPath(input.tree, `${base}/page.tsx`, buildCssBaselinePage(input.outputLanguage));
+}
+
 function resolvePromptPathForFile(filePath: string) {
     const normalized = filePath.replace(/\\/g, "/");
     const idx = normalized.lastIndexOf("/");
@@ -4454,6 +4568,30 @@ function validatePageContractsContent(text: string) {
     }
 }
 
+function validateCssBaselineBundle(input: { tree: any[]; templateKind: TemplateKind }) {
+    const base = resolveAppRouterBasePath(input.templateKind);
+    const globalsPath = `${base}/globals.css`;
+    const layoutPath = `${base}/layout.tsx`;
+    const pagePath = `${base}/page.tsx`;
+    const globals = getFileContentByPath(input.tree, globalsPath);
+    const layout = getFileContentByPath(input.tree, layoutPath);
+    const page = getFileContentByPath(input.tree, pagePath);
+    const missing: string[] = [];
+
+    if (!globals.trim()) missing.push(globalsPath);
+    if (!layout.trim()) {
+        missing.push(layoutPath);
+    } else if (!/import\s+["']\.\/globals\.css["'];?/i.test(layout)) {
+        missing.push(`${layoutPath} (missing import "./globals.css")`);
+    }
+    if (!page.trim()) missing.push(pagePath);
+
+    return {
+        valid: missing.length === 0,
+        missing
+    };
+}
+
 function isPageSpecPath(path: string) {
     const normalized = (path || "").replace(/\\/g, "/");
     if (/^app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
@@ -4472,11 +4610,23 @@ function hasPageUiRequirements(content: string) {
     );
 }
 
+function isSpecLikePageContent(content: string) {
+    const source = (content || "").trim();
+    if (!source) return false;
+    return (
+        /^#\s+Page Spec/i.test(source) ||
+        /##\s+Role\s*&\s*Responsibility/i.test(source) ||
+        /##\s+Core Interactions/i.test(source) ||
+        /GENERATION PENDING/i.test(source)
+    );
+}
+
 function collectPagesMissingUiRequirements(tree: any[]) {
     const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
-    const missing = pagePaths.filter((path) => !hasPageUiRequirements(getFileContentByPath(tree, path)));
+    const specPagePaths = pagePaths.filter((path) => isSpecLikePageContent(getFileContentByPath(tree, path)));
+    const missing = specPagePaths.filter((path) => !hasPageUiRequirements(getFileContentByPath(tree, path)));
     return {
-        pagePaths,
+        pagePaths: specPagePaths,
         missing
     };
 }
@@ -4523,35 +4673,27 @@ function runGenerationPreflight(input: {
         });
     }
 
-    const uiSpecValid = validateUiSpecContent(getFileContentByPath(input.tree, "docs/UI_SPEC.md"));
-    const styleGuideValid = validateStyleGuideContent(getFileContentByPath(input.tree, "docs/STYLE_GUIDE.md"));
-    const pageContractsValid = validatePageContractsContent(getFileContentByPath(input.tree, "design/page-contracts.json"));
-    const uiSpecJson = parseUiDesignSpecJson(getFileContentByPath(input.tree, "design/ui-spec.json"));
-    const uiSpecJsonValid = validateUiDesignSpec(uiSpecJson).length === 0;
-    if (!uiSpecValid || !styleGuideValid || !pageContractsValid || !uiSpecJsonValid) {
-        const missingDocs: string[] = [];
-        if (!uiSpecJsonValid) missingDocs.push("design/ui-spec.json");
-        if (!uiSpecValid) missingDocs.push("docs/UI_SPEC.md");
-        if (!styleGuideValid) missingDocs.push("docs/STYLE_GUIDE.md");
-        if (!pageContractsValid) missingDocs.push("design/page-contracts.json");
+    const cssBaseline = validateCssBaselineBundle({
+        tree: input.tree,
+        templateKind: input.manifest.templateKind
+    });
+    if (!cssBaseline.valid) {
         issues.push({
-            code: "MISSING_UI_SPEC",
+            code: "MISSING_CSS_BASELINE",
             severity: "error",
-            message: "UI documentation is missing or incomplete.",
-            details: missingDocs.join(", ")
+            message: "CSS rendering baseline is missing or incomplete.",
+            details: cssBaseline.missing.join(", ")
         });
     }
 
     const pageUiCoverage = collectPagesMissingUiRequirements(input.tree);
-    if (pageUiCoverage.pagePaths.length === 0 || pageUiCoverage.missing.length > 0) {
+    if (pageUiCoverage.pagePaths.length > 0 && pageUiCoverage.missing.length > 0) {
         issues.push({
             code: "MISSING_PAGE_UI_REQUIREMENTS",
             severity: "error",
             message: "Page specs must include `## UI Requirements` sections.",
             details:
-                pageUiCoverage.pagePaths.length === 0
-                    ? "No page specs found under app/**/page.*"
-                    : pageUiCoverage.missing.slice(0, 10).join(", ")
+                pageUiCoverage.missing.slice(0, 10).join(", ")
         });
     }
 

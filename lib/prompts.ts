@@ -176,7 +176,7 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
 - For every page file (\`app/**/page.tsx\`), include a dedicated \`## UI Requirements\` section with layout, components, and interaction states.
 
 ## 2. Mandatory Docs
-- You MUST include \`README.md\`, \`IMPLEMENTATION_PLAN.md\`, \`ONE_CLICK_PROMPT.md\`, \`GENERATION_MANIFEST.json\`, \`docs/FUNCTIONAL_ARCHITECTURE.md\`, \`docs/UI_SPEC.md\`, \`docs/STYLE_GUIDE.md\`, \`docs/UI_FLOW.md\`, \`docs/COMPONENT_MAP.md\`, \`docs/INTERACTION_STATES.md\`, \`docs/ROUTE_MAP.md\`, \`docs/ACCEPTANCE_UI.md\`, \`design/tokens.json\`, and \`design/page-contracts.json\` in outputs.
+- You MUST include \`README.md\`, \`IMPLEMENTATION_PLAN.md\`, \`ONE_CLICK_PROMPT.md\`, \`GENERATION_MANIFEST.json\`, \`docs/FUNCTIONAL_ARCHITECTURE.md\`, and \`docs/ROUTE_MAP.md\` in outputs.
 - \`README.md\` is NOT a one-line intro. It must cover:
   - Project overview
   - Target users and business goals
@@ -195,9 +195,10 @@ If you provide a perfect folder structure with detailed markdown descriptions fo
   - Phase 6 Validation & Handoff
 - \`ONE_CLICK_PROMPT.md\` is the human-readable single entrypoint for AI IDE execution.
 - \`GENERATION_MANIFEST.json\` is the machine-readable phase/task graph and must be consistent with \`IMPLEMENTATION_PLAN.md\`.
-- \`docs/UI_SPEC.md\` must define key screens, component hierarchy, interaction states (loading/empty/error/success), and responsive behavior.
-- \`docs/STYLE_GUIDE.md\` must define color tokens, typography scale, spacing, radius/shadow, and motion/accessibility rules.
-- \`design/page-contracts.json\` must map each page spec to required states and sections.
+- \`docs/FUNCTIONAL_ARCHITECTURE.md\` must include dedicated sections for page structure, interaction states (loading/empty/error/success), responsive strategy, visual baseline, and CSS baseline constraints.
+- Generated scaffold MUST include CSS render baseline files for app router:
+  - \`app/globals.css\` + \`app/layout.tsx\` + \`app/page.tsx\` (or \`src/app/*\` / \`apps/web/app/*\` for other template kinds).
+  - \`layout.tsx\` must import \`./globals.css\`.
 - Root \`_AI_PROMPT.md\` must explicitly instruct: read \`ONE_CLICK_PROMPT.md\` first, then execute \`GENERATION_MANIFEST.json\`.
 - Do NOT tell implementers to follow raw directory traversal order.
 
