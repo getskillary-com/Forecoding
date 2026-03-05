@@ -1027,7 +1027,6 @@ function WizardContent() {
     const isFunctionalArchitectureReady = functionalDensity >= 100;
     const isReadyToGenerateStage = designStage === "ready_to_generate";
     const architectureViewerCode = currentDiagram;
-    const canRollback = !hasPaid || isAdmin;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -2057,24 +2056,6 @@ function WizardContent() {
         await generateScaffold();
     };
 
-    const handleRollbackToFunctional = () => {
-        if (!canRollback) {
-            setGenerateError("Payment completed. Rollback is disabled to protect paid scope.");
-            return;
-        }
-        const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation);
-        setHasUserEdited(true);
-        setDesignStage("functional_architecture");
-        setFunctionalLockedAt(null);
-        setUiReadyAt(null);
-        setUiDesignState({
-            needsResync: true,
-            readiness: nextReadiness
-        });
-        setGenerateError("Returned to Functional Architecture stage.");
-        setActiveTab("architecture");
-    };
-
     const handleArchitectureNodeSelect = (_node: { id: string; label: string }) => {
         setGenerateError(null);
     };
@@ -2337,46 +2318,8 @@ function WizardContent() {
 
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
-                        <div className="absolute inset-0 p-4 flex flex-col gap-3">
-                            <div className="fc-surface flex flex-col gap-4 rounded-2xl p-4">
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex flex-wrap items-center gap-4">
-                                        <div>
-                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">Design Stage</p>
-                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{DESIGN_STAGE_LABELS[designStage]}</p>
-                                        </div>
-                                        <div className="hidden sm:block h-8 w-px bg-[color:var(--border)]" />
-                                        <div>
-                                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-300">Information Density</p>
-                                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{Math.round(functionalDensity)}%</p>
-                                        </div>
-                                        <div className="hidden md:flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-300">
-                                            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                                            Auto Updating
-                                        </div>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        {designStage !== "functional_architecture" && canRollback && (
-                                            <button
-                                                onClick={handleRollbackToFunctional}
-                                                className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-                                            >
-                                                Back To Functional
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                                {designStage === "functional_architecture" && !isFunctionalArchitectureReady && (
-                                    <p className="text-xs text-slate-500 dark:text-slate-300">
-                                        Reach Information Density 100 to unlock scaffold generation.
-                                    </p>
-                                )}
-                                {designStage === "functional_architecture" && uiDesignState.needsResync && (
-                                    <p className="text-xs text-amber-500">Legacy UI draft data was detected and moved under architecture notes.</p>
-                                )}
-                            </div>
-
-                            <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
+                        <div className="absolute inset-0 p-4">
+                            <div className="relative h-full overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
                                 <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
                             </div>
                         </div>
