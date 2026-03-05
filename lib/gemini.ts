@@ -104,9 +104,9 @@ const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // Model Configuration
-// User explicitly requested gemini-3.1-pro-preview
-const CORE_MODEL = "gemini-3.1-pro-preview";
-const BACKUP_MODEL = "gemini-3-pro-preview";
+// User explicitly requested gemini-2.5-flash
+const CORE_MODEL = "gemini-2.5-flash";
+const BACKUP_MODEL = "gemini-2.5-flash";
 
 export function getActiveAiProvider() {
     return AI_PROVIDER || "gemini";

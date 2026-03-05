@@ -4,8 +4,8 @@ import { FileNode } from "@/types";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 const genAI = new GoogleGenerativeAI(apiKey);
-const CORE_MODEL = "gemini-3.1-pro-preview";
-const BACKUP_MODEL = "gemini-3-pro-preview";
+const CORE_MODEL = "gemini-2.5-flash";
+const BACKUP_MODEL = "gemini-2.5-flash";
 
 // Max size per chunk (e.g., 20KB characters ~ 5k tokens)
 const CHUNK_SIZE_LIMIT = 20000;
