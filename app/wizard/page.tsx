@@ -76,6 +76,11 @@ const EVALUATE_COMPACT_CONTEXT_CHARS = 4000;
 const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_COMPACT_DESIGN_MEMORY_CHARS = 5_000;
 const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
+const GENERATE_MAX_HISTORY_MESSAGES = 24;
+const GENERATE_MAX_MESSAGE_CONTENT_CHARS = 2_000;
+const GENERATE_MAX_ANALYSIS_CHARS = 10_000;
+const GENERATE_MAX_SUMMARY_CHARS = 50_000;
+const GENERATE_CLIENT_TIMEOUT_MS = 92_000;
 const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
@@ -678,6 +683,18 @@ function buildDesignMemory(
     ];
 
     return clipText(sections.join("\n").trim(), maxChars);
+}
+
+function buildGenerateSummary(
+    messages: Message[],
+    evaluation: EvaluationResponse | null
+) {
+    const recentMessages = messages.slice(-GENERATE_MAX_HISTORY_MESSAGES);
+    const transcript = recentMessages
+        .map((message) => `${message.role}: ${clipText((message.content || "").trim(), GENERATE_MAX_MESSAGE_CONTENT_CHARS)}`)
+        .join("\n");
+    const finalAnalysis = clipText(JSON.stringify(evaluation?.analysis ?? {}), GENERATE_MAX_ANALYSIS_CHARS);
+    return clipText(`${transcript}\n\nFinal Analysis: ${finalAnalysis}`.trim(), GENERATE_MAX_SUMMARY_CHARS);
 }
 
 function summarizeHtmlErrorBody(html: string) {
@@ -1881,25 +1898,31 @@ function WizardContent() {
         setHasUserEdited(true);
         try {
             await yieldToBrowser();
-            const historyText = messages.map(m => `${m.role}: ${m.content}`).join("\n") +
-                `\n\nFinal Analysis: ${JSON.stringify(evaluation?.analysis)}`;
+            const historyText = buildGenerateSummary(messages, evaluation);
             const outputLanguage = inferScaffoldOutputLanguage(messages);
             const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
-
-            const res = await fetch("/api/generate", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    summary: historyText,
-                    diagram: currentDiagram,
-                    projectName: project?.name,
-                    outputLanguage,
-                    oneClickMode: GENERATE_ONE_CLICK_MODE,
-                    ideProfile: GENERATE_IDE_PROFILE,
-                    templateKindHint,
-                    currentProjectTree: generation?.projectTree
-                }),
-            });
+            const controller = new AbortController();
+            const timeoutId = window.setTimeout(() => controller.abort(), GENERATE_CLIENT_TIMEOUT_MS);
+            let res: Response;
+            try {
+                res = await fetch("/api/generate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        summary: historyText,
+                        diagram: currentDiagram,
+                        projectName: project?.name,
+                        outputLanguage,
+                        oneClickMode: GENERATE_ONE_CLICK_MODE,
+                        ideProfile: GENERATE_IDE_PROFILE,
+                        templateKindHint,
+                        currentProjectTree: generation?.projectTree
+                    }),
+                    signal: controller.signal
+                });
+            } finally {
+                window.clearTimeout(timeoutId);
+            }
 
             if (!res.ok) {
                 let errorMessage = "Failed to generate";
@@ -1910,6 +1933,11 @@ function WizardContent() {
                     }
                 } catch {
                     // ignore parse error and keep fallback message
+                }
+                if (res.status === 504 && !/timeout/i.test(errorMessage)) {
+                    errorMessage = `${errorMessage}. Generation timed out on server. Please retry.`;
+                } else if (res.status === 524 && !/524/i.test(errorMessage)) {
+                    errorMessage = `${errorMessage}. Gateway timeout from CDN/origin (524). Please retry.`;
                 }
                 throw new Error(errorMessage);
             }
@@ -1931,7 +1959,11 @@ function WizardContent() {
 
         } catch (error) {
             console.error(error);
-            setGenerateError(error instanceof Error ? error.message : "Scaffold generation failed.");
+            if (error instanceof DOMException && error.name === "AbortError") {
+                setGenerateError("Scaffold generation timed out in browser. Please retry.");
+            } else {
+                setGenerateError(error instanceof Error ? error.message : "Scaffold generation failed.");
+            }
         } finally {
             setIsGenerating(false);
             generateInFlightRef.current = false;
