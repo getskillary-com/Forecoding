@@ -281,9 +281,14 @@ export default function DashboardPage() {
             <div className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.22),transparent_72%)]" />
             <div className="relative mx-auto max-w-6xl space-y-8">
                 <header className="fc-surface relative z-40 rounded-[var(--radius-2xl)] p-5 sm:p-7">
+                    <div className="mb-5 flex items-center justify-between">
+                        <BrandLogo />
+                        <div className="flex items-center gap-3">
+                            <UserCenter signOutCallbackUrl="/" />
+                        </div>
+                    </div>
                     <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
                         <div className="space-y-4">
-                            <BrandLogo />
                             <div>
                                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Workspace</p>
                                 <h1 className="mt-1 text-3xl font-semibold text-slate-900 dark:text-slate-100">Your Projects</h1>
@@ -297,7 +302,6 @@ export default function DashboardPage() {
                             </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-3">
-                            <UserCenter signOutCallbackUrl="/" />
                             <button
                                 onClick={openCreateModal}
                                 className="fc-button-primary inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold"
