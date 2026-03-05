@@ -46,6 +46,8 @@ type WeightedKeywordRule = {
     pattern: RegExp;
 };
 
+const GLOBAL_PRICE_MULTIPLIER = 0.5;
+
 const KEYWORD_RULES: WeightedKeywordRule[] = [
     { label: "video/streaming", score: 14, pattern: /\b(video|stream|streaming|transcode|cdn)\b/i },
     { label: "real-time", score: 10, pattern: /\b(realtime|real-time|websocket|socket|live chat)\b/i },
@@ -139,6 +141,10 @@ function normalizeAmount(value: number, fallback: number) {
 
 function roundToTenth(value: number) {
     return Math.round(value * 10) / 10;
+}
+
+function applyGlobalPriceMultiplier(amountCents: number) {
+    return Math.max(1, Math.round(amountCents * GLOBAL_PRICE_MULTIPLIER));
 }
 
 const UI_REQUIREMENT_KEYS: Array<keyof UiRequirements> = [
@@ -252,10 +258,11 @@ export function quoteProjectCreditPrice(
     project: Project | null,
     config: PricingConfig
 ): ProjectPricingQuote {
-    const baseAmountCents = normalizeAmount(config.baseAmountCents, 499);
+    const rawBaseAmountCents = normalizeAmount(config.baseAmountCents, 499);
+    const baseAmountCents = applyGlobalPriceMultiplier(rawBaseAmountCents);
     const maxAmountCents = Math.max(
         baseAmountCents,
-        normalizeAmount(config.maxAmountCents, baseAmountCents * 8)
+        applyGlobalPriceMultiplier(normalizeAmount(config.maxAmountCents, rawBaseAmountCents * 8))
     );
     const currency = (config.currency || "usd").trim().toLowerCase() || "usd";
 
@@ -342,7 +349,8 @@ export function quoteProjectCreditPrice(
         `Unresolved questions: ${missingCount}.`,
         `Generated structure: ${treeStats.fileCount} files, depth ${treeStats.maxDepth}.`,
         `Detected scope tags: ${keywordSignals.labels.length ? keywordSignals.labels.join(", ") : "none"}.`,
-        `UI design score: ${uiScore.uiDesignScore}/20 (coverage ${uiScore.breakdown.uiCoverageScore}/8, screens ${uiScore.breakdown.uiScreenScore}/5, states ${uiScore.breakdown.uiStateScore}/4, responsive ${uiScore.breakdown.uiResponsiveScore}/2, interaction ${uiScore.breakdown.uiInteractionScore}/1).`
+        `UI design score: ${uiScore.uiDesignScore}/20 (coverage ${uiScore.breakdown.uiCoverageScore}/8, screens ${uiScore.breakdown.uiScreenScore}/5, states ${uiScore.breakdown.uiStateScore}/4, responsive ${uiScore.breakdown.uiResponsiveScore}/2, interaction ${uiScore.breakdown.uiInteractionScore}/1).`,
+        `Global pricing multiplier applied: ${(GLOBAL_PRICE_MULTIPLIER * 100).toFixed(0)}%.`
     ];
 
     return {
