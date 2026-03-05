@@ -74,6 +74,10 @@ const GEMINI_STREAM_RETRY_JITTER_MS = Math.min(
     1_000,
     Math.max(0, readEnvNumber("GEMINI_STREAM_RETRY_JITTER_MS", 250))
 );
+const SCAFFOLD_MODEL_TIMEOUT_MS = Math.min(
+    90_000,
+    Math.max(10_000, readEnvNumber("SCAFFOLD_MODEL_TIMEOUT_MS", 45_000))
+);
 const OPENAI_COMPAT_MAX_ATTEMPTS = Math.min(
     4,
     Math.max(1, readEnvNumber("OPENAI_COMPAT_MAX_ATTEMPTS", 3))
@@ -267,6 +271,20 @@ function computeRetryDelayMs(baseMs: number, maxMs: number, jitterMs: number, at
     const exponentialMs = baseMs * Math.pow(2, attempt);
     const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
     return Math.min(maxMs, exponentialMs + jitter);
+}
+
+async function withSoftTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutErrorCode: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+        return await new Promise<T>((resolve, reject) => {
+            timer = setTimeout(() => {
+                reject(new Error(timeoutErrorCode));
+            }, timeoutMs);
+            promise.then(resolve).catch(reject);
+        });
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 console.log(`[AI] Active provider: ${AI_PROVIDER}`);
@@ -1542,29 +1560,30 @@ export async function generateProjectResources(
     try {
         console.log("[AI] Generating Scaffold...");
 
-        const text = await generateModelText(prompt, true);
-        console.log("[AI] Scaffold Raw Response:", text.substring(0, 200) + "...");
-
         let data;
         try {
+            const text = await withSoftTimeout(
+                generateModelText(prompt, true),
+                SCAFFOLD_MODEL_TIMEOUT_MS,
+                "SCAFFOLD_MODEL_TIMEOUT"
+            );
+            console.log("[AI] Scaffold Raw Response:", text.substring(0, 200) + "...");
             data = parseJsonResponse(text);
-        } catch (parseError) {
-            console.warn("[AI] JSON parse failed. Attempting JSON repair pass...");
-            try {
-                const repairedText = await generateModelText(buildJsonRepairPrompt(text), true);
-                data = parseJsonResponse(repairedText);
-            } catch (repairError) {
-                console.warn(
-                    `[AI] JSON repair failed. Falling back to minimal actionable scaffold. parseError=${getErrorMessage(parseError)} repairError=${getErrorMessage(repairError)}`
-                );
-                data = {
-                    projectTree: Array.isArray(existingProjectTree)
-                        ? JSON.parse(JSON.stringify(existingProjectTree))
-                        : [],
-                    toolStack: "",
-                    isFinal: true
-                };
+        } catch (primaryError) {
+            const primaryMessage = getErrorMessage(primaryError);
+            const hitModelTimeout = /SCAFFOLD_MODEL_TIMEOUT/.test(primaryMessage);
+            if (hitModelTimeout) {
+                console.warn("[AI] Scaffold model call timed out. Falling back to minimal actionable scaffold.");
+            } else {
+                console.warn(`[AI] JSON parse failed. Falling back to minimal actionable scaffold. error=${primaryMessage}`);
             }
+            data = {
+                projectTree: Array.isArray(existingProjectTree)
+                    ? JSON.parse(JSON.stringify(existingProjectTree))
+                    : [],
+                toolStack: "",
+                isFinal: true
+            };
         }
 
         data = normalizeGenerationData(data);
@@ -1826,23 +1845,6 @@ function parseJsonResponse(text: string) {
         toolStack: "",
         isFinal: true
     };
-}
-
-function buildJsonRepairPrompt(rawResponse: string) {
-    const maxChars = 16000;
-    const clipped = (rawResponse || "").slice(0, maxChars);
-
-    return [
-        "You are a JSON sanitizer.",
-        "Convert the following content into ONE valid JSON object only.",
-        "No markdown, no code fences, no explanation.",
-        "Keep keys and values from source whenever possible.",
-        "If source is unusable, return a minimal valid object with this schema:",
-        '{ "projectTree": [], "toolStack": "", "isFinal": true }',
-        "",
-        "SOURCE:",
-        clipped || "[EMPTY]"
-    ].join("\n");
 }
 
 function normalizeGenerationData(input: any) {
