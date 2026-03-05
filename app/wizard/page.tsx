@@ -46,6 +46,7 @@ const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then(
     )
 });
 import { VersionSidebar } from "@/components/VersionSidebar";
+import { UserCenter } from "@/components/UserCenter";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
     getCachedProjectSnapshot,
@@ -2080,6 +2081,7 @@ function WizardContent() {
                                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-400">Project</p>
                                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</p>
                                 </div>
+                                <UserCenter signOutCallbackUrl="/" />
                             </div>
 
                             {/* Chat Area */}

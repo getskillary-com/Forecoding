@@ -6,6 +6,7 @@ import { Plus, Folder, Clock, Trash2, Edit2, X, Copy, Check } from "lucide-react
 import { DiagramGovernance, Project, ProjectVersion, UiDesignState } from "@/types";
 import { useRouter } from "next/navigation";
 import { BrandLogo } from "@/components/BrandLogo";
+import { UserCenter } from "@/components/UserCenter";
 import {
     prefetchWorkspaceRemote,
     primeWorkspaceCache,
@@ -296,6 +297,7 @@ export default function DashboardPage() {
                             </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-3">
+                            <UserCenter signOutCallbackUrl="/" />
                             <button
                                 onClick={openCreateModal}
                                 className="fc-button-primary inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold"
