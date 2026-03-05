@@ -56,6 +56,7 @@ const DEEPSEEK_MODEL = readEnvString("DEEPSEEK_MODEL", "deepseek-chat");
 const DEEPSEEK_API_BASE_URL = readEnvString("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com/v1").replace(/\/+$/, "");
 const DEEPSEEK_MAX_TOKENS = readEnvNumber("DEEPSEEK_MAX_TOKENS", 4096);
 const DEEPSEEK_COOLDOWN_MS = readEnvNumber("DEEPSEEK_COOLDOWN_MS", 120000);
+const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
 const GEMINI_CORE_COOLDOWN_MS = readEnvNumber("GEMINI_CORE_COOLDOWN_MS", 180000);
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
@@ -91,7 +92,9 @@ const OPENAI_COMPAT_RETRY_JITTER_MS = Math.min(
 );
 
 const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
-    (CLAUDE_API_KEY
+    (GEMINI_API_KEY
+        ? "gemini"
+        : CLAUDE_API_KEY
         ? "claude"
         : OPENAI_API_KEY
             ? "chatgpt"
@@ -100,7 +103,6 @@ const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
                 : "gemini");
 
 // Initialize Gemini Client
-const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // Model Configuration
@@ -213,6 +215,15 @@ const OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS = [
     /timed out/i,
     /timeout/i
 ];
+const OPENAI_COMPAT_GEMINI_FALLBACK_ERROR_PATTERNS = [
+    /\b401\b/i,
+    /\b402\b/i,
+    /insufficient balance/i,
+    /insufficient[_\s-]?quota/i,
+    /payment required/i,
+    /billing/i,
+    /invalid api key/i
+];
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -242,6 +253,14 @@ function isRetryableGeminiCoreError(error: unknown) {
 function isRetryableOpenAiCompatError(error: unknown) {
     const message = getErrorMessage(error);
     return OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function isGeminiFallbackEligibleOpenAiCompatError(error: unknown) {
+    const message = getErrorMessage(error);
+    return (
+        OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message)) ||
+        OPENAI_COMPAT_GEMINI_FALLBACK_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+    );
 }
 
 function computeRetryDelayMs(baseMs: number, maxMs: number, jitterMs: number, attempt: number) {
@@ -1164,9 +1183,9 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
                 markChatGptFailure
             );
         } catch (error) {
-            const retryable = isRetryableOpenAiCompatError(error);
+            const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
             const message = getErrorMessage(error);
-            if (!retryable || !hasGeminiKey()) {
+            if (!fallbackEligible || !hasGeminiKey()) {
                 throw error;
             }
             console.warn(`[AI] ChatGPT request unavailable. Falling back to Gemini: ${message}`);
@@ -1183,9 +1202,9 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
                 markDeepSeekFailure
             );
         } catch (error) {
-            const retryable = isRetryableOpenAiCompatError(error);
+            const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
             const message = getErrorMessage(error);
-            if (!retryable || !hasGeminiKey()) {
+            if (!fallbackEligible || !hasGeminiKey()) {
                 throw error;
             }
             console.warn(`[AI] DeepSeek request unavailable. Falling back to Gemini: ${message}`);
@@ -1331,8 +1350,9 @@ export async function* streamEvaluateInput(
                 return;
             } catch (error) {
                 const retryable = isRetryableOpenAiCompatError(error);
+                const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
                 const message = getErrorMessage(error);
-                if (retryable && hasGeminiKey()) {
+                if (fallbackEligible && hasGeminiKey()) {
                     console.warn(`[AI] ChatGPT stream unavailable. Falling back to Gemini: ${message}`);
                 } else if (retryable) {
                     yield "<question>AI provider timeout. Please try again in a moment.</question>";
@@ -1357,8 +1377,9 @@ export async function* streamEvaluateInput(
                 return;
             } catch (error) {
                 const retryable = isRetryableOpenAiCompatError(error);
+                const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
                 const message = getErrorMessage(error);
-                if (retryable && hasGeminiKey()) {
+                if (fallbackEligible && hasGeminiKey()) {
                     console.warn(`[AI] DeepSeek stream unavailable. Falling back to Gemini: ${message}`);
                 } else if (retryable) {
                     yield "<question>AI provider timeout. Please try again in a moment.</question>";

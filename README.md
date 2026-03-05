@@ -39,7 +39,7 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ```env
 # options: gemini | claude | chatgpt | deepseek
-AI_PROVIDER=chatgpt
+AI_PROVIDER=gemini
 
 # Gemini
 GEMINI_API_KEY=your_gemini_api_key
