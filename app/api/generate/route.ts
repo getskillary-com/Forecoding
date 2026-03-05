@@ -11,7 +11,7 @@ const GENERATE_ROUTE_TIMEOUT_MS = Math.min(
     95_000,
     Math.max(
         10_000,
-        Number.parseInt(process.env.GENERATE_ROUTE_TIMEOUT_MS || "", 10) || 85_000
+        Number.parseInt(process.env.GENERATE_ROUTE_TIMEOUT_MS || "", 10) || 92_000
     )
 );
 const MAX_GENERATE_SUMMARY_CHARS = Math.min(

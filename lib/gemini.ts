@@ -1548,17 +1548,22 @@ export async function generateProjectResources(
         let data;
         try {
             data = parseJsonResponse(text);
-        } catch {
-            // Retry once with a stricter prompt to reduce JSON pollution
-            console.warn("[AI] JSON parse failed. Retrying with strict JSON response...");
-            const strictPrompt = `${prompt}\n\nIMPORTANT: Return ONLY valid JSON. No markdown, no commentary.`;
-            const retryText = await generateModelText(strictPrompt, true);
+        } catch (parseError) {
+            console.warn("[AI] JSON parse failed. Attempting JSON repair pass...");
             try {
-                data = parseJsonResponse(retryText);
-            } catch {
-                console.warn("[AI] Strict JSON parse failed. Attempting JSON repair pass...");
-                const repairedText = await generateModelText(buildJsonRepairPrompt(retryText), true);
+                const repairedText = await generateModelText(buildJsonRepairPrompt(text), true);
                 data = parseJsonResponse(repairedText);
+            } catch (repairError) {
+                console.warn(
+                    `[AI] JSON repair failed. Falling back to minimal actionable scaffold. parseError=${getErrorMessage(parseError)} repairError=${getErrorMessage(repairError)}`
+                );
+                data = {
+                    projectTree: Array.isArray(existingProjectTree)
+                        ? JSON.parse(JSON.stringify(existingProjectTree))
+                        : [],
+                    toolStack: "",
+                    isFinal: true
+                };
             }
         }
 
