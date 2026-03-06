@@ -34,8 +34,6 @@ function readEnvNumber(name: string, fallback: number) {
 function normalizeProvider(value: string | undefined) {
     const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
     if (raw === "claude" || raw === "anthropic") return "claude";
-    if (raw === "chatgpt" || raw === "openai" || raw === "gpt") return "chatgpt";
-    if (raw === "deepseek") return "deepseek";
     if (raw === "gemini" || raw === "google") return "gemini";
     return "";
 }
@@ -46,16 +44,6 @@ const CLAUDE_API_BASE_URL = readEnvString("CLAUDE_API_BASE_URL", "https://api.an
 const CLAUDE_API_VERSION = readEnvString("CLAUDE_API_VERSION", "2023-06-01");
 const CLAUDE_MAX_TOKENS = readEnvNumber("CLAUDE_MAX_TOKENS", 8192);
 const CLAUDE_COOLDOWN_MS = readEnvNumber("CLAUDE_COOLDOWN_MS", 120000);
-const OPENAI_API_KEY = readEnvString("OPENAI_API_KEY");
-const OPENAI_MODEL = readEnvString("OPENAI_MODEL", "gpt-4o-mini");
-const OPENAI_API_BASE_URL = readEnvString("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MAX_TOKENS = readEnvNumber("OPENAI_MAX_TOKENS", 4096);
-const OPENAI_COOLDOWN_MS = readEnvNumber("OPENAI_COOLDOWN_MS", 120000);
-const DEEPSEEK_API_KEY = readEnvString("DEEPSEEK_API_KEY");
-const DEEPSEEK_MODEL = readEnvString("DEEPSEEK_MODEL", "deepseek-chat");
-const DEEPSEEK_API_BASE_URL = readEnvString("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com/v1").replace(/\/+$/, "");
-const DEEPSEEK_MAX_TOKENS = readEnvNumber("DEEPSEEK_MAX_TOKENS", 4096);
-const DEEPSEEK_COOLDOWN_MS = readEnvNumber("DEEPSEEK_COOLDOWN_MS", 120000);
 const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
 const GEMINI_CORE_COOLDOWN_MS = readEnvNumber("GEMINI_CORE_COOLDOWN_MS", 180000);
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
@@ -78,33 +66,13 @@ const SCAFFOLD_MODEL_TIMEOUT_MS = Math.min(
     90_000,
     Math.max(10_000, readEnvNumber("SCAFFOLD_MODEL_TIMEOUT_MS", 45_000))
 );
-const OPENAI_COMPAT_MAX_ATTEMPTS = Math.min(
-    4,
-    Math.max(1, readEnvNumber("OPENAI_COMPAT_MAX_ATTEMPTS", 3))
-);
-const OPENAI_COMPAT_RETRY_BASE_MS = Math.min(
-    2_000,
-    Math.max(100, readEnvNumber("OPENAI_COMPAT_RETRY_BASE_MS", 350))
-);
-const OPENAI_COMPAT_RETRY_MAX_MS = Math.min(
-    8_000,
-    Math.max(500, readEnvNumber("OPENAI_COMPAT_RETRY_MAX_MS", 4000))
-);
-const OPENAI_COMPAT_RETRY_JITTER_MS = Math.min(
-    1_000,
-    Math.max(0, readEnvNumber("OPENAI_COMPAT_RETRY_JITTER_MS", 250))
-);
 
 const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
     (GEMINI_API_KEY
         ? "gemini"
         : CLAUDE_API_KEY
         ? "claude"
-        : OPENAI_API_KEY
-            ? "chatgpt"
-            : DEEPSEEK_API_KEY
-                ? "deepseek"
-                : "gemini");
+        : "gemini");
 
 // Initialize Gemini Client
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -122,29 +90,11 @@ function isClaudeProvider() {
     return AI_PROVIDER === "claude";
 }
 
-function isChatGptProvider() {
-    return AI_PROVIDER === "chatgpt";
-}
-
-function isDeepSeekProvider() {
-    return AI_PROVIDER === "deepseek";
-}
-
 function hasGeminiKey() {
     return Boolean(GEMINI_API_KEY);
 }
 
-function hasOpenAiKey() {
-    return Boolean(OPENAI_API_KEY);
-}
-
-function hasDeepSeekKey() {
-    return Boolean(DEEPSEEK_API_KEY);
-}
-
 let claudeCooldownUntil = 0;
-let chatGptCooldownUntil = 0;
-let deepSeekCooldownUntil = 0;
 let geminiCoreCooldownUntil = 0;
 
 function shouldSkipClaude() {
@@ -153,22 +103,6 @@ function shouldSkipClaude() {
 
 function markClaudeFailure() {
     claudeCooldownUntil = Date.now() + CLAUDE_COOLDOWN_MS;
-}
-
-function shouldSkipChatGpt() {
-    return Date.now() < chatGptCooldownUntil;
-}
-
-function markChatGptFailure() {
-    chatGptCooldownUntil = Date.now() + OPENAI_COOLDOWN_MS;
-}
-
-function shouldSkipDeepSeek() {
-    return Date.now() < deepSeekCooldownUntil;
-}
-
-function markDeepSeekFailure() {
-    deepSeekCooldownUntil = Date.now() + DEEPSEEK_COOLDOWN_MS;
 }
 
 function shouldSkipGeminiCore() {
@@ -203,31 +137,6 @@ const GEMINI_CORE_RETRYABLE_ERROR_PATTERNS = [
     /timed out/i,
     /timeout/i
 ];
-const OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS = [
-    /\b429\b/i,
-    /\b500\b/i,
-    /\b502\b/i,
-    /\b503\b/i,
-    /\b504\b/i,
-    /rate limit/i,
-    /high demand/i,
-    /overloaded/i,
-    /temporarily unavailable/i,
-    /service unavailable/i,
-    /resource exhausted/i,
-    /insufficient_quota/i,
-    /timed out/i,
-    /timeout/i
-];
-const OPENAI_COMPAT_GEMINI_FALLBACK_ERROR_PATTERNS = [
-    /\b401\b/i,
-    /\b402\b/i,
-    /insufficient balance/i,
-    /insufficient[_\s-]?quota/i,
-    /payment required/i,
-    /billing/i,
-    /invalid api key/i
-];
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -252,19 +161,6 @@ function isRetryableClaudeStreamError(error: unknown) {
 function isRetryableGeminiCoreError(error: unknown) {
     const message = getErrorMessage(error);
     return GEMINI_CORE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
-
-function isRetryableOpenAiCompatError(error: unknown) {
-    const message = getErrorMessage(error);
-    return OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
-
-function isGeminiFallbackEligibleOpenAiCompatError(error: unknown) {
-    const message = getErrorMessage(error);
-    return (
-        OPENAI_COMPAT_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message)) ||
-        OPENAI_COMPAT_GEMINI_FALLBACK_ERROR_PATTERNS.some((pattern) => pattern.test(message))
-    );
 }
 
 function computeRetryDelayMs(baseMs: number, maxMs: number, jitterMs: number, attempt: number) {
@@ -419,58 +315,6 @@ function buildClaudeMessages(messages: Message[]) {
     }));
 }
 
-type OpenAiCompatRole = "system" | "user" | "assistant";
-type OpenAiCompatMessage = { role: OpenAiCompatRole; content: string };
-type OpenAiCompatConfig = {
-    providerName: "ChatGPT" | "DeepSeek";
-    envKey: "OPENAI_API_KEY" | "DEEPSEEK_API_KEY";
-    apiStyle: "responses" | "chat_completions";
-    apiKey: string;
-    model: string;
-    baseUrl: string;
-    maxTokens: number;
-};
-
-function buildOpenAiCompatMessageContent(message: Message) {
-    const parts: string[] = [];
-    if (message.content) {
-        parts.push(message.content);
-    }
-
-    for (const attachment of message.attachments || []) {
-        if (attachment.type === "text") {
-            parts.push(`\n\n[Attached File: ${attachment.name}]\n${attachment.content}`);
-            continue;
-        }
-
-        parts.push(`\n\n[Attachment omitted in ${AI_PROVIDER} mode: ${attachment.name} (${attachment.mimeType})]`);
-    }
-
-    return parts.join("");
-}
-
-function buildOpenAiCompatMessages(messages: Message[]): OpenAiCompatMessage[] {
-    return messages.map((message) => ({
-        role: message.role === "assistant" ? "assistant" : "user",
-        content: buildOpenAiCompatMessageContent(message)
-    }));
-}
-
-function buildOpenAiCompatTranscript(systemInstructionText: string, messages: Message[]) {
-    const lines: string[] = [];
-    if (systemInstructionText.trim()) {
-        lines.push(`[system]\n${systemInstructionText.trim()}`);
-    }
-
-    for (const message of messages) {
-        const role = message.role === "assistant" ? "assistant" : "user";
-        const content = buildOpenAiCompatMessageContent(message).trim();
-        lines.push(`[${role}]\n${content}`);
-    }
-
-    return lines.join("\n\n");
-}
-
 function splitSseEvents(buffer: string) {
     // Some gateways normalize SSE lines to CRLF. Normalize before event splitting.
     const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -478,368 +322,6 @@ function splitSseEvents(buffer: string) {
     const remainder = events.pop() || "";
     return { events, remainder };
 }
-
-function normalizeOpenAiCompatContent(content: unknown): string {
-    if (typeof content === "string") {
-        return content;
-    }
-
-    if (Array.isArray(content)) {
-        return content
-            .map((item) => {
-                if (typeof item === "string") return item;
-                if (!item || typeof item !== "object") return "";
-                const candidate = item as { text?: unknown };
-                return typeof candidate.text === "string" ? candidate.text : "";
-            })
-            .join("");
-    }
-
-    if (content && typeof content === "object") {
-        const candidate = content as { text?: unknown };
-        if (typeof candidate.text === "string") {
-            return candidate.text;
-        }
-    }
-
-    return "";
-}
-
-function extractOpenAiCompatResponseText(payload: unknown): string {
-    if (!payload || typeof payload !== "object") return "";
-    const choices = (payload as { choices?: Array<{ message?: { content?: unknown } }> }).choices;
-    if (!Array.isArray(choices) || choices.length === 0) return "";
-    return choices
-        .map((choice) => normalizeOpenAiCompatContent(choice?.message?.content))
-        .join("");
-}
-
-function extractOpenAiResponsesText(payload: unknown): string {
-    if (!payload || typeof payload !== "object") return "";
-    const source = payload as {
-        output_text?: unknown;
-        output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-    };
-    if (typeof source.output_text === "string" && source.output_text.trim()) {
-        return source.output_text;
-    }
-
-    const output = Array.isArray(source.output) ? source.output : [];
-    return output
-        .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
-        .filter((part) => part?.type === "output_text" && typeof part.text === "string")
-        .map((part) => part.text || "")
-        .join("");
-}
-
-function parseOpenAiCompatChatSseChunk(rawEvent: string) {
-    const dataLines = rawEvent
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim());
-
-    if (!dataLines.length) return { text: "", error: "" };
-
-    const rawData = dataLines.join("\n");
-    if (!rawData || rawData === "[DONE]") return { text: "", error: "" };
-
-    try {
-        const payload = JSON.parse(rawData) as {
-            error?: { message?: string };
-            choices?: Array<{
-                delta?: { content?: unknown };
-                message?: { content?: unknown };
-            }>;
-        };
-
-        if (payload.error?.message) {
-            return { text: "", error: payload.error.message };
-        }
-
-        const choices = Array.isArray(payload.choices) ? payload.choices : [];
-        const text = choices
-            .map((choice) => (
-                normalizeOpenAiCompatContent(choice?.delta?.content) ||
-                normalizeOpenAiCompatContent(choice?.message?.content)
-            ))
-            .join("");
-        return { text, error: "" };
-    } catch {
-        return { text: "", error: "" };
-    }
-}
-
-function parseOpenAiResponsesSseChunk(rawEvent: string) {
-    const dataLines = rawEvent
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim());
-
-    if (!dataLines.length) return { text: "", error: "" };
-
-    const rawData = dataLines.join("\n");
-    if (!rawData || rawData === "[DONE]") return { text: "", error: "" };
-
-    try {
-        const payload = JSON.parse(rawData) as {
-            type?: string;
-            delta?: string;
-            error?: { message?: string };
-            response?: { output_text?: string };
-        };
-
-        if (payload.error?.message) {
-            return { text: "", error: payload.error.message };
-        }
-
-        if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") {
-            return { text: payload.delta, error: "" };
-        }
-
-        if (payload.type === "response.completed") {
-            return { text: "", error: "" };
-        }
-    } catch {
-        return { text: "", error: "" };
-    }
-
-    return { text: "", error: "" };
-}
-
-async function generateTextWithOpenAiCompat(
-    prompt: string,
-    config: OpenAiCompatConfig,
-    options: { jsonMode?: boolean } = {}
-) {
-    if (!config.apiKey) {
-        throw new Error(`${config.envKey} is missing.`);
-    }
-
-    if (config.apiStyle === "responses") {
-        const requestBody: {
-            model: string;
-            input: string;
-            max_output_tokens?: number;
-        } = {
-            model: config.model,
-            input: prompt
-        };
-        if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
-            requestBody.max_output_tokens = Math.floor(config.maxTokens);
-        }
-
-        const response = await fetch(`${config.baseUrl}/responses`, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                authorization: `Bearer ${config.apiKey}`
-            },
-            body: JSON.stringify(requestBody)
-        });
-
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
-        }
-
-        const payload = await response.json();
-        const text = extractOpenAiResponsesText(payload);
-        if (!text) {
-            throw new Error(`[${config.providerName}] Empty response text.`);
-        }
-        return text;
-    }
-
-    const requestBody: {
-        model: string;
-        max_tokens?: number;
-        messages: OpenAiCompatMessage[];
-        response_format?: { type: "json_object" };
-    } = {
-        model: config.model,
-        messages: [{ role: "user", content: prompt }]
-    };
-    if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
-        requestBody.max_tokens = Math.floor(config.maxTokens);
-    }
-    if (options.jsonMode && config.providerName === "ChatGPT") {
-        requestBody.response_format = { type: "json_object" };
-    }
-
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
-    }
-
-    const payload = await response.json();
-    const text = extractOpenAiCompatResponseText(payload);
-    if (!text) {
-        throw new Error(`[${config.providerName}] Empty response text.`);
-    }
-    return text;
-}
-
-async function* streamWithOpenAiCompat(
-    messages: Message[],
-    systemInstructionText: string,
-    config: OpenAiCompatConfig
-) {
-    if (!config.apiKey) {
-        throw new Error(`${config.envKey} is missing.`);
-    }
-
-    if (config.apiStyle === "responses") {
-        const payload: {
-            model: string;
-            stream: true;
-            input: string;
-            max_output_tokens?: number;
-        } = {
-            model: config.model,
-            stream: true,
-            input: buildOpenAiCompatTranscript(systemInstructionText, messages)
-        };
-        if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
-            payload.max_output_tokens = Math.floor(config.maxTokens);
-        }
-
-        const response = await fetch(`${config.baseUrl}/responses`, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                authorization: `Bearer ${config.apiKey}`
-            },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
-        }
-
-        if (!response.body) {
-            throw new Error(`[${config.providerName}] Empty streaming body.`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const split = splitSseEvents(buffer);
-            const events = split.events;
-            buffer = split.remainder;
-
-            for (const rawEvent of events) {
-                const parsed = parseOpenAiResponsesSseChunk(rawEvent);
-                if (parsed.error) throw new Error(parsed.error);
-                if (parsed.text) yield parsed.text;
-            }
-        }
-
-        if (buffer.trim()) {
-            const parsed = parseOpenAiResponsesSseChunk(buffer);
-            if (parsed.error) throw new Error(parsed.error);
-            if (parsed.text) yield parsed.text;
-        }
-        return;
-    }
-
-    const payload: {
-        model: string;
-        stream: true;
-        max_tokens?: number;
-        messages: OpenAiCompatMessage[];
-    } = {
-        model: config.model,
-        stream: true,
-        messages: [
-            { role: "system", content: systemInstructionText },
-            ...buildOpenAiCompatMessages(messages)
-        ]
-    };
-    if (Number.isFinite(config.maxTokens) && config.maxTokens > 0) {
-        payload.max_tokens = Math.floor(config.maxTokens);
-    }
-
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`[${config.providerName}] ${response.status}: ${clipErrorText(errorBody)}`);
-    }
-
-    if (!response.body) {
-        throw new Error(`[${config.providerName}] Empty streaming body.`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const split = splitSseEvents(buffer);
-        const events = split.events;
-        buffer = split.remainder;
-
-        for (const rawEvent of events) {
-            const parsed = parseOpenAiCompatChatSseChunk(rawEvent);
-            if (parsed.error) throw new Error(parsed.error);
-            if (parsed.text) yield parsed.text;
-        }
-    }
-
-    if (buffer.trim()) {
-        const parsed = parseOpenAiCompatChatSseChunk(buffer);
-        if (parsed.error) throw new Error(parsed.error);
-        if (parsed.text) yield parsed.text;
-    }
-}
-
-const CHATGPT_CONFIG: OpenAiCompatConfig = {
-    providerName: "ChatGPT",
-    envKey: "OPENAI_API_KEY",
-    apiStyle: "responses",
-    apiKey: OPENAI_API_KEY,
-    model: OPENAI_MODEL,
-    baseUrl: OPENAI_API_BASE_URL,
-    maxTokens: OPENAI_MAX_TOKENS
-};
-
-const DEEPSEEK_CONFIG: OpenAiCompatConfig = {
-    providerName: "DeepSeek",
-    envKey: "DEEPSEEK_API_KEY",
-    apiStyle: "chat_completions",
-    apiKey: DEEPSEEK_API_KEY,
-    model: DEEPSEEK_MODEL,
-    baseUrl: DEEPSEEK_API_BASE_URL,
-    maxTokens: DEEPSEEK_MAX_TOKENS
-};
-
 function parseClaudeTextResponse(payload: unknown): string {
     if (!payload || typeof payload !== "object") return "";
     const content = (payload as { content?: Array<{ type?: string; text?: string }> }).content;
@@ -1104,131 +586,7 @@ async function* streamWithGemini(
     }
 }
 
-async function generateTextWithOpenAiCompatRetries(
-    prompt: string,
-    config: OpenAiCompatConfig,
-    options: { jsonMode?: boolean } = {},
-    onRetryableFailure?: () => void
-) {
-    for (let attempt = 0; attempt < OPENAI_COMPAT_MAX_ATTEMPTS; attempt++) {
-        try {
-            return await generateTextWithOpenAiCompat(prompt, config, options);
-        } catch (error) {
-            const retryable = isRetryableOpenAiCompatError(error);
-            const isLastAttempt = attempt >= OPENAI_COMPAT_MAX_ATTEMPTS - 1;
-            const message = getErrorMessage(error);
-
-            if (!retryable || isLastAttempt) {
-                if (retryable && onRetryableFailure) onRetryableFailure();
-                throw error;
-            }
-
-            const backoffMs = computeRetryDelayMs(
-                OPENAI_COMPAT_RETRY_BASE_MS,
-                OPENAI_COMPAT_RETRY_MAX_MS,
-                OPENAI_COMPAT_RETRY_JITTER_MS,
-                attempt
-            );
-            console.warn(
-                `[AI] ${config.providerName} request transient failure. Retrying in ${backoffMs}ms (attempt ${attempt + 1}/${OPENAI_COMPAT_MAX_ATTEMPTS}): ${message}`
-            );
-            await sleep(backoffMs);
-        }
-    }
-
-    throw new Error(`[AI] ${config.providerName} request failed after retries.`);
-}
-
-async function* streamWithOpenAiCompatRetries(
-    messages: Message[],
-    systemInstructionText: string,
-    config: OpenAiCompatConfig,
-    onRetryableFailure?: () => void
-) {
-    for (let attempt = 0; attempt < OPENAI_COMPAT_MAX_ATTEMPTS; attempt++) {
-        let emittedAnyChunk = false;
-        try {
-            for await (const chunk of streamWithOpenAiCompat(messages, systemInstructionText, config)) {
-                if (!chunk) continue;
-                emittedAnyChunk = true;
-                yield chunk;
-            }
-            return;
-        } catch (error) {
-            const retryable = isRetryableOpenAiCompatError(error);
-            const isLastAttempt = attempt >= OPENAI_COMPAT_MAX_ATTEMPTS - 1;
-            const message = getErrorMessage(error);
-
-            if (emittedAnyChunk || !retryable || isLastAttempt) {
-                if (!emittedAnyChunk && retryable && onRetryableFailure) {
-                    onRetryableFailure();
-                }
-                throw error;
-            }
-
-            const backoffMs = computeRetryDelayMs(
-                OPENAI_COMPAT_RETRY_BASE_MS,
-                OPENAI_COMPAT_RETRY_MAX_MS,
-                OPENAI_COMPAT_RETRY_JITTER_MS,
-                attempt
-            );
-            console.warn(
-                `[AI] ${config.providerName} stream transient failure. Retrying in ${backoffMs}ms (attempt ${attempt + 1}/${OPENAI_COMPAT_MAX_ATTEMPTS}): ${message}`
-            );
-            await sleep(backoffMs);
-        }
-    }
-
-    throw new Error(`[AI] ${config.providerName} stream failed after retries.`);
-}
-
 async function generateModelText(prompt: string, isJsonMode: boolean = false) {
-    if (isChatGptProvider() && !hasOpenAiKey()) {
-        throw new Error("OPENAI_API_KEY is missing.");
-    }
-
-    if (isDeepSeekProvider() && !hasDeepSeekKey()) {
-        throw new Error("DEEPSEEK_API_KEY is missing.");
-    }
-
-    // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
-    if (isChatGptProvider()) {
-        try {
-            return await generateTextWithOpenAiCompatRetries(
-                prompt,
-                CHATGPT_CONFIG,
-                { jsonMode: isJsonMode },
-                markChatGptFailure
-            );
-        } catch (error) {
-            const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
-            const message = getErrorMessage(error);
-            if (!fallbackEligible || !hasGeminiKey()) {
-                throw error;
-            }
-            console.warn(`[AI] ChatGPT request unavailable. Falling back to Gemini: ${message}`);
-        }
-    }
-
-    // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
-    if (isDeepSeekProvider()) {
-        try {
-            return await generateTextWithOpenAiCompatRetries(
-                prompt,
-                DEEPSEEK_CONFIG,
-                { jsonMode: isJsonMode },
-                markDeepSeekFailure
-            );
-        } catch (error) {
-            const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
-            const message = getErrorMessage(error);
-            if (!fallbackEligible || !hasGeminiKey()) {
-                throw error;
-            }
-            console.warn(`[AI] DeepSeek request unavailable. Falling back to Gemini: ${message}`);
-        }
-    }
-
     // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
     if (isClaudeProvider()) {
         const maxClaudeAttempts = 2;
@@ -1315,24 +673,9 @@ export async function* streamEvaluateInput(
     try {
         const activeProvider = getActiveAiProvider();
         const forceGeminiBackup = options?.preferBackupModel === true && hasGeminiKey();
-        const forceChatGptNonStreamBackup = options?.preferBackupModel === true && isChatGptProvider();
         console.log(
-            `[AI] Evaluate provider routing configured=${activeProvider} hasGemini=${hasGeminiKey()} hasOpenAI=${hasOpenAiKey()} hasDeepSeek=${hasDeepSeekKey()} chatgptCooldown=${shouldSkipChatGpt()} deepseekCooldown=${shouldSkipDeepSeek()} claudeCooldown=${shouldSkipClaude()}`
+            `[AI] Evaluate provider routing configured=${activeProvider} hasGemini=${hasGeminiKey()} claudeCooldown=${shouldSkipClaude()}`
         );
-
-        if (forceChatGptNonStreamBackup) {
-            console.warn("[AI] Evaluate backup mode enabled. Switching ChatGPT retry to non-stream responses call.");
-            const retryText = await generateTextWithOpenAiCompatRetries(
-                buildOpenAiCompatTranscript(systemInstructionText, messages),
-                CHATGPT_CONFIG,
-                { jsonMode: false },
-                markChatGptFailure
-            );
-            if (retryText) {
-                yield retryText;
-            }
-            return;
-        }
 
         if (forceGeminiBackup) {
             console.warn(`[AI] Evaluate backup mode enabled. Bypassing ${activeProvider} and using Gemini fallback stream.`);
@@ -1344,68 +687,6 @@ export async function* streamEvaluateInput(
                 if (chunk) yield chunk;
             }
             return;
-        }
-
-        if (isChatGptProvider() && !hasOpenAiKey()) {
-            throw new Error("OPENAI_API_KEY is missing.");
-        }
-
-        if (isDeepSeekProvider() && !hasDeepSeekKey()) {
-            throw new Error("DEEPSEEK_API_KEY is missing.");
-        }
-
-        // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
-        if (isChatGptProvider()) {
-            try {
-                for await (const chunk of streamWithOpenAiCompatRetries(
-                    messages,
-                    systemInstructionText,
-                    CHATGPT_CONFIG,
-                    markChatGptFailure
-                )) {
-                    if (chunk) yield chunk;
-                }
-                return;
-            } catch (error) {
-                const retryable = isRetryableOpenAiCompatError(error);
-                const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
-                const message = getErrorMessage(error);
-                if (fallbackEligible && hasGeminiKey()) {
-                    console.warn(`[AI] ChatGPT stream unavailable. Falling back to Gemini: ${message}`);
-                } else if (retryable) {
-                    yield "<question>AI provider timeout. Please try again in a moment.</question>";
-                    return;
-                } else {
-                    throw error;
-                }
-            }
-        }
-
-        // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
-        if (isDeepSeekProvider()) {
-            try {
-                for await (const chunk of streamWithOpenAiCompatRetries(
-                    messages,
-                    systemInstructionText,
-                    DEEPSEEK_CONFIG,
-                    markDeepSeekFailure
-                )) {
-                    if (chunk) yield chunk;
-                }
-                return;
-            } catch (error) {
-                const retryable = isRetryableOpenAiCompatError(error);
-                const fallbackEligible = isGeminiFallbackEligibleOpenAiCompatError(error);
-                const message = getErrorMessage(error);
-                if (fallbackEligible && hasGeminiKey()) {
-                    console.warn(`[AI] DeepSeek stream unavailable. Falling back to Gemini: ${message}`);
-                } else if (retryable) {
-                    yield "<question>AI provider timeout. Please try again in a moment.</question>";
-                    return;
-                } else {
-                    throw error;
-                }
-            }
         }
 
         let shouldUseGeminiStream = !isClaudeProvider();
@@ -2855,7 +2136,6 @@ const DEPENDENCY_CATALOG: Array<{ match: RegExp; deps?: Record<string, string>; 
     { match: /recharts|chart/, deps: { recharts: "^2.13.0" } },
     { match: /\bxlsx\b|excel/, deps: { xlsx: "^0.18.5" } },
     { match: /pdf-parse|mammoth|docx|word|pdf/, deps: { "pdf-parse": "^1.1.1", mammoth: "^1.9.0" } },
-    { match: /openai|@ai-sdk\/openai|vercel ai sdk/, deps: { ai: "^4.3.16", "@ai-sdk/openai": "^1.3.22" } },
     { match: /zod/, deps: { zod: "^3.23.8" } },
     { match: /react query|tanstack query/, deps: { "@tanstack/react-query": "^5.45.0" } },
     { match: /tailwind/, devDeps: { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } },
@@ -2971,8 +2251,6 @@ function generatePackageJson(input: {
     const usesZod = /\bzod\b/.test(stack);
     const usesSWR = /\bswr\b/.test(stack);
     const usesSupabase = /supabase|@supabase\/ssr|@supabase\/supabase-js/.test(stack);
-    const usesVercelAiSdk = /vercel ai sdk|\bgenerateobject\b|\bfrom\s+["']ai["']|@ai-sdk\/openai/.test(stack);
-    const usesOpenAiSdk = /openai|@ai-sdk\/openai/.test(stack);
     const usesShadcn = /shadcn|radix|class-variance-authority|tailwind-merge|clsx/.test(stack);
     const usesDateFns = /date-fns|date range|calendar/.test(stack);
     const usesPrisma = /prisma/.test(stack);
@@ -3000,8 +2278,6 @@ function generatePackageJson(input: {
     if (usesSWR) extraDeps["swr"] = "^2.2.5";
     if (usesSupabase) extraDeps["@supabase/supabase-js"] = "^2.49.1";
     if (usesSupabase) extraDeps["@supabase/ssr"] = "^0.5.2";
-    if (usesVercelAiSdk) extraDeps["ai"] = "^4.3.16";
-    if (usesOpenAiSdk) extraDeps["@ai-sdk/openai"] = "^1.3.22";
     if (usesShadcn) extraDeps["class-variance-authority"] = "^0.7.1";
     if (usesShadcn) extraDeps["clsx"] = "^2.1.1";
     if (usesShadcn) extraDeps["tailwind-merge"] = "^2.6.0";

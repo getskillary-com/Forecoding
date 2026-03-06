@@ -11,17 +11,6 @@ const EVALUATE_TOTAL_TIMEOUT_MS = Math.max(
     readBoundedIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 70_000, 20_000, 90_000),
     EVALUATE_MODEL_IDLE_TIMEOUT_MS + 5_000
 );
-// ChatGPT via Responses API can take longer before first meaningful chunk on large system prompts.
-const EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS = readBoundedIntEnv(
-    "EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS",
-    45_000,
-    20_000,
-    120_000
-);
-const EVALUATE_CHATGPT_TOTAL_TIMEOUT_MS = Math.max(
-    readBoundedIntEnv("EVALUATE_CHATGPT_TOTAL_TIMEOUT_MS", 130_000, 45_000, 240_000),
-    EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS + 5_000
-);
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
@@ -364,16 +353,10 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
         const provider = getActiveAiProvider();
-        const timeoutBudget =
-            provider === "chatgpt"
-                ? {
-                    idleTimeoutMs: EVALUATE_CHATGPT_MODEL_IDLE_TIMEOUT_MS,
-                    totalTimeoutMs: EVALUATE_CHATGPT_TOTAL_TIMEOUT_MS
-                }
-                : {
-                    idleTimeoutMs: EVALUATE_MODEL_IDLE_TIMEOUT_MS,
-                    totalTimeoutMs: EVALUATE_TOTAL_TIMEOUT_MS
-                };
+        const timeoutBudget = {
+            idleTimeoutMs: EVALUATE_MODEL_IDLE_TIMEOUT_MS,
+            totalTimeoutMs: EVALUATE_TOTAL_TIMEOUT_MS
+        };
         const messageStats = getMessageStats(messages);
         console.log(
             `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
@@ -458,13 +441,7 @@ export async function POST(req: Request) {
                             `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}; retrying compact payload`
                         );
                         try {
-                            const compactRetryTimeoutBudget =
-                                provider === "chatgpt"
-                                    ? {
-                                        idleTimeoutMs: timeoutBudget.totalTimeoutMs,
-                                        totalTimeoutMs: timeoutBudget.totalTimeoutMs
-                                    }
-                                    : timeoutBudget;
+                            const compactRetryTimeoutBudget = timeoutBudget;
                             const retryMessages = buildRetryMessages(messages);
                             const retryContext = contextText
                                 ? clipText(contextText, EVALUATE_RETRY_CONTEXT_CHARS)
@@ -501,7 +478,7 @@ export async function POST(req: Request) {
                             );
                         } catch (retryError) {
                             console.error(
-                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${provider === "chatgpt" ? timeoutBudget.totalTimeoutMs : timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
+                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
                             );
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(retryError)
