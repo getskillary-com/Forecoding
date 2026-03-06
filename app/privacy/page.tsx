@@ -18,10 +18,7 @@ export default function PrivacyPage() {
         <header className="space-y-3 border-b border-[color:var(--border)] pb-6">
           <h1 className="text-3xl font-semibold text-slate-900 dark:text-slate-100">Privacy Policy</h1>
           <p className="text-sm text-slate-500 dark:text-slate-300">Effective Date: February 26, 2026</p>
-          <p className="text-sm text-slate-500 dark:text-slate-300">Legal Entity: CIVRA LTD</p>
-          <p className="text-sm text-slate-500 dark:text-slate-300">
-            Registered Address: 71-75 Shelton Street, Covent Garden, London, England, WC2H 9JQ, United Kingdom
-          </p>
+          <p className="text-sm text-slate-500 dark:text-slate-300">Legal Entity: Forecoding</p>
           <p className="text-sm text-slate-500 dark:text-slate-300">
             Contact Email: <a href="mailto:support@forecoding.com" className="underline">support@forecoding.com</a>
           </p>
@@ -29,7 +26,7 @@ export default function PrivacyPage() {
 
         <article className="space-y-6 text-sm leading-7 text-slate-700 dark:text-slate-300">
           <p>
-            This Privacy Policy explains how CIVRA LTD (&quot;Company,&quot; &quot;we,&quot; &quot;us,&quot; or &quot;our&quot;) collects, uses,
+            This Privacy Policy explains how Forecoding (&quot;Company,&quot; &quot;we,&quot; &quot;us,&quot; or &quot;our&quot;) collects, uses,
             discloses, and safeguards Personal Information in connection with the Forecoding AI SaaS platform
             (&quot;Service&quot;).
           </p>
@@ -50,7 +47,7 @@ export default function PrivacyPage() {
 
           <section className="space-y-2">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">2. Data Controller</h2>
-            <p>CIVRA LTD acts as the Data Controller for Personal Information processed through the Service.</p>
+            <p>Forecoding acts as the Data Controller for Personal Information processed through the Service.</p>
             <p>The following providers act as Data Processors:</p>
             <ul className="list-disc pl-6 space-y-1">
               <li>Stripe (payment processing)</li>
@@ -160,7 +157,6 @@ export default function PrivacyPage() {
               <li>Right to lodge a complaint with a supervisory authority</li>
             </ul>
             <p>Requests will be processed within 30 days. Submit requests to: support@forecoding.com</p>
-            <p>UK supervisory authority: Information Commissioner&apos;s Office (ICO)</p>
           </section>
 
           <section className="space-y-2">

@@ -2,7 +2,7 @@ Terms of Service
 
 Effective Date: February 26, 2026
 
-These Terms of Service (“Terms”) govern access to and use of Forecoding, operated by CIVRA LTD, 71-75 Shelton Street, Covent Garden, London, England, WC2H 9JQ, United Kingdom.
+These Terms of Service ("Terms") govern access to and use of Forecoding, operated by Forecoding.
 
 1. Acceptance
 
@@ -48,7 +48,7 @@ Circumvent usage limitations
 
 5. Intellectual Property
 
-All platform software, systems, and infrastructure are owned by CIVRA LTD.
+All platform software, systems, and infrastructure are owned by Forecoding.
 
 Users retain ownership of their submitted input content.
 
@@ -90,7 +90,7 @@ Nothing in these Terms limits mandatory consumer protection rights under applica
 
 To the maximum extent permitted by law:
 
-CIVRA LTD shall not be liable for indirect, incidental, or consequential damages
+Forecoding shall not be liable for indirect, incidental, or consequential damages
 
 Total liability shall not exceed the amount paid for the specific project credit
 

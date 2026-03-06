@@ -42,5 +42,5 @@ Explanation of issue
 
 6. Processing Time
 
-Refunds are reviewed within 5–10 business days.
+Refunds are reviewed within 5-10 business days.
 Approved refunds are returned to the original payment method.

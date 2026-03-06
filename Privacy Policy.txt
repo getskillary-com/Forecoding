@@ -1,173 +1,227 @@
 Privacy Policy
 
 Effective Date: February 26, 2026
-Legal Entity: CIVRA LTD
-Registered Address: 71-75 Shelton Street, Covent Garden, London, England, WC2H 9JQ, United Kingdom
-Contact Email: support@forecoding.com
+Last Updated: February 26, 2026
 
-This Privacy Policy explains how CIVRA LTD (“Company,” “we,” “us,” or “our”) collects, uses, discloses, and safeguards Personal Information in connection with the Forecoding AI SaaS platform (“Service”).
+Company: Forecoding
+Contact: support@forecoding.com
+Website: https://forecoding.com
+
+1. Overview
+
+Forecoding is an AI-powered SaaS platform that enables users to generate product requirement documents (PRDs), architecture diagrams, development task lists, and code modification suggestions (the "Service").
+
+This Privacy Policy explains how Forecoding ("we," "us," or "our") collects, uses, processes, stores, transfers, and protects Personal Information.
 
 This Policy is designed to comply with:
 
-United States law (including California Consumer Privacy Act (CCPA/CPRA))
+UK GDPR and Data Protection Act 2018
 
 EU General Data Protection Regulation (GDPR)
 
-UK GDPR and the UK Data Protection Act 2018
+California Consumer Privacy Act (CCPA/CPRA)
 
-1. Scope
-
-This Privacy Policy applies to all users worldwide who access or use the Forecoding website and services.
+Other applicable global data protection laws
 
 2. Data Controller
 
-CIVRA LTD acts as the Data Controller for Personal Information processed through the Service.
+Forecoding is the Data Controller of Personal Information processed through the Service.
 
-The following providers act as Data Processors:
 
-Stripe (payment processing)
-
-Google Cloud / Firebase (cloud hosting and database services)
-
-Google Gemini API (AI model processing)
-
-Email service providers (verification and notification delivery)
-
-3. Categories of Data Collected
-A. Account Information
+3. Categories of Personal Information
+3.1 Account Data
 
 Email address
 
-Authentication/verification data
+User ID
 
-B. Transaction Information
+Authentication records
 
-Stripe transaction ID
+3.2 Payment Data
 
-Payment confirmation details
+Processed securely by Stripe:
 
-C. User Content
+Transaction ID
+
+Payment status
+
+Billing metadata
+
+We do not store full credit card numbers.
+
+3.3 User Content
 
 Product ideas
 
-PRDs
+AI prompts
 
-Architecture diagrams
+Generated outputs
 
-Development task lists
+Project specifications
 
-Code suggestions
-
-D. Technical Information
+3.4 Technical & Usage Data
 
 IP address
 
-Device and browser metadata
+Browser type
 
-Usage logs
+Device information
 
-Cookies and similar technologies
+Session logs
 
-4. Legal Basis for Processing (EEA/UK Users)
+Cookie identifiers
 
-For users located in the European Economic Area (EEA) or United Kingdom, we process Personal Information under the following lawful bases (Article 6 GDPR):
+4. Legal Basis for Processing (EU & UK Users)
 
-Performance of a contract (Art. 6(1)(b))
+We process Personal Information under the following lawful bases:
 
-Legitimate interests (Art. 6(1)(f))
+Contract performance
 
-Compliance with legal obligations (Art. 6(1)(c))
+Legitimate interests (security, fraud prevention, service improvement)
 
-Consent (Art. 6(1)(a)) for non-essential cookies
+Legal compliance
 
-5. Purpose of Processing
+Consent (for non-essential cookies)
 
-We process Personal Information to:
+Where consent applies, it may be withdrawn at any time.
 
-Provide AI-powered project generation services
+5. How We Use Personal Information
 
-Authenticate user accounts
+We use Personal Information to:
+
+Provide AI-powered generation services
+
+Authenticate users
 
 Process payments
 
-Detect and prevent fraud or abuse
+Maintain platform security
 
-Improve system performance and reliability
+Improve product functionality
 
 Comply with legal obligations
 
-6. International Data Transfers
+We do not sell Personal Information.
 
-Personal Information may be transferred to and processed in the United States or other jurisdictions outside the UK/EEA.
+6. AI Processing Transparency
 
-Where required, transfers are safeguarded by:
+Forecoding uses third-party AI model providers (including Google Gemini) to generate outputs.
+
+When you submit content:
+
+Your submitted content may be processed by AI providers
+
+Your account email address is not shared with AI providers
+
+AI providers process data in accordance with their own privacy policies
+
+Users should not submit sensitive personal data (e.g., government IDs, financial data, medical information).
+
+We do not use user content to train proprietary models unless explicitly disclosed in the future.
+
+7. International Transfers
+
+Personal Information may be processed in the United States or other jurisdictions.
+
+For UK/EEA users, transfers are protected by:
 
 Standard Contractual Clauses (SCCs)
 
 UK Addendum to SCCs
 
-Applicable adequacy decisions
+Adequacy decisions where applicable
 
-7. Data Retention
+8. Data Retention
 
-Account data: retained until account deletion or as required by law
+We retain:
 
-Financial and transaction records: retained for at least seven (7) years
+Account data: until deletion request
 
-AI-generated and user-submitted content: retained for operational necessity and system integrity
+Financial records: minimum 7 years
 
-8. Data Subject Rights (EEA/UK)
+Security logs: up to 24 months
 
-EEA and UK users may exercise the following rights:
+AI content: retained for operational functionality unless deleted
 
-Right of access
+Aggregated and anonymized data may be retained longer.
 
-Right to rectification
+9. Cookies
 
-Right to erasure
+We use:
 
-Right to restriction
+Essential cookies (authentication, security)
 
-Right to data portability
+Functional cookies (preferences)
 
-Right to object
+We do not use advertising or cross-site tracking cookies.
 
-Right to lodge a complaint with a supervisory authority
+EU/UK users will be presented with a consent mechanism where required.
 
-Requests will be processed within 30 days.
-Submit requests to: support@forecoding.com
+10. Your Rights
+EU & UK Residents
 
-UK supervisory authority:
-Information Commissioner’s Office (ICO)
+You may request:
 
-9. California Privacy Rights
+Access
 
-California residents may request:
+Correction
 
-Disclosure of categories of personal information collected
+Deletion
 
-Deletion of personal information
+Restriction
 
-Information about data sharing practices
+Objection
 
-We do not sell personal information.
+Data portability
 
-10. Security Measures
+Complaints may be lodged with your local data protection authority
 
-We implement commercially reasonable safeguards including:
+We respond within 30 days.
+
+California Residents
+
+You may request:
+
+Categories of information collected
+
+Deletion
+
+Correction
+
+Information about disclosures
+
+We do not sell or share personal information for advertising.
+
+Response timeline: 45 days.
+
+11. Security
+
+We implement:
 
 HTTPS encryption
 
+Cloud-based infrastructure (Cloud SQL + Firebase)
+
 Role-based access controls
 
-Secure cloud infrastructure
+Monitoring and logging
 
-However, no system is completely secure.
+No system guarantees absolute security.
 
-11. Children’s Privacy
+12. Children
 
-The Service is not intended for individuals under 13 years of age.
+The Service is not directed to individuals under 13 years of age.
 
-12. Updates
+13. Business Transfers
 
-We may update this Privacy Policy periodically. The revised effective date will be posted on this page.
+If Forecoding undergoes merger, acquisition, or asset transfer, Personal Information may be transferred subject to applicable safeguards.
+
+14. Changes
+
+We may update this Policy periodically. Continued use of the Service constitutes acceptance.
+
+15. Contact
+
+Forecoding
+Website: https://forecoding.com
+support@forecoding.com

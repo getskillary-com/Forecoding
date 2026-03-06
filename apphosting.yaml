@@ -84,6 +84,10 @@ env:
     secret: STRIPE_WEBHOOK_SECRET
     availability:
       - RUNTIME
+  - variable: STRIPE_PAYMENTS_PAUSED
+    value: "1"
+    availability:
+      - RUNTIME
   - variable: STRIPE_UNIT_AMOUNT_CENTS
     value: "799"
     availability:

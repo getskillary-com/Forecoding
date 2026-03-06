@@ -32,6 +32,11 @@ export function getStripeWebhookSecret() {
     return (process.env.STRIPE_WEBHOOK_SECRET || "").trim();
 }
 
+export function isStripePaymentsPaused() {
+    const raw = (process.env.STRIPE_PAYMENTS_PAUSED || "1").trim().toLowerCase();
+    return !["0", "false", "off", "no"].includes(raw);
+}
+
 export function getStripePriceId() {
     return "";
 }

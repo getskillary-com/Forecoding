@@ -3,14 +3,13 @@ Cookie Policy
 Effective Date: February 26, 2026
 Last Updated: February 26, 2026
 
-Company: CIVRA LTD
-Registered Address: 71-75 Shelton Street, Covent Garden, London, England, WC2H 9JQ, United Kingdom
-ICO Registration Number: ZB949556
+Company: Forecoding
 Contact: support@forecoding.com
+Website: https://forecoding.com
 
 1. Introduction
 
-This Cookie Policy explains how CIVRA LTD (“we,” “us,” or “our”) uses cookies and similar technologies when you access or use Forecoding (the “Service”).
+This Cookie Policy explains how Forecoding ("we," "us," or "our") uses cookies and similar technologies when you access or use Forecoding (the "Service").
 
 This Policy should be read together with our Privacy Policy.
 
@@ -126,10 +125,6 @@ We may update this Cookie Policy from time to time. Updates will be posted on th
 
 10. Contact Information
 
-CIVRA LTD
-71-75 Shelton Street
-Covent Garden
-London WC2H 9JQ
-United Kingdom
-
+Forecoding
+Website: https://forecoding.com
 Email: support@forecoding.com

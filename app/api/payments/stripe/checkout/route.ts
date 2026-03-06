@@ -9,7 +9,8 @@ import {
     getStripePriceId,
     getStripeSecretKey,
     getStripeUnitAmountCents,
-    isStripeDynamicPricingEnabled
+    isStripeDynamicPricingEnabled,
+    isStripePaymentsPaused
 } from "@/lib/stripe";
 import { formatCurrencyCents, inferProjectDesignStage, quoteProjectCreditPrice } from "@/lib/pricing";
 import { getWorkspaceByUserId } from "@/lib/data/workspaces";
@@ -76,6 +77,15 @@ export async function POST(req: Request) {
         const user = await getServerUser();
         if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+        if (isStripePaymentsPaused()) {
+            return NextResponse.json(
+                {
+                    error: "Stripe payments are temporarily paused for all accounts. Please contact support@forecoding.com.",
+                    paymentsPaused: true
+                },
+                { status: 503 }
+            );
         }
         if (isAdminUser({ email: user.email })) {
             return NextResponse.json(

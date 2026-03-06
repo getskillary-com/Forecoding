@@ -19,8 +19,7 @@ export default function TermsPage() {
           <h1 className="text-3xl font-semibold text-slate-900 dark:text-slate-100">Terms of Service</h1>
           <p className="text-sm text-slate-500 dark:text-slate-300">Effective Date: February 26, 2026</p>
           <p className="text-sm text-slate-500 dark:text-slate-300">
-            These Terms of Service (&quot;Terms&quot;) govern access to and use of Forecoding, operated by CIVRA LTD,
-            71-75 Shelton Street, Covent Garden, London, England, WC2H 9JQ, United Kingdom.
+            These Terms of Service (&quot;Terms&quot;) govern access to and use of Forecoding, operated by Forecoding.
           </p>
         </header>
 
@@ -66,7 +65,7 @@ export default function TermsPage() {
 
           <section className="space-y-2">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">5. Intellectual Property</h2>
-            <p>All platform software, systems, and infrastructure are owned by CIVRA LTD.</p>
+            <p>All platform software, systems, and infrastructure are owned by Forecoding.</p>
             <p>Users retain ownership of their submitted input content.</p>
             <p>AI-generated outputs are provided without warranty of originality, accuracy, or non-infringement.</p>
           </section>
@@ -108,7 +107,7 @@ export default function TermsPage() {
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">10. Limitation of Liability</h2>
             <p>To the maximum extent permitted by law:</p>
             <ul className="list-disc pl-6 space-y-1">
-              <li>CIVRA LTD shall not be liable for indirect, incidental, or consequential damages</li>
+              <li>Forecoding shall not be liable for indirect, incidental, or consequential damages</li>
               <li>Total liability shall not exceed the amount paid for the specific project credit</li>
             </ul>
           </section>

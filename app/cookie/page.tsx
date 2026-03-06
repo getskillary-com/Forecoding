@@ -19,11 +19,7 @@ export default function CookiePage() {
           <h1 className="text-3xl font-semibold text-slate-900 dark:text-slate-100">Cookie Policy</h1>
           <p className="text-sm text-slate-500 dark:text-slate-300">Effective Date: February 26, 2026</p>
           <p className="text-sm text-slate-500 dark:text-slate-300">Last Updated: February 26, 2026</p>
-          <p className="text-sm text-slate-500 dark:text-slate-300">Company: CIVRA LTD</p>
-          <p className="text-sm text-slate-500 dark:text-slate-300">
-            Registered Address: 71-75 Shelton Street, Covent Garden, London, England, WC2H 9JQ, United Kingdom
-          </p>
-          <p className="text-sm text-slate-500 dark:text-slate-300">ICO Registration Number: ZB949556</p>
+          <p className="text-sm text-slate-500 dark:text-slate-300">Company: Forecoding</p>
           <p className="text-sm text-slate-500 dark:text-slate-300">
             Contact: <a href="mailto:support@forecoding.com" className="underline">support@forecoding.com</a>
           </p>
@@ -33,7 +29,7 @@ export default function CookiePage() {
           <section className="space-y-2">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">1. Introduction</h2>
             <p>
-              This Cookie Policy explains how CIVRA LTD (&quot;we,&quot; &quot;us,&quot; or &quot;our&quot;) uses cookies and similar
+              This Cookie Policy explains how Forecoding (&quot;we,&quot; &quot;us,&quot; or &quot;our&quot;) uses cookies and similar
               technologies when you access or use Forecoding (the &quot;Service&quot;).
             </p>
             <p>This Policy should be read together with our Privacy Policy.</p>
@@ -162,11 +158,8 @@ export default function CookiePage() {
 
           <section className="space-y-2">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">10. Contact Information</h2>
-            <p>CIVRA LTD</p>
-            <p>71-75 Shelton Street</p>
-            <p>Covent Garden</p>
-            <p>London WC2H 9JQ</p>
-            <p>United Kingdom</p>
+            <p>Forecoding</p>
+            <p>Website: https://forecoding.com</p>
             <p>
               Email: <a href="mailto:support@forecoding.com" className="underline">support@forecoding.com</a>
             </p>
