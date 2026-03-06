@@ -33,7 +33,7 @@ export function getStripeWebhookSecret() {
 }
 
 export function isStripePaymentsPaused() {
-    const raw = (process.env.STRIPE_PAYMENTS_PAUSED || "1").trim().toLowerCase();
+    const raw = (process.env.STRIPE_PAYMENTS_PAUSED || "0").trim().toLowerCase();
     return !["0", "false", "off", "no"].includes(raw);
 }
 

@@ -71,7 +71,7 @@ Add Stripe env vars:
 ```env
 STRIPE_SECRET_KEY=sk_test_xxx
 STRIPE_WEBHOOK_SECRET=whsec_xxx
-STRIPE_PAYMENTS_PAUSED=1
+STRIPE_PAYMENTS_PAUSED=0
 
 # Used when no Stripe Price is configured.
 STRIPE_UNIT_AMOUNT_CENTS=799
@@ -80,7 +80,7 @@ STRIPE_DYNAMIC_PRICING_ENABLED=1
 STRIPE_CURRENCY=usd
 ```
 
-`STRIPE_PAYMENTS_PAUSED=1` pauses checkout for all accounts; set it to `0` to re-enable Stripe checkout.
+`STRIPE_PAYMENTS_PAUSED=1` pauses checkout for all accounts; keep it at `0` for normal Stripe checkout.
 
 Implemented routes:
 

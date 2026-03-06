@@ -85,7 +85,7 @@ env:
     availability:
       - RUNTIME
   - variable: STRIPE_PAYMENTS_PAUSED
-    value: "1"
+    value: "0"
     availability:
       - RUNTIME
   - variable: STRIPE_UNIT_AMOUNT_CENTS
