@@ -129,6 +129,12 @@ function sanitizeMermaidCode(input: string) {
             hasGraphHeader = true;
         }
 
+        const normalizedKeywordCase = line
+            .replace(/^(\s*)SUBGRAPH\b/g, "$1subgraph")
+            .replace(/^(\s*)END\b/g, "$1end");
+        if (normalizedKeywordCase !== line) changed = true;
+        line = normalizedKeywordCase;
+
         // Repair malformed edge separators like: A -------- B
         const fixedEdgeSeparator = line.replace(/(\b[A-Za-z][\w-]*\b)\s*-{3,}\s*(\b[A-Za-z][\w-]*\b)/g, "$1 --> $2");
         if (fixedEdgeSeparator !== line) changed = true;
@@ -138,6 +144,18 @@ function sanitizeMermaidCode(input: string) {
         const fixedAdjacentNodes = line.replace(/\]\s+([A-Za-z][\w-]*\s*\[)/g, "] --> $1");
         if (fixedAdjacentNodes !== line) changed = true;
         line = fixedAdjacentNodes;
+
+        const fixedInlineSubgraph = line
+            .replace(/(["\]\)])\s*(subgraph\b)/gi, "$1\n$2")
+            .replace(/(["\]\)])\s*(end\b)/gi, "$1\n$2");
+        if (fixedInlineSubgraph !== line) changed = true;
+        line = fixedInlineSubgraph;
+
+        const normalizedInlineKeywordCase = line
+            .replace(/(^|\n)(\s*)SUBGRAPH\b/g, "$1$2subgraph")
+            .replace(/(^|\n)(\s*)END\b/g, "$1$2end");
+        if (normalizedInlineKeywordCase !== line) changed = true;
+        line = normalizedInlineKeywordCase;
 
         const match = line.match(/^(\s*)subgraph\s+(.+?)\s*\[(.+)\]\s*$/);
         if (match) {
