@@ -376,6 +376,42 @@ async function generateTextWithClaude(
     return text;
 }
 
+async function generateTextWithClaudeMessages(
+    messages: Message[],
+    systemInstructionText: string
+) {
+    if (!CLAUDE_API_KEY) {
+        throw new Error("CLAUDE_API_KEY (or ANTHROPIC_API_KEY) is missing.");
+    }
+
+    const response = await fetch(`${CLAUDE_API_BASE_URL}/v1/messages`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": CLAUDE_API_VERSION
+        },
+        body: JSON.stringify({
+            model: CLAUDE_MODEL,
+            max_tokens: Number.isFinite(CLAUDE_MAX_TOKENS) ? CLAUDE_MAX_TOKENS : 8192,
+            system: systemInstructionText,
+            messages: buildClaudeMessages(messages)
+        })
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`[Claude] ${response.status}: ${clipErrorText(errorBody)}`);
+    }
+
+    const payload = await response.json();
+    const text = parseClaudeTextResponse(payload);
+    if (!text) {
+        throw new Error("[Claude] Empty response text.");
+    }
+    return text;
+}
+
 function parseClaudeSseChunk(rawEvent: string) {
     const dataLines = rawEvent
         .split("\n")
@@ -580,9 +616,40 @@ async function* streamWithGemini(
         throw new Error("[AI] Failed to initialize Gemini stream.");
     }
 
+    let emittedChunk = false;
+
     for await (const chunk of streamResult.stream) {
         const chunkText = chunk.text();
-        if (chunkText) yield chunkText;
+        if (chunkText) {
+            emittedChunk = true;
+            yield chunkText;
+        }
+    }
+
+    if (!emittedChunk) {
+        console.warn("[AI] Gemini stream completed without text. Attempting non-stream fallback.");
+        for (let i = 0; i < modelCandidates.length; i++) {
+            const modelName = modelCandidates[i];
+            try {
+                const text = await generateNonStream(modelName);
+                if (text.trim()) {
+                    console.log(`[AI] Empty Gemini stream recovered via non-stream fallback with ${modelName}.`);
+                    yield text;
+                    return;
+                }
+            } catch (error) {
+                const message = getErrorMessage(error);
+                const fallbackModel = modelCandidates[i + 1];
+                if (!fallbackModel) {
+                    throw error;
+                }
+                console.warn(
+                    `[AI] ${modelName} empty-stream fallback failed (${message}). Trying ${fallbackModel}`
+                );
+            }
+        }
+
+        throw new Error("[AI] Gemini stream completed without text.");
     }
 }
 
@@ -700,6 +767,15 @@ export async function* streamEvaluateInput(
                         if (!chunk) continue;
                         emittedAnyChunk = true;
                         yield chunk;
+                    }
+                    if (!emittedAnyChunk) {
+                        console.warn("[AI] Claude stream completed without text. Attempting non-stream fallback.");
+                        const fallbackText = await generateTextWithClaudeMessages(messages, systemInstructionText);
+                        if (fallbackText.trim()) {
+                            yield fallbackText;
+                            return;
+                        }
+                        throw new Error("[Claude] Empty streaming and non-stream fallback response.");
                     }
                     return;
                 } catch (error) {
