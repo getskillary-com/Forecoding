@@ -127,6 +127,15 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     statesAndFeedback: "States and feedback"
 };
 
+const ARCHITECTURE_STAGE_SCORE_FLOOR: Record<ArchitectureStage, number> = {
+    context: 15,
+    boundaries: 35,
+    decisions: 55,
+    guardrails: 75,
+    review: 90,
+    ready_to_generate: 100
+};
+
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
     if (!Array.isArray(value)) return [];
     const dedupe = new Set<string>();
@@ -186,11 +195,15 @@ function normalizeEvaluation(value: EvaluationResponse | null | undefined): Eval
     const architecturePackDraft = normalizeArchitecturePack(value.architecturePackDraft, analysis.ui);
     const decisionDrafts = normalizeDecisionRecords(value.decisionDrafts);
     const guardrailDrafts = normalizeGuardrailChecklist(value.guardrailDrafts);
-    const readiness = normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts);
+    const stage = normalizeArchitectureStage(value.stage, architecturePackDraft, decisionDrafts, guardrailDrafts, false);
+    const readiness = applyArchitectureStageScoreFloor(
+        normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts),
+        stage
+    );
     return {
         ...value,
         analysis,
-        stage: normalizeArchitectureStage(value.stage, architecturePackDraft, decisionDrafts, guardrailDrafts, false),
+        stage,
         openQuestions: normalizeStringList(value.openQuestions ?? analysis.missing, 12),
         architecturePackDraft,
         decisionDrafts,
@@ -249,10 +262,25 @@ function normalizeArchitectureStage(
         value === "review" ||
         value === "ready_to_generate"
     ) {
-        return value;
+        const inferred = inferArchitectureStage(architecturePack, decisionRecords, guardrailChecklist, reviewApproved);
+        return ARCHITECTURE_STAGE_SCORE_FLOOR[value] >= ARCHITECTURE_STAGE_SCORE_FLOOR[inferred]
+            ? value
+            : inferred;
     }
 
     return inferArchitectureStage(architecturePack, decisionRecords, guardrailChecklist, reviewApproved);
+}
+
+function applyArchitectureStageScoreFloor(
+    readiness: ReadinessChecklist,
+    stage: ArchitectureStage
+): ReadinessChecklist {
+    const floor = ARCHITECTURE_STAGE_SCORE_FLOOR[stage];
+    if (readiness.score >= floor) return readiness;
+    return {
+        ...readiness,
+        score: floor
+    };
 }
 
 function normalizeReadiness(
@@ -264,12 +292,19 @@ function normalizeReadiness(
     const fallback = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist);
     if (!value || typeof value !== "object") return fallback;
     const candidate = value as Partial<ReadinessChecklist>;
+    const candidateScore =
+        typeof candidate.score === "number"
+            ? Math.max(0, Math.min(100, Math.round(candidate.score)))
+            : fallback.score;
+    const candidateBlockingIssues = normalizeStringList(candidate.blockingIssues, 12);
+    const functionalReady = candidate.functionalReady === true || fallback.functionalReady;
+    const uiReady = candidate.uiReady === true || fallback.uiReady;
     return {
-        score: typeof candidate.score === "number" ? Math.max(0, Math.min(100, Math.round(candidate.score))) : fallback.score,
-        functionalReady: typeof candidate.functionalReady === "boolean" ? candidate.functionalReady : fallback.functionalReady,
-        uiReady: typeof candidate.uiReady === "boolean" ? candidate.uiReady : fallback.uiReady,
-        paymentReady: typeof candidate.paymentReady === "boolean" ? candidate.paymentReady : fallback.paymentReady,
-        blockingIssues: normalizeStringList(candidate.blockingIssues, 12),
+        score: Math.max(candidateScore, fallback.score),
+        functionalReady,
+        uiReady,
+        paymentReady: candidate.paymentReady === true || (functionalReady && uiReady),
+        blockingIssues: candidateBlockingIssues.length > 0 ? candidateBlockingIssues : fallback.blockingIssues,
         nextMilestone: typeof candidate.nextMilestone === "string" && candidate.nextMilestone.trim()
             ? candidate.nextMilestone.trim()
             : fallback.nextMilestone
@@ -455,11 +490,14 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         guardrailChecklist,
         reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
     );
-    const readiness = normalizeReadiness(
-        evaluation?.readiness,
-        architecturePack,
-        decisionRecords,
-        guardrailChecklist
+    const readiness = applyArchitectureStageScoreFloor(
+        normalizeReadiness(
+            evaluation?.readiness,
+            architecturePack,
+            decisionRecords,
+            guardrailChecklist
+        ),
+        architectureStage
     );
     const inferredStage = inferDesignStageFromEvaluation(evaluation);
     const rawStoredStage = (data as { designStage?: unknown } | null | undefined)?.designStage;
@@ -1417,19 +1455,24 @@ function WizardContent() {
             uiDesignSpec ? deriveUiRequirements(uiDesignSpec) : evaluation?.analysis?.ui
         );
         const packChanged = JSON.stringify(normalizedArchitecturePack) !== JSON.stringify(architecturePack);
-        const nextArchitectureReadiness = createReadinessChecklist(
-            normalizedArchitecturePack,
-            decisionRecords,
-            guardrailChecklist
-        );
-        const architectureReadinessChanged =
-            JSON.stringify(nextArchitectureReadiness) !== JSON.stringify(architectureReadiness);
-        const nextArchitectureStage = inferArchitectureStage(
+        const nextArchitectureStage = normalizeArchitectureStage(
+            evaluation?.stage ?? architectureStage,
             normalizedArchitecturePack,
             decisionRecords,
             guardrailChecklist,
             reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
         );
+        const nextArchitectureReadiness = applyArchitectureStageScoreFloor(
+            normalizeReadiness(
+            evaluation?.readiness ?? architectureReadiness,
+            normalizedArchitecturePack,
+            decisionRecords,
+            guardrailChecklist
+            ),
+            nextArchitectureStage
+        );
+        const architectureReadinessChanged =
+            JSON.stringify(nextArchitectureReadiness) !== JSON.stringify(architectureReadiness);
         const architectureStageChanged = nextArchitectureStage !== architectureStage;
         const nextStage = (nextArchitectureReadiness.functionalReady && nextArchitectureReadiness.uiReady)
             ? "ready_to_generate"
