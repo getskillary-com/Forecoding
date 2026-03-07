@@ -1,13 +1,21 @@
 ﻿"use client";
 
-import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
+import { useState, useEffect, useEffectEvent, useRef, Suspense, type ReactNode } from "react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square, ShieldAlert, ListChecks } from "lucide-react";
 import {
+    ArchitecturePack,
+    ArchitectureReviewResult,
+    ArchitectureStage,
+    DecisionRecord,
     Message,
     EvaluationResponse,
     GenerationResponse,
     DiagramGovernance,
     DesignStage,
+    GuardrailChecklist,
+    ReadinessChecklist,
+    ReviewFinding,
+    SourceArtifact,
     UiDesignState,
     UiReadinessReport,
     UiRequirementKey,
@@ -60,6 +68,18 @@ import {
     parseUiDesignSpecBlock,
     validateUiDesignSpec
 } from "@/lib/ui-spec";
+import {
+    ARCHITECTURE_STAGE_LABELS,
+    buildArchitecturePackScaffoldInput,
+    createReadinessChecklist,
+    extractSourceArtifacts,
+    inferArchitectureStage,
+    normalizeArchitecturePack,
+    normalizeDecisionRecords,
+    normalizeGuardrailChecklist,
+    normalizeReviewFindings,
+    seedArchitecturePackFromAnalysis
+} from "@/lib/architecture";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
 const MESSAGE_WINDOW_SIZE = 60;
@@ -106,11 +126,6 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     responsiveStrategy: "Responsive strategy",
     interactionMotion: "Interaction motion",
     statesAndFeedback: "States and feedback"
-};
-
-const DESIGN_STAGE_LABELS: Record<DesignStage, string> = {
-    functional_architecture: "Functional Architecture",
-    ready_to_generate: "Ready to Generate"
 };
 
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
@@ -168,9 +183,97 @@ function normalizeAnalysis(raw: EvaluationResponse["analysis"] | null | undefine
 
 function normalizeEvaluation(value: EvaluationResponse | null | undefined): EvaluationResponse | null {
     if (!value || typeof value !== "object") return null;
+    const analysis = normalizeAnalysis(value.analysis);
+    const architecturePackDraft = normalizeArchitecturePack(value.architecturePackDraft, analysis.ui);
+    const decisionDrafts = normalizeDecisionRecords(value.decisionDrafts);
+    const guardrailDrafts = normalizeGuardrailChecklist(value.guardrailDrafts);
+    const readiness = normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts);
     return {
         ...value,
-        analysis: normalizeAnalysis(value.analysis)
+        analysis,
+        stage: normalizeArchitectureStage(value.stage, architecturePackDraft, decisionDrafts, guardrailDrafts, false),
+        openQuestions: normalizeStringList(value.openQuestions ?? analysis.missing, 12),
+        architecturePackDraft,
+        decisionDrafts,
+        guardrailDrafts,
+        readiness
+    };
+}
+
+function parseJsonBlock<T>(raw: string, normalizer: (value: unknown) => T): T | null {
+    const source = (raw || "")
+        .trim()
+        .replace(/^```json/i, "")
+        .replace(/^```/i, "")
+        .replace(/```$/i, "")
+        .trim();
+    if (!source) return null;
+
+    const parseCandidate = (text: string): T | null => {
+        try {
+            return normalizer(JSON.parse(text));
+        } catch {
+            return null;
+        }
+    };
+
+    const direct = parseCandidate(source);
+    if (direct) return direct;
+
+    const objectMatch = source.match(/\{[\s\S]*\}/);
+    if (objectMatch?.[0]) {
+        const embeddedObject = parseCandidate(objectMatch[0]);
+        if (embeddedObject) return embeddedObject;
+    }
+
+    const arrayMatch = source.match(/\[[\s\S]*\]/);
+    if (arrayMatch?.[0]) {
+        const embeddedArray = parseCandidate(arrayMatch[0]);
+        if (embeddedArray) return embeddedArray;
+    }
+
+    return null;
+}
+
+function normalizeArchitectureStage(
+    value: unknown,
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    guardrailChecklist: GuardrailChecklist,
+    reviewApproved: boolean
+): ArchitectureStage {
+    if (
+        value === "context" ||
+        value === "boundaries" ||
+        value === "decisions" ||
+        value === "guardrails" ||
+        value === "review" ||
+        value === "ready_to_generate"
+    ) {
+        return value;
+    }
+
+    return inferArchitectureStage(architecturePack, decisionRecords, guardrailChecklist, reviewApproved);
+}
+
+function normalizeReadiness(
+    value: unknown,
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    guardrailChecklist: GuardrailChecklist
+): ReadinessChecklist {
+    const fallback = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist);
+    if (!value || typeof value !== "object") return fallback;
+    const candidate = value as Partial<ReadinessChecklist>;
+    return {
+        score: typeof candidate.score === "number" ? Math.max(0, Math.min(100, Math.round(candidate.score))) : fallback.score,
+        functionalReady: typeof candidate.functionalReady === "boolean" ? candidate.functionalReady : fallback.functionalReady,
+        uiReady: typeof candidate.uiReady === "boolean" ? candidate.uiReady : fallback.uiReady,
+        paymentReady: typeof candidate.paymentReady === "boolean" ? candidate.paymentReady : fallback.paymentReady,
+        blockingIssues: normalizeStringList(candidate.blockingIssues, 12),
+        nextMilestone: typeof candidate.nextMilestone === "string" && candidate.nextMilestone.trim()
+            ? candidate.nextMilestone.trim()
+            : fallback.nextMilestone
     };
 }
 
@@ -252,6 +355,10 @@ function isDesignStage(value: unknown): value is DesignStage {
 function inferDesignStageFromEvaluation(
     evaluation: EvaluationResponse | null
 ): DesignStage {
+    const readiness = evaluation?.readiness;
+    if (readiness?.functionalReady && readiness.uiReady) {
+        return "ready_to_generate";
+    }
     const density = evaluation?.density_score ?? 0;
     return density < 100 ? "functional_architecture" : "ready_to_generate";
 }
@@ -301,16 +408,78 @@ function areArrayValuesEqual(a: string[], b: string[]) {
     return a.every((item, idx) => item === b[idx]);
 }
 
-function normalizeVersionDesignState(data: ProjectVersion["data"]) {
+function normalizeSourceArtifacts(value: unknown): SourceArtifact[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((item): item is SourceArtifact => Boolean(item && typeof item === "object"))
+        .map((item, index) => {
+            const sourceType =
+                item.sourceType === "chat" || item.sourceType === "text" || item.sourceType === "pdf" || item.sourceType === "image"
+                    ? item.sourceType
+                    : "text";
+            return {
+                id: typeof item.id === "string" && item.id.trim() ? item.id : `artifact-${index}`,
+                sourceType,
+                name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : `Artifact ${index + 1}`,
+                summary: typeof item.summary === "string" ? item.summary.trim() : "",
+                createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now()
+            };
+        })
+        .slice(-40);
+}
+
+function normalizeReviewHistory(value: unknown): ArchitectureReviewResult[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((item): item is ArchitectureReviewResult => Boolean(item && typeof item === "object"))
+        .map((item) => {
+            const verdict =
+                item.verdict === "aligned" || item.verdict === "needs_changes" || item.verdict === "blocked"
+                    ? item.verdict
+                    : "needs_changes";
+            return {
+                summary: typeof item.summary === "string" ? item.summary.trim() : "",
+                verdict,
+                findings: normalizeReviewFindings(item.findings),
+                reviewedAt: typeof item.reviewedAt === "number" ? item.reviewedAt : Date.now()
+            };
+        })
+        .slice(-20);
+}
+
+function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
     const evaluation = normalizeEvaluation(data?.evaluation ?? null);
     const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
     const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
+    const architecturePack = normalizeArchitecturePack(
+        data?.architecturePack ?? evaluation?.architecturePackDraft ?? seedArchitecturePackFromAnalysis(evaluation?.analysis, evaluation?.analysis?.ui),
+        uiDesignSpec ? deriveUiRequirements(uiDesignSpec) : evaluation?.analysis?.ui
+    );
+    const decisionRecords = normalizeDecisionRecords(data?.decisionRecords ?? evaluation?.decisionDrafts);
+    const guardrailChecklist = normalizeGuardrailChecklist(data?.guardrailChecklist ?? evaluation?.guardrailDrafts);
+    const reviewHistory = normalizeReviewHistory(data?.reviewHistory);
+    const sourceArtifacts = normalizeSourceArtifacts(data?.sourceArtifacts);
+    const architectureStage = normalizeArchitectureStage(
+        data?.architectureStage ?? evaluation?.stage,
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+    );
+    const readiness = normalizeReadiness(
+        evaluation?.readiness,
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist
+    );
     const inferredStage = inferDesignStageFromEvaluation(evaluation);
     const rawStoredStage = (data as { designStage?: unknown } | null | undefined)?.designStage;
     const hasLegacyUiStage = rawStoredStage === "ui_design";
     const designStage = hasLegacyUiStage
         ? "functional_architecture"
-        : (isDesignStage(data?.designStage) ? data.designStage : inferredStage);
+        : (isDesignStage(data?.designStage)
+            ? data.designStage
+            : (readiness.functionalReady && readiness.uiReady ? "ready_to_generate" : inferredStage));
     const functionalLockedAt =
         typeof data?.functionalLockedAt === "number"
             ? (hasLegacyUiStage ? null : data.functionalLockedAt)
@@ -325,6 +494,13 @@ function normalizeVersionDesignState(data: ProjectVersion["data"]) {
         designStage,
         uiDesignState,
         uiDesignSpec,
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewHistory,
+        sourceArtifacts,
+        architectureStage,
+        readiness,
         functionalLockedAt,
         uiReadyAt
     };
@@ -533,10 +709,15 @@ function extractFallbackAssistantText(raw: string) {
         .replace(/<diagram>[\s\S]*?(?:<\/diagram>|$)/gi, " ")
         .replace(/<analysis_clarified>[\s\S]*?(?:<\/analysis_clarified>|$)/gi, " ")
         .replace(/<analysis_missing>[\s\S]*?(?:<\/analysis_missing>|$)/gi, " ")
+        .replace(/<architecture_pack>[\s\S]*?(?:<\/architecture_pack>|$)/gi, " ")
+        .replace(/<decision_records>[\s\S]*?(?:<\/decision_records>|$)/gi, " ")
+        .replace(/<guardrails>[\s\S]*?(?:<\/guardrails>|$)/gi, " ")
+        .replace(/<readiness>[\s\S]*?(?:<\/readiness>|$)/gi, " ")
         .replace(/<analysis_ui>[\s\S]*?(?:<\/analysis_ui>|$)/gi, " ")
         .replace(/<analysis_ui_spec>[\s\S]*?(?:<\/analysis_ui_spec>|$)/gi, " ")
         .replace(/<density>[\s\S]*?(?:<\/density>|$)/gi, " ")
         .replace(/<is_ready>[\s\S]*?(?:<\/is_ready>|$)/gi, " ")
+        .replace(/<stage>[\s\S]*?(?:<\/stage>|$)/gi, " ")
         .replace(/<options>[\s\S]*?(?:<\/options>|$)/gi, " ")
         .replace(/<\/?[^>]+>/g, " ")
         .replace(/\s+/g, " ")
@@ -640,6 +821,9 @@ function buildDesignMemory(
     baselineDiagram: string,
     evaluation: EvaluationResponse | null,
     diagramGovernance: DiagramGovernance,
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    guardrailChecklist: GuardrailChecklist,
     maxChars: number = EVALUATE_DESIGN_MEMORY_CHARS
 ) {
     const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
@@ -667,6 +851,9 @@ function buildDesignMemory(
             ? missing.slice(0, 20).map((item) => `- ${clipText(item, 300)}`).join("\n")
             : "- None",
         "",
+        "# Architecture Pack Snapshot",
+        clipText(buildArchitecturePackScaffoldInput(architecturePack, decisionRecords, guardrailChecklist), 5000),
+        "",
         "# UI Requirement Profile",
         ...UI_REQUIREMENT_KEYS.map((key) => {
             const items = ui[key];
@@ -687,15 +874,20 @@ function buildDesignMemory(
 }
 
 function buildGenerateSummary(
-    messages: Message[],
-    evaluation: EvaluationResponse | null
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    guardrailChecklist: GuardrailChecklist,
+    messages: Message[]
 ) {
     const recentMessages = messages.slice(-GENERATE_MAX_HISTORY_MESSAGES);
     const transcript = recentMessages
         .map((message) => `${message.role}: ${clipText((message.content || "").trim(), GENERATE_MAX_MESSAGE_CONTENT_CHARS)}`)
         .join("\n");
-    const finalAnalysis = clipText(JSON.stringify(evaluation?.analysis ?? {}), GENERATE_MAX_ANALYSIS_CHARS);
-    return clipText(`${transcript}\n\nFinal Analysis: ${finalAnalysis}`.trim(), GENERATE_MAX_SUMMARY_CHARS);
+    const architecturePackText = clipText(
+        buildArchitecturePackScaffoldInput(architecturePack, decisionRecords, guardrailChecklist),
+        GENERATE_MAX_ANALYSIS_CHARS
+    );
+    return clipText(`${architecturePackText}\n\nRecent Conversation:\n${transcript}`.trim(), GENERATE_MAX_SUMMARY_CHARS);
 }
 
 function summarizeHtmlErrorBody(html: string) {
@@ -887,6 +1079,12 @@ function buildPricingProjectSnapshot(
     designStage: DesignStage,
     uiDesignState: UiDesignState,
     uiDesignSpec: UiDesignSpec | null,
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    guardrailChecklist: GuardrailChecklist,
+    reviewHistory: ArchitectureReviewResult[],
+    sourceArtifacts: SourceArtifact[],
+    architectureStage: ArchitectureStage,
     functionalLockedAt: number | null,
     uiReadyAt: number | null
 ): Project | null {
@@ -924,6 +1122,12 @@ function buildPricingProjectSnapshot(
             designStage,
             uiDesignState,
             uiDesignSpec: uiDesignSpec ?? undefined,
+            architecturePack,
+            decisionRecords,
+            guardrailChecklist,
+            reviewHistory,
+            sourceArtifacts,
+            architectureStage,
             functionalLockedAt,
             uiReadyAt
         }
@@ -947,22 +1151,17 @@ function WizardContent() {
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
     const cachedSnapshot = getCachedProjectSnapshot(projectId);
+    const initialNormalizedState = normalizeVersionDesignState(cachedSnapshot?.data ?? null);
     const rawCachedStage = (cachedSnapshot?.data as { designStage?: unknown } | undefined)?.designStage;
-    const initialEvaluation = normalizeEvaluation(cachedSnapshot?.data.evaluation ?? null);
-    const initialUiDesignSpec = normalizeUiDesignSpec(cachedSnapshot?.data.uiDesignSpec, initialEvaluation?.analysis?.ui);
-    const initialUiDesignState = normalizeUiDesignState(cachedSnapshot?.data.uiDesignState, initialEvaluation, initialUiDesignSpec);
+    const initialEvaluation = initialNormalizedState.evaluation;
+    const initialUiDesignSpec = initialNormalizedState.uiDesignSpec;
+    const initialUiDesignState = initialNormalizedState.uiDesignState;
     const hasLegacyInitialUiStage = rawCachedStage === "ui_design";
     const initialDesignStage = hasLegacyInitialUiStage
         ? "functional_architecture"
-        : (isDesignStage(cachedSnapshot?.data.designStage)
-            ? cachedSnapshot.data.designStage
-            : inferDesignStageFromEvaluation(initialEvaluation));
-    const initialFunctionalLockedAt = typeof cachedSnapshot?.data.functionalLockedAt === "number"
-        ? (hasLegacyInitialUiStage ? null : cachedSnapshot.data.functionalLockedAt)
-        : (initialDesignStage !== "functional_architecture" ? Date.now() : null);
-    const initialUiReadyAt = typeof cachedSnapshot?.data.uiReadyAt === "number"
-        ? (hasLegacyInitialUiStage ? null : cachedSnapshot.data.uiReadyAt)
-        : (initialDesignStage === "ready_to_generate" ? Date.now() : null);
+        : initialNormalizedState.designStage;
+    const initialFunctionalLockedAt = initialNormalizedState.functionalLockedAt;
+    const initialUiReadyAt = initialNormalizedState.uiReadyAt;
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
     const MAIN_MIN = 420;
@@ -986,6 +1185,13 @@ function WizardContent() {
     const [designStage, setDesignStage] = useState<DesignStage>(initialDesignStage);
     const [uiDesignState, setUiDesignState] = useState<UiDesignState>(initialUiDesignState);
     const [uiDesignSpec, setUiDesignSpec] = useState<UiDesignSpec | null>(initialUiDesignSpec);
+    const [architecturePack, setArchitecturePack] = useState<ArchitecturePack>(initialNormalizedState.architecturePack);
+    const [decisionRecords, setDecisionRecords] = useState<DecisionRecord[]>(initialNormalizedState.decisionRecords);
+    const [guardrailChecklist, setGuardrailChecklist] = useState<GuardrailChecklist>(initialNormalizedState.guardrailChecklist);
+    const [reviewHistory, setReviewHistory] = useState<ArchitectureReviewResult[]>(initialNormalizedState.reviewHistory);
+    const [sourceArtifacts, setSourceArtifacts] = useState<SourceArtifact[]>(initialNormalizedState.sourceArtifacts);
+    const [architectureStage, setArchitectureStage] = useState<ArchitectureStage>(initialNormalizedState.architectureStage);
+    const [architectureReadiness, setArchitectureReadiness] = useState<ReadinessChecklist>(initialNormalizedState.readiness);
     const [functionalLockedAt, setFunctionalLockedAt] = useState<number | null>(initialFunctionalLockedAt);
     const [uiReadyAt, setUiReadyAt] = useState<number | null>(initialUiReadyAt);
 
@@ -995,6 +1201,9 @@ function WizardContent() {
     const [isQuoteLoading, setIsQuoteLoading] = useState(false);
     const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
     const [generateError, setGenerateError] = useState<string | null>(null);
+    const [reviewDraft, setReviewDraft] = useState("");
+    const [isReviewing, setIsReviewing] = useState(false);
+    const [reviewError, setReviewError] = useState<string | null>(null);
     const [isAdmin, setIsAdmin] = useState(false);
     const [isAdminStatusLoaded, setIsAdminStatusLoaded] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(420);
@@ -1014,7 +1223,7 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'architecture' | 'files' | 'stack'>(
+    const [activeTab, setActiveTab] = useState<'architecture' | 'review' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
 
@@ -1024,9 +1233,13 @@ function WizardContent() {
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
-    const functionalDensity = evaluation?.density_score ?? 0;
-    const isFunctionalArchitectureReady = functionalDensity >= 100;
-    const isReadyToGenerateStage = designStage === "ready_to_generate";
+    const architectureCompletion = architectureReadiness.score;
+    const isArchitecturePackReady = architectureReadiness.functionalReady && architectureReadiness.uiReady;
+    const architectureBlockers = architectureReadiness.blockingIssues;
+    const experienceGapLabels = getMissingUiRequirementLabels(uiDesignSpec, evaluation);
+    const latestReview = reviewHistory[reviewHistory.length - 1] || null;
+    const reviewApproved = latestReview?.verdict === "aligned";
+    const isReadyToGenerateStage = isArchitecturePackReady && reviewApproved;
     const architectureViewerCode = currentDiagram;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
@@ -1103,6 +1316,13 @@ function WizardContent() {
             setDesignStage(normalizedDesignState.designStage);
             setUiDesignState(normalizedDesignState.uiDesignState);
             setUiDesignSpec(normalizedDesignState.uiDesignSpec);
+            setArchitecturePack(normalizedDesignState.architecturePack);
+            setDecisionRecords(normalizedDesignState.decisionRecords);
+            setGuardrailChecklist(normalizedDesignState.guardrailChecklist);
+            setReviewHistory(normalizedDesignState.reviewHistory);
+            setSourceArtifacts(normalizedDesignState.sourceArtifacts);
+            setArchitectureStage(normalizedDesignState.architectureStage);
+            setArchitectureReadiness(normalizedDesignState.readiness);
             setFunctionalLockedAt(normalizedDesignState.functionalLockedAt);
             setUiReadyAt(normalizedDesignState.uiReadyAt);
 
@@ -1194,7 +1414,7 @@ function WizardContent() {
         router.replace(`/wizard?${params.toString()}`);
     }, [searchParams, currentVersion, projectId, router, isAdmin]);
 
-    // 1f. Refresh derived state: stage follows functional density only.
+    // 1f. Refresh derived state from architecture pack + experience constraints.
     useEffect(() => {
         const now = Date.now();
         const nextReadiness = createUiReadinessReport(uiDesignSpec, evaluation, now);
@@ -1204,12 +1424,33 @@ function WizardContent() {
             !areArrayValuesEqual(nextReadiness.missingKeys, uiDesignState.readiness.missingKeys) ||
             !areArrayValuesEqual(nextReadiness.missingLabels, uiDesignState.readiness.missingLabels);
 
-        const nextStage = (evaluation?.density_score ?? 0) >= 100
+        const normalizedArchitecturePack = normalizeArchitecturePack(
+            architecturePack,
+            uiDesignSpec ? deriveUiRequirements(uiDesignSpec) : evaluation?.analysis?.ui
+        );
+        const packChanged = JSON.stringify(normalizedArchitecturePack) !== JSON.stringify(architecturePack);
+        const nextArchitectureReadiness = createReadinessChecklist(
+            normalizedArchitecturePack,
+            decisionRecords,
+            guardrailChecklist
+        );
+        const architectureReadinessChanged =
+            JSON.stringify(nextArchitectureReadiness) !== JSON.stringify(architectureReadiness);
+        const nextArchitectureStage = inferArchitectureStage(
+            normalizedArchitecturePack,
+            decisionRecords,
+            guardrailChecklist,
+            reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+        );
+        const architectureStageChanged = nextArchitectureStage !== architectureStage;
+        const nextStage = (nextArchitectureReadiness.functionalReady && nextArchitectureReadiness.uiReady)
             ? "ready_to_generate"
             : "functional_architecture";
         const stageChanged = nextStage !== designStage;
         const nextNeedsResync = nextStage === "functional_architecture" ? uiDesignState.needsResync : false;
         const needsResyncChanged = nextNeedsResync !== uiDesignState.needsResync;
+        const nextSourceArtifacts = extractSourceArtifacts(messages);
+        const sourceArtifactsChanged = JSON.stringify(nextSourceArtifacts) !== JSON.stringify(sourceArtifacts);
 
         const nextFunctionalLockedAt = nextStage === "functional_architecture" ? null : (functionalLockedAt ?? now);
         const functionalLockedAtChanged = nextFunctionalLockedAt !== functionalLockedAt;
@@ -1217,11 +1458,25 @@ function WizardContent() {
         const nextUiReadyAt = nextStage === "ready_to_generate" ? (uiReadyAt ?? now) : null;
         const uiReadyAtChanged = nextUiReadyAt !== uiReadyAt;
 
-        if (!readinessChanged && !stageChanged && !needsResyncChanged && !functionalLockedAtChanged && !uiReadyAtChanged) {
+        if (
+            !readinessChanged &&
+            !packChanged &&
+            !architectureReadinessChanged &&
+            !architectureStageChanged &&
+            !sourceArtifactsChanged &&
+            !stageChanged &&
+            !needsResyncChanged &&
+            !functionalLockedAtChanged &&
+            !uiReadyAtChanged
+        ) {
             return;
         }
 
         setHasUserEdited(true);
+        if (packChanged) setArchitecturePack(normalizedArchitecturePack);
+        if (architectureReadinessChanged) setArchitectureReadiness(nextArchitectureReadiness);
+        if (architectureStageChanged) setArchitectureStage(nextArchitectureStage);
+        if (sourceArtifactsChanged) setSourceArtifacts(nextSourceArtifacts);
         if (stageChanged) setDesignStage(nextStage);
         if (readinessChanged || needsResyncChanged) {
             setUiDesignState({
@@ -1231,7 +1486,22 @@ function WizardContent() {
         }
         if (functionalLockedAtChanged) setFunctionalLockedAt(nextFunctionalLockedAt);
         if (uiReadyAtChanged) setUiReadyAt(nextUiReadyAt);
-    }, [evaluation, uiDesignSpec, designStage, uiDesignState, functionalLockedAt, uiReadyAt]);
+    }, [
+        evaluation,
+        uiDesignSpec,
+        uiDesignState,
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        architectureReadiness,
+        architectureStage,
+        reviewHistory,
+        sourceArtifacts,
+        messages,
+        designStage,
+        functionalLockedAt,
+        uiReadyAt
+    ]);
 
     // 1g. Fetch complexity-based quote for unpaid projects
     useEffect(() => {
@@ -1263,6 +1533,12 @@ function WizardContent() {
                             designStage,
                             uiDesignState,
                             uiDesignSpec,
+                            architecturePack,
+                            decisionRecords,
+                            guardrailChecklist,
+                            reviewHistory,
+                            sourceArtifacts,
+                            architectureStage,
                             functionalLockedAt,
                             uiReadyAt
                         )
@@ -1320,6 +1596,13 @@ function WizardContent() {
         tasks,
         designStage,
         uiDesignState,
+        uiDesignSpec,
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewHistory,
+        sourceArtifacts,
+        architectureStage,
         functionalLockedAt,
         uiReadyAt
     ]);
@@ -1406,6 +1689,12 @@ function WizardContent() {
                 designStage,
                 uiDesignState,
                 uiDesignSpec: uiDesignSpec ?? undefined,
+                architecturePack,
+                decisionRecords,
+                guardrailChecklist,
+                reviewHistory,
+                sourceArtifacts,
+                architectureStage,
                 functionalLockedAt,
                 uiReadyAt
             }
@@ -1451,6 +1740,12 @@ function WizardContent() {
         designStage,
         uiDesignState,
         uiDesignSpec,
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewHistory,
+        sourceArtifacts,
+        architectureStage,
         functionalLockedAt,
         uiReadyAt,
         project,
@@ -1609,6 +1904,9 @@ function WizardContent() {
                 currentDiagram,
                 evaluation,
                 diagramGovernance,
+                architecturePack,
+                decisionRecords,
+                guardrailChecklist,
                 EVALUATE_DESIGN_MEMORY_CHARS
             );
             const controller = new AbortController();
@@ -1708,7 +2006,13 @@ function WizardContent() {
                 is_ready: false,
                 current_diagram: currentDiagram,
                 analysis: normalizeAnalysis(evaluation?.analysis),
-                next_step: { reasoning: "", question: null }
+                next_step: { reasoning: "", question: null },
+                stage: architectureStage,
+                openQuestions: normalizeStringList(evaluation?.openQuestions ?? evaluation?.analysis?.missing, 12),
+                architecturePackDraft: architecturePack,
+                decisionDrafts: decisionRecords,
+                guardrailDrafts: guardrailChecklist,
+                readiness: architectureReadiness
             };
 
             while (true) {
@@ -1771,6 +2075,19 @@ function WizardContent() {
                     }
                 }
 
+                const stageMatch = buffer.match(/<stage>([\s\S]*?)<\/stage>/i);
+                if (stageMatch?.[1]) {
+                    const parsedStage = normalizeArchitectureStage(
+                        stageMatch[1].trim(),
+                        currentEval.architecturePackDraft ?? architecturePack,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+                    );
+                    currentEval.stage = parsedStage;
+                    setArchitectureStage(parsedStage);
+                }
+
                 const densityMatch = buffer.match(/<density>\s*(\d+)\s*<\/density>/);
                 if (densityMatch) {
                     currentEval.density_score = parseInt(densityMatch[1]);
@@ -1797,6 +2114,7 @@ function WizardContent() {
                 const missingMatch = buffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/);
                 if (missingMatch) {
                     currentEval.analysis.missing = parseAnalysisList(missingMatch[1]);
+                    currentEval.openQuestions = currentEval.analysis.missing.slice(0, 8);
                 }
 
                 const uiSpecMatch = buffer.match(/<analysis_ui_spec>([\s\S]*?)<\/analysis_ui_spec>/i);
@@ -1814,10 +2132,75 @@ function WizardContent() {
                     setUiDesignSpec((prev) => prev ?? buildMinimalUiDesignSpec(currentEval.analysis.ui));
                 }
 
+                const architecturePackMatch = buffer.match(/<architecture_pack>([\s\S]*?)<\/architecture_pack>/i);
+                if (architecturePackMatch) {
+                    const parsedPack = parseJsonBlock(architecturePackMatch[1], (value) => normalizeArchitecturePack(value, currentEval.analysis.ui));
+                    if (parsedPack) {
+                        currentEval.architecturePackDraft = parsedPack;
+                        setArchitecturePack(parsedPack);
+                    }
+                }
+
+                const decisionsMatch = buffer.match(/<decision_records>([\s\S]*?)<\/decision_records>/i);
+                if (decisionsMatch) {
+                    const parsedDecisions = parseJsonBlock(decisionsMatch[1], normalizeDecisionRecords);
+                    if (parsedDecisions) {
+                        currentEval.decisionDrafts = parsedDecisions;
+                        setDecisionRecords(parsedDecisions);
+                    }
+                }
+
+                const guardrailsMatch = buffer.match(/<guardrails>([\s\S]*?)<\/guardrails>/i);
+                if (guardrailsMatch) {
+                    const parsedGuardrails = parseJsonBlock(guardrailsMatch[1], normalizeGuardrailChecklist);
+                    if (parsedGuardrails) {
+                        currentEval.guardrailDrafts = parsedGuardrails;
+                        setGuardrailChecklist(parsedGuardrails);
+                    }
+                }
+
+                currentEval.architecturePackDraft = normalizeArchitecturePack(
+                    currentEval.architecturePackDraft ?? seedArchitecturePackFromAnalysis(currentEval.analysis, currentEval.analysis.ui),
+                    currentEval.analysis.ui
+                );
+
+                const readinessMatch = buffer.match(/<readiness>([\s\S]*?)<\/readiness>/i);
+                if (readinessMatch) {
+                    const parsedReadiness = parseJsonBlock(readinessMatch[1], (value) => normalizeReadiness(
+                        value,
+                        currentEval.architecturePackDraft ?? architecturePack,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist
+                    ));
+                    if (parsedReadiness) {
+                        currentEval.readiness = parsedReadiness;
+                        setArchitectureReadiness(parsedReadiness);
+                    }
+                }
+
+                if (!currentEval.readiness) {
+                    currentEval.readiness = createReadinessChecklist(
+                        currentEval.architecturePackDraft,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist
+                    );
+                }
+                currentEval.is_ready = currentEval.readiness.functionalReady && currentEval.readiness.uiReady;
+                currentEval.density_score = currentEval.readiness.score;
+
+                if (!currentEval.stage) {
+                    currentEval.stage = inferArchitectureStage(
+                        currentEval.architecturePackDraft,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+                    );
+                }
+
                 // Options
                 const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
                 if (optionsMatch) {
-                    const options = currentEval.density_score >= 100
+                    const options = (currentEval.readiness?.functionalReady && currentEval.readiness?.uiReady)
                         ? []
                         : parseOptionsBlock(optionsMatch[1]);
                     setMessages(prev => {
@@ -1830,7 +2213,23 @@ function WizardContent() {
                     });
                 }
 
-                setEvaluation(normalizeEvaluation({ ...currentEval }));
+                const normalizedEval = normalizeEvaluation({ ...currentEval });
+                if (normalizedEval?.architecturePackDraft) {
+                    setArchitecturePack(normalizedEval.architecturePackDraft);
+                }
+                if (normalizedEval?.decisionDrafts) {
+                    setDecisionRecords(normalizedEval.decisionDrafts);
+                }
+                if (normalizedEval?.guardrailDrafts) {
+                    setGuardrailChecklist(normalizedEval.guardrailDrafts);
+                }
+                if (normalizedEval?.readiness) {
+                    setArchitectureReadiness(normalizedEval.readiness);
+                }
+                if (normalizedEval?.stage) {
+                    setArchitectureStage(normalizedEval.stage);
+                }
+                setEvaluation(normalizedEval);
             }
 
             if (evalRequestIdRef.current === requestId) {
@@ -1898,7 +2297,12 @@ function WizardContent() {
         setHasUserEdited(true);
         try {
             await yieldToBrowser();
-            const historyText = buildGenerateSummary(messages, evaluation);
+            const historyText = buildGenerateSummary(
+                architecturePack,
+                decisionRecords,
+                guardrailChecklist,
+                messages
+            );
             const outputLanguage = inferScaffoldOutputLanguage(messages);
             const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
             const controller = new AbortController();
@@ -1916,7 +2320,10 @@ function WizardContent() {
                         oneClickMode: GENERATE_ONE_CLICK_MODE,
                         ideProfile: GENERATE_IDE_PROFILE,
                         templateKindHint,
-                        currentProjectTree: generation?.projectTree
+                        currentProjectTree: generation?.projectTree,
+                        architecturePack,
+                        decisionRecords,
+                        guardrailChecklist
                     }),
                     signal: controller.signal
                 });
@@ -1970,11 +2377,15 @@ function WizardContent() {
         }
     };
 
+    const runAutoGenerate = useEffectEvent(() => {
+        void generateScaffold();
+    });
+
     useEffect(() => {
         if (!hasPaid || isAdmin) return;
         if (!isReadyToGenerateStage) return;
         if (generation || isGenerating || generateInFlightRef.current) return;
-        void generateScaffold();
+        runAutoGenerate();
     }, [hasPaid, isAdmin, isReadyToGenerateStage, generation, isGenerating]);
 
     const startCheckout = async () => {
@@ -2016,6 +2427,12 @@ function WizardContent() {
                             designStage,
                             uiDesignState,
                             uiDesignSpec,
+                            architecturePack,
+                            decisionRecords,
+                            guardrailChecklist,
+                            reviewHistory,
+                            sourceArtifacts,
+                            architectureStage,
                             functionalLockedAt,
                             uiReadyAt
                         )
@@ -2046,8 +2463,15 @@ function WizardContent() {
         if (isGenerating || isCheckingOut) return;
 
         setGenerateError(null);
-        if (designStage !== "ready_to_generate") {
-            setGenerateError("Complete functional architecture first (Information Density must reach 100).");
+        if (!isArchitecturePackReady) {
+            setGenerateError(
+                architectureBlockers[0] || "Complete the architecture pack before generating scaffold."
+            );
+            return;
+        }
+        if (!reviewApproved) {
+            setGenerateError("Run an architecture review and resolve findings before scaffold generation.");
+            setActiveTab("review");
             return;
         }
         if (requiresPayment) {
@@ -2057,8 +2481,62 @@ function WizardContent() {
         await generateScaffold();
     };
 
-    const handleArchitectureNodeSelect = (_node: { id: string; label: string }) => {
+    const handleArchitectureNodeSelect = () => {
         setGenerateError(null);
+    };
+
+    const handleRunReview = async () => {
+        const materials = reviewDraft.trim();
+        if (!materials) {
+            setReviewError("Paste implementation notes, planned file changes, or code snippets before running review.");
+            return;
+        }
+
+        setIsReviewing(true);
+        setReviewError(null);
+        setHasUserEdited(true);
+
+        try {
+            const res = await fetch("/api/review", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    architecturePack,
+                    guardrailChecklist,
+                    materials
+                })
+            });
+            const payload = (await res.json()) as {
+                error?: string;
+                summary?: string;
+                verdict?: ArchitectureReviewResult["verdict"];
+                findings?: ReviewFinding[];
+                reviewedAt?: number;
+            };
+
+            if (!res.ok || !payload.summary || !payload.verdict) {
+                throw new Error(payload.error || "Failed to run architecture review.");
+            }
+
+            const nextReview: ArchitectureReviewResult = {
+                summary: payload.summary,
+                verdict: payload.verdict,
+                findings: normalizeReviewFindings(payload.findings),
+                reviewedAt: typeof payload.reviewedAt === "number" ? payload.reviewedAt : Date.now()
+            };
+
+            setReviewHistory((prev) => [...prev, nextReview].slice(-20));
+            if (nextReview.verdict === "aligned" && isArchitecturePackReady) {
+                setArchitectureStage("ready_to_generate");
+            } else {
+                setArchitectureStage("review");
+            }
+            setActiveTab("review");
+        } catch (error) {
+            setReviewError(error instanceof Error ? error.message : "Failed to run architecture review.");
+        } finally {
+            setIsReviewing(false);
+        }
     };
 
     if (!project || !currentVersion) return <WizardSkeleton />;
@@ -2119,13 +2597,17 @@ function WizardContent() {
 
                             {/* Input Area */}
                             <div className="border-t border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/75">
-                                <div className="mb-2 text-[11px] font-medium text-slate-500 dark:text-slate-300">
-                                    Stage: {DESIGN_STAGE_LABELS[designStage]}
-                                    {designStage === "functional_architecture"
-                                        ? (isFunctionalArchitectureReady
-                                            ? " | Auto-promoting to ready state"
-                                            : ` | Density ${Math.round(functionalDensity)}/100`)
-                                        : " | Ready for payment and scaffold generation"}
+                                <div className="mb-3 space-y-2">
+                                    <div className="text-[11px] font-medium text-slate-500 dark:text-slate-300">
+                                        Architect Stage: {ARCHITECTURE_STAGE_LABELS[architectureStage]} | Readiness {Math.round(architectureCompletion)}%
+                                        {latestReview ? ` | Last review: ${latestReview.verdict.replace("_", " ")}` : ""}
+                                    </div>
+                                    {architectureBlockers.length > 0 && (
+                                        <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200">
+                                            <p className="font-semibold">Current blocker</p>
+                                            <p>{architectureBlockers[0]}</p>
+                                        </div>
+                                    )}
                                 </div>
                                 {(isReadyToGenerateStage || Boolean(generation)) ? (
                                     <div className="flex flex-col gap-2">
@@ -2170,7 +2652,7 @@ function WizardContent() {
                                                     : isAdmin
                                                     ? "Admin mode: payment bypass enabled"
                                                     : hasPaid
-                                                        ? "Ready to build or update scaffold"
+                                                        ? "Architecture pack is approved. Ready to build or update scaffold."
                                                     : checkoutQuote
                                                         ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
                                                         : isQuoteLoading
@@ -2182,15 +2664,9 @@ function WizardContent() {
                                     </div>
                                 ) : (
                                     <div className="flex flex-col gap-2">
-                                        {designStage === "functional_architecture" ? (
-                                            <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                                Complete functional architecture until Information Density reaches 100.
-                                            </p>
-                                        ) : (
-                                            <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                                Functional architecture is ready. You can generate scaffold or proceed to payment.
-                                            </p>
-                                        )}
+                                        <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
+                                            Use the Architect chat to complete context, boundaries, decisions, and guardrails. Run a review before scaffold generation.
+                                        </p>
                                         {/* Pending Attachments Preview */}
                                         {pendingAttachments.length > 0 && (
                                             <div className="flex gap-2 overflow-x-auto px-1 pb-2">
@@ -2253,7 +2729,7 @@ function WizardContent() {
                                                     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
                                                 }}
                                                 onPaste={handlePaste}
-                                                placeholder={`Describe requirements for ${project.name}...`}
+                                                placeholder={`Describe architecture goals, module boundaries, contracts, risks, or attach documents for ${project.name}...`}
                                                 disabled={isGenerating}
                                                 rows={1}
                                                 className="min-h-[40px] max-h-[150px] flex-1 resize-none overflow-hidden border-none bg-transparent p-2 text-slate-900 focus:outline-none focus:ring-0 dark:text-slate-100"
@@ -2300,6 +2776,12 @@ function WizardContent() {
                         label="Architecture"
                     />
                     <TabButton
+                        active={activeTab === 'review'}
+                        onClick={() => setActiveTab('review')}
+                        icon={<ShieldAlert className="w-4 h-4" />}
+                        label="Review"
+                    />
+                    <TabButton
                         active={activeTab === 'files'}
                         onClick={() => setActiveTab('files')}
                         icon={<FileCode className="w-4 h-4" />}
@@ -2320,9 +2802,230 @@ function WizardContent() {
 
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
-                        <div className="absolute inset-0 p-4">
-                            <div className="relative h-full overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
+                        <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)]">
+                                <div className="space-y-4">
+                                    <div className="grid gap-3 md:grid-cols-3">
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Stage</p>
+                                            <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{ARCHITECTURE_STAGE_LABELS[architectureStage]}</p>
+                                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Architecture pack drives delivery, review, and scaffold gating.</p>
+                                        </div>
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Readiness</p>
+                                            <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{Math.round(architectureCompletion)}%</p>
+                                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{architectureReadiness.nextMilestone}</p>
+                                        </div>
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Evidence</p>
+                                            <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{sourceArtifacts.length} artifacts</p>
+                                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{decisionRecords.length} decisions, {reviewHistory.length} reviews</p>
+                                        </div>
+                                    </div>
+
+                                    {architectureBlockers.length > 0 && (
+                                        <section className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 dark:border-amber-700/40 dark:bg-amber-900/20">
+                                            <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-200">Blocking issues</h3>
+                                            <ul className="mt-3 space-y-2 text-sm text-amber-700 dark:text-amber-100">
+                                                {architectureBlockers.map((issue) => (
+                                                    <li key={issue} className="rounded-xl bg-white/60 px-3 py-2 dark:bg-slate-900/40">{issue}</li>
+                                                ))}
+                                            </ul>
+                                        </section>
+                                    )}
+
+                                    <section className="grid gap-4 lg:grid-cols-2">
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Business Context</h3>
+                                            <p className="mt-3 text-sm text-slate-700 dark:text-slate-200">{architecturePack.businessContext.productGoal || "Architect is still defining the product goal."}</p>
+                                            <div className="mt-4 space-y-3 text-xs text-slate-600 dark:text-slate-300">
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Target users</p>
+                                                    <p className="mt-1">{architecturePack.businessContext.targetUsers.join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">User journeys</p>
+                                                    <p className="mt-1">{architecturePack.businessContext.userJourneys.join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Constraints & risks</p>
+                                                    <p className="mt-1">{[...architecturePack.businessContext.constraints, ...architecturePack.businessContext.risks].join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Experience Constraints</h3>
+                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Key screens</p>
+                                                    <p className="mt-1">{architecturePack.experienceConstraints.keyScreens.join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Shared components</p>
+                                                    <p className="mt-1">{architecturePack.experienceConstraints.uiComponents.join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Responsive strategy</p>
+                                                    <p className="mt-1">{architecturePack.experienceConstraints.responsiveStrategy.join(" | ") || experienceGapLabels.join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <section className="grid gap-4 lg:grid-cols-2">
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Boundaries & Ownership</h3>
+                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Bounded contexts</p>
+                                                    <div className="mt-2 space-y-2">
+                                                        {architecturePack.boundedContexts.length > 0 ? architecturePack.boundedContexts.map((item) => (
+                                                            <div key={item.name} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 dark:bg-slate-800/50">
+                                                                <p className="font-semibold text-slate-800 dark:text-slate-100">{item.name}</p>
+                                                                <p className="mt-1">{item.responsibility}</p>
+                                                            </div>
+                                                        )) : <p>Not captured yet</p>}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Data ownership</p>
+                                                    <p className="mt-1">{architecturePack.dataOwnership.map((item) => `${item.data} -> ${item.owner}`).join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Contracts & Decisions</h3>
+                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Integration contracts</p>
+                                                    <p className="mt-1">{architecturePack.integrationContracts.map((item) => `${item.name} [${item.kind}]`).join(" | ") || "Not captured yet"}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Decision records</p>
+                                                    <div className="mt-2 space-y-2">
+                                                        {decisionRecords.length > 0 ? decisionRecords.map((item) => (
+                                                            <div key={item.title} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 dark:bg-slate-800/50">
+                                                                <p className="font-semibold text-slate-800 dark:text-slate-100">{item.title}</p>
+                                                                <p className="mt-1">{item.decision}</p>
+                                                            </div>
+                                                        )) : <p>No explicit decisions yet.</p>}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Delivery Guardrails</h3>
+                                        <div className="mt-3 grid gap-4 md:grid-cols-2">
+                                            <div>
+                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Implementation order</p>
+                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.implementationOrder.join(" -> ") || "Not defined yet"}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Acceptance criteria</p>
+                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.acceptanceCriteria.join(" | ") || "Not defined yet"}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Test strategy</p>
+                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.testStrategy.join(" | ") || "Not defined yet"}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Review checklist</p>
+                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.reviewChecklist.join(" | ") || "Not defined yet"}</p>
+                                            </div>
+                                        </div>
+                                    </section>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-slate-50/70 p-4 dark:bg-black/25">
+                                        <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">Architecture Diagram</h3>
+                                        <div className="relative h-[420px] overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
+                                            <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Latest Review</h3>
+                                        {latestReview ? (
+                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
+                                                <p className="font-semibold text-slate-800 dark:text-slate-100">{latestReview.summary}</p>
+                                                <p>Verdict: {latestReview.verdict.replace("_", " ")}</p>
+                                                <p>Findings: {latestReview.findings.length}</p>
+                                            </div>
+                                        ) : (
+                                            <p className="mt-3 text-xs text-slate-600 dark:text-slate-300">Run an architecture review after you have an implementation plan or code direction.</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Review Tab */}
+                    {activeTab === 'review' && (
+                        <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Architecture Review</h3>
+                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">Paste implementation notes, file plans, or code snippets. The Architect will flag boundary drift and missing contracts.</p>
+                                        </div>
+                                        <button
+                                            onClick={handleRunReview}
+                                            disabled={isReviewing}
+                                            className="fc-button-primary inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            {isReviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldAlert className="h-4 w-4" />}
+                                            Run Review
+                                        </button>
+                                    </div>
+
+                                    <textarea
+                                        value={reviewDraft}
+                                        onChange={(event) => setReviewDraft(event.target.value)}
+                                        placeholder="Example: Billing service writes directly to auth tables, frontend will call internal admin endpoint, tests planned: none..."
+                                        className="mt-4 h-72 w-full rounded-2xl border border-[color:var(--border)] bg-white/90 p-4 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-950/70 dark:text-slate-100"
+                                    />
+                                    {reviewError && (
+                                        <p className="mt-3 text-sm text-red-500">{reviewError}</p>
+                                    )}
+                                </section>
+
+                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                    <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                        <ListChecks className="h-5 w-5 text-blue-500" />
+                                        Review Findings
+                                    </h3>
+                                    <div className="mt-4 space-y-3">
+                                        {reviewHistory.length > 0 ? reviewHistory.slice().reverse().map((review) => (
+                                            <article key={review.reviewedAt} className="rounded-2xl border border-[color:var(--border)] bg-slate-50/80 p-4 dark:bg-slate-800/50">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{review.verdict.replace("_", " ")}</p>
+                                                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{new Date(review.reviewedAt).toLocaleString()}</p>
+                                                </div>
+                                                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{review.summary}</p>
+                                                <div className="mt-3 space-y-2">
+                                                    {review.findings.length > 0 ? review.findings.map((finding, index) => (
+                                                        <div key={`${review.reviewedAt}-${index}`} className="rounded-xl border border-[color:var(--border)] bg-white/90 px-3 py-2 text-xs dark:bg-slate-900/70">
+                                                            <p className="font-semibold text-slate-800 dark:text-slate-100">{finding.area} · {finding.severity}</p>
+                                                            <p className="mt-1 text-slate-600 dark:text-slate-300">{finding.finding}</p>
+                                                            <p className="mt-1 text-slate-500 dark:text-slate-400">Action: {finding.recommendedAction}</p>
+                                                        </div>
+                                                    )) : (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400">No findings. Implementation direction is aligned.</p>
+                                                    )}
+                                                </div>
+                                            </article>
+                                        )) : (
+                                            <p className="text-sm text-slate-500 dark:text-slate-300">No reviews yet.</p>
+                                        )}
+                                    </div>
+                                </section>
                             </div>
                         </div>
                     )}

@@ -1,5 +1,12 @@
 
 import { NextResponse } from "next/server";
+import {
+    buildArchitecturePackScaffoldInput,
+    createReadinessChecklist,
+    normalizeArchitecturePack,
+    normalizeDecisionRecords,
+    normalizeGuardrailChecklist
+} from "@/lib/architecture";
 import { generateProjectResources } from "@/lib/gemini";
 
 type OutputLanguage = "zh" | "en";
@@ -83,12 +90,44 @@ export async function POST(req: Request) {
             outputLanguage,
             oneClickMode,
             ideProfile,
-            templateKindHint
+            templateKindHint,
+            architecturePack,
+            decisionRecords,
+            guardrailChecklist
         } = await req.json();
-        if (typeof summary !== "string" || !summary.trim()) {
-            return NextResponse.json({ error: "No summary provided" }, { status: 400 });
+        if (!architecturePack || typeof architecturePack !== "object") {
+            return NextResponse.json(
+                { error: "Architecture pack is required before scaffold generation." },
+                { status: 400 }
+            );
         }
-        const normalizedSummary = clipText(summary.trim(), MAX_GENERATE_SUMMARY_CHARS);
+        const normalizedArchitecturePack = normalizeArchitecturePack(architecturePack);
+        const normalizedDecisionRecords = normalizeDecisionRecords(decisionRecords);
+        const normalizedGuardrailChecklist = normalizeGuardrailChecklist(guardrailChecklist);
+        const readiness = createReadinessChecklist(
+            normalizedArchitecturePack,
+            normalizedDecisionRecords,
+            normalizedGuardrailChecklist
+        );
+        if (!readiness.functionalReady || !readiness.uiReady) {
+            return NextResponse.json(
+                {
+                    error: "Architecture pack is not ready for scaffold generation.",
+                    blockingIssues: readiness.blockingIssues,
+                    readiness
+                },
+                { status: 409 }
+            );
+        }
+        const renderedSummary = buildArchitecturePackScaffoldInput(
+            normalizedArchitecturePack,
+            normalizedDecisionRecords,
+            normalizedGuardrailChecklist
+        );
+        const normalizedSummary = clipText(
+            renderedSummary || String(summary || "").trim(),
+            MAX_GENERATE_SUMMARY_CHARS
+        );
         const normalizedDiagram =
             typeof diagram === "string" && diagram.trim()
                 ? clipText(diagram.trim(), MAX_GENERATE_DIAGRAM_CHARS)

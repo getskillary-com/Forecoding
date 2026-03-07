@@ -15,38 +15,38 @@ import { BrandLogo } from "@/components/BrandLogo";
 const capabilityCards = [
     {
         icon: Compass,
-        title: "Requirement Clarity",
-        description: "Capture edge cases and constraints before any line of code is generated."
+        title: "Business Discovery",
+        description: "Interrogate goals, users, constraints, and risks before architecture is allowed to harden."
     },
     {
         icon: Workflow,
-        title: "Execution Sequence",
-        description: "Turn features into build order so AI IDE output stays aligned."
+        title: "Boundary Modeling",
+        description: "Define bounded contexts, ownership, contracts, and module responsibilities explicitly."
     },
     {
         icon: Boxes,
-        title: "Scaffold Blueprint",
-        description: "Export architecture, file tree, and implementation prompts in one package."
+        title: "Decision Records",
+        description: "Capture tradeoffs, rejected alternatives, and consequences instead of producing one opaque answer."
     },
     {
         icon: ShieldCheck,
-        title: "Risk Guardrails",
-        description: "Reduce rework by locking assumptions, interfaces, and boundaries early."
+        title: "Delivery Guardrails",
+        description: "Turn architecture into review checklists, test strategy, and scaffold-ready implementation order."
     }
 ];
 
 const flowSteps = [
     {
-        title: "Describe the product in plain language",
-        description: "Share goals, user journey, and constraints."
+        title: "Feed the Architect your context",
+        description: "Share goals, flows, constraints, risks, and reference documents."
     },
     {
-        title: "Iterate with AI until ambiguity is removed",
-        description: "Forecoding asks focused questions and hardens the scope."
+        title: "Lock boundaries and decisions",
+        description: "Forecoding produces an architecture pack with ownership, contracts, and tradeoffs."
     },
     {
-        title: "Launch implementation in your AI IDE",
-        description: "Export a structured blueprint and execute in Cursor/Windsurf/Cline."
+        title: "Review before generating",
+        description: "Run architecture review on the implementation plan, then generate scaffold with guardrails."
     }
 ];
 
@@ -78,14 +78,14 @@ export default function Home() {
                     <div className="fc-surface fc-fade-up rounded-[var(--radius-2xl)] p-7 sm:p-10">
                         <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.1em] text-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
                             <Sparkles className="h-4 w-4 text-[color:var(--brand)]" />
-                            Blueprint Studio for AI IDE Teams
+                            Chief AI Architect for Engineering Teams
                         </div>
                         <h1 className="text-balance text-4xl font-semibold leading-tight text-slate-900 dark:text-slate-100 sm:text-5xl">
-                            Forecoding turns fuzzy product ideas into build-ready plans.
+                            Forecoding turns product ambiguity into architecture decisions.
                         </h1>
                         <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-lg">
-                            Stop jumping directly into generation. Clarify requirements first, structure architecture,
-                            and ship cleaner output with less trial-and-error.
+                            Stop treating AI like a code vending machine. Discover the business, define system
+                            boundaries, lock contracts, and generate only after the architecture pack is ready.
                         </p>
 
                         <div className="mt-7 flex flex-wrap gap-3">
@@ -117,13 +117,13 @@ export default function Home() {
                         <div className="grid grid-cols-2 gap-3">
                             <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/70">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Output</p>
-                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">4-in-1</p>
+                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Architecture Pack</p>
                                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">PRD + architecture + scaffold + tasks</p>
                             </div>
                             <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/70">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Goal</p>
-                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Less Rework</p>
-                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Reduce revisions before implementation</p>
+                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Less Drift</p>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Keep implementation aligned with architecture</p>
                             </div>
                         </div>
 
@@ -133,20 +133,20 @@ export default function Home() {
                                 <Gauge className="h-4 w-4 opacity-90" />
                             </div>
                             <p className="mt-2 text-xs text-blue-100">
-                                Better requirement hygiene means more deterministic AI code generation.
+                                Better architectural hygiene means more predictable implementation and fewer rewrites.
                             </p>
                             <ul className="mt-4 space-y-2 text-xs text-blue-50">
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Align scope before coding
+                                    Clarify ownership before coding
                                 </li>
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Keep architecture and tasks synchronized
+                                    Keep contracts and tasks synchronized
                                 </li>
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Hand off cleanly to AI IDE workflows
+                                    Review implementation before scaffold handoff
                                 </li>
                             </ul>
                         </div>
@@ -188,7 +188,7 @@ export default function Home() {
                         <div className="text-left">
                             <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Design first, code faster.</h3>
                             <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-300">
-                                Forecoding is not a final code generator. It is a planning layer that makes every AI IDE generation pass more accurate.
+                                Forecoding is not a final code generator. It is the architect layer that makes every downstream AI implementation pass more defensible.
                             </p>
                         </div>
                         <Link

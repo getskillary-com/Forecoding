@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { CTO_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
@@ -818,7 +818,7 @@ export async function generateProjectResources(
     const resolvedOneClickMode = options?.oneClickMode === "strict_build_v1" ? options.oneClickMode : DEFAULT_ONE_CLICK_MODE;
     const resolvedIdeProfile = options?.ideProfile === "generic" ? options.ideProfile : DEFAULT_IDE_PROFILE;
 
-    let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\nFinalized Requirement Consensus:\n${history}\n\nApproved System Architecture (Mermaid):\n${diagram || "Not provided"}`;
+    let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\nApproved Architecture Pack:\n${history}\n\nApproved System Architecture (Mermaid):\n${diagram || "Not provided"}`;
 
     if (resolvedProjectName) {
         prompt += `\n\n# Project Name\n${resolvedProjectName}`;

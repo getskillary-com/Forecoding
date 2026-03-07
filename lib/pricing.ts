@@ -1,4 +1,10 @@
 import type { DesignStage, FileNode, Message, Project, ProjectVersion, UiRequirements } from "@/types";
+import {
+    createReadinessChecklist,
+    normalizeArchitecturePack,
+    normalizeDecisionRecords,
+    normalizeGuardrailChecklist
+} from "@/lib/architecture";
 import { deriveUiRequirements, isUiDesignSpec, validateUiDesignSpec } from "@/lib/ui-spec";
 
 export type ComplexityTier =
@@ -235,6 +241,20 @@ function isDesignStage(value: unknown): value is DesignStage {
 export function inferProjectDesignStage(project: Project | null): DesignStage {
     const latest = resolveLatestVersion(project);
     if (!latest) return "functional_architecture";
+    const explicitReadiness = latest.data.evaluation?.readiness;
+    if (explicitReadiness?.functionalReady && explicitReadiness?.uiReady) {
+        return "ready_to_generate";
+    }
+    if (latest.data.architecturePack) {
+        const readiness = createReadinessChecklist(
+            normalizeArchitecturePack(latest.data.architecturePack, latest.data.evaluation?.analysis?.ui),
+            normalizeDecisionRecords(latest.data.decisionRecords),
+            normalizeGuardrailChecklist(latest.data.guardrailChecklist)
+        );
+        if (readiness.functionalReady && readiness.uiReady) {
+            return "ready_to_generate";
+        }
+    }
     const rawStage = latest.data.designStage;
     if (isDesignStage(rawStage)) return rawStage;
 

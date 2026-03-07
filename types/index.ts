@@ -29,6 +29,136 @@ export interface UiDesignState {
     readiness: UiReadinessReport;
 }
 
+export type ArchitectureStage =
+    | "context"
+    | "boundaries"
+    | "decisions"
+    | "guardrails"
+    | "review"
+    | "ready_to_generate";
+
+export interface SourceArtifact {
+    id: string;
+    sourceType: "chat" | "text" | "pdf" | "image";
+    name: string;
+    summary: string;
+    createdAt: number;
+}
+
+export interface BusinessContext {
+    productGoal: string;
+    targetUsers: string[];
+    userJourneys: string[];
+    constraints: string[];
+    risks: string[];
+}
+
+export interface DomainEntity {
+    name: string;
+    description: string;
+    owner?: string;
+}
+
+export interface BoundedContext {
+    name: string;
+    responsibility: string;
+    owns: string[];
+    dependencies: string[];
+}
+
+export interface ModuleResponsibility {
+    module: string;
+    responsibility: string;
+    inputs: string[];
+    outputs: string[];
+}
+
+export interface DataOwnership {
+    data: string;
+    owner: string;
+    consumers: string[];
+    notes?: string;
+}
+
+export interface IntegrationContract {
+    name: string;
+    kind: "api" | "event" | "job" | "shared-library";
+    producer: string;
+    consumer: string;
+    payload: string;
+    notes: string;
+}
+
+export interface NonFunctionalRequirement {
+    category: string;
+    requirement: string;
+    rationale?: string;
+}
+
+export interface DeliveryPlanItem {
+    phase: string;
+    goal: string;
+    acceptanceCriteria: string[];
+}
+
+export interface ExperienceConstraint {
+    keyScreens: string[];
+    uiComponents: string[];
+    interactionStates: string[];
+    responsiveStrategy: string[];
+}
+
+export interface ArchitecturePack {
+    version: "architecture_pack_v1";
+    businessContext: BusinessContext;
+    domainModel: DomainEntity[];
+    boundedContexts: BoundedContext[];
+    moduleResponsibilities: ModuleResponsibility[];
+    dataOwnership: DataOwnership[];
+    integrationContracts: IntegrationContract[];
+    nonFunctionalRequirements: NonFunctionalRequirement[];
+    deliveryPlan: DeliveryPlanItem[];
+    experienceConstraints: ExperienceConstraint;
+}
+
+export interface DecisionRecord {
+    title: string;
+    decision: string;
+    rationale: string;
+    alternativesRejected: string[];
+    consequences: string[];
+}
+
+export interface GuardrailChecklist {
+    implementationOrder: string[];
+    acceptanceCriteria: string[];
+    testStrategy: string[];
+    reviewChecklist: string[];
+}
+
+export interface ReadinessChecklist {
+    score: number;
+    functionalReady: boolean;
+    uiReady: boolean;
+    paymentReady: boolean;
+    blockingIssues: string[];
+    nextMilestone: string;
+}
+
+export interface ReviewFinding {
+    severity: "low" | "medium" | "high";
+    area: "boundaries" | "contracts" | "non_functional" | "delivery";
+    finding: string;
+    recommendedAction: string;
+}
+
+export interface ArchitectureReviewResult {
+    summary: string;
+    verdict: "aligned" | "needs_changes" | "blocked";
+    findings: ReviewFinding[];
+    reviewedAt: number;
+}
+
 export interface UiDesignTokens {
     colors: Record<string, string>;
     typography: {
@@ -182,6 +312,12 @@ export interface EvaluationResponse {
     current_diagram?: string; // Mermaid format code
     analysis: Analysis; // This acts as our real-time PRD
     next_step: NextStep;
+    stage?: ArchitectureStage;
+    openQuestions?: string[];
+    architecturePackDraft?: ArchitecturePack;
+    decisionDrafts?: DecisionRecord[];
+    guardrailDrafts?: GuardrailChecklist;
+    readiness?: ReadinessChecklist;
 }
 
 export interface FileNode {
@@ -235,6 +371,12 @@ export interface ProjectVersionData {
     uiDesignSpec?: UiDesignSpec;
     functionalLockedAt?: number | null;
     uiReadyAt?: number | null;
+    sourceArtifacts?: SourceArtifact[];
+    architecturePack?: ArchitecturePack;
+    decisionRecords?: DecisionRecord[];
+    guardrailChecklist?: GuardrailChecklist;
+    reviewHistory?: ArchitectureReviewResult[];
+    architectureStage?: ArchitectureStage;
 }
 
 // Represents a specific snapshot/iteration of a project

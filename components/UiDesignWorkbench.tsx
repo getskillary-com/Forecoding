@@ -13,7 +13,7 @@ export type UiWireframeScreen = {
     interactions: string[];
 };
 
-type UiViewMode = "wireframe" | "render";
+type UiViewMode = "wireframe" | "render" | "visual";
 type UiWorkbenchMode = "spec" | UiViewMode;
 
 type UiTheme = {
@@ -30,7 +30,7 @@ type UiTheme = {
 const COLOR_KEYS = ["primary", "secondary", "background", "surface", "text"];
 const STATE_KEYS = ["loading", "empty", "error", "success"] as const;
 
-function resolveUiTheme(ui: UiRequirements): UiTheme {
+function resolveUiTheme(ui: UiRequirements, spec?: UiDesignSpec | null): UiTheme {
     const descriptor = `${ui.colorSystem.join(" ")} ${ui.visualStyle.join(" ")}`.toLowerCase();
 
     if (descriptor.includes("neon") || descriptor.includes("cyber") || descriptor.includes("vibrant")) {
@@ -85,7 +85,7 @@ function resolveUiTheme(ui: UiRequirements): UiTheme {
         };
     }
 
-    return {
+    const fallbackTheme: UiTheme = {
         accent: "#3b82f6",
         accentSoft: "#22c55e",
         surface: "rgba(15, 23, 42, 0.92)",
@@ -94,6 +94,18 @@ function resolveUiTheme(ui: UiRequirements): UiTheme {
         muted: "#94a3b8",
         border: "rgba(59, 130, 246, 0.35)",
         gradient: "linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(34, 197, 94, 0.12))"
+    };
+    const tokens = spec?.tokens?.colors || {};
+    if (!spec || Object.keys(tokens).length === 0) return fallbackTheme;
+    return {
+        accent: tokens.primary || fallbackTheme.accent,
+        accentSoft: tokens.secondary || fallbackTheme.accentSoft,
+        surface: tokens.surface || fallbackTheme.surface,
+        surfaceAlt: tokens.background || fallbackTheme.surfaceAlt,
+        text: tokens.text || fallbackTheme.text,
+        muted: fallbackTheme.muted,
+        border: tokens.primary ? `${tokens.primary}55` : fallbackTheme.border,
+        gradient: `linear-gradient(135deg, ${tokens.primary || "#3b82f6"}33, ${tokens.secondary || "#22c55e"}22)`
     };
 }
 
@@ -140,13 +152,7 @@ export function UiDesignWorkbench({
     const screenRefs = useRef<(HTMLElement | null)[]>([]);
     const uiSpecErrors = validateUiDesignSpec(uiDesignSpec);
     const missingLabels = uiDesignState.readiness.missingLabels || [];
-    const theme = resolveUiTheme(uiRequirements);
-
-    useEffect(() => {
-        if (!uiDesignActive) return;
-        if (mode === "spec" || mode === "wireframe" || mode === "render") return;
-        setMode("render");
-    }, [mode, uiDesignActive]);
+    const theme = resolveUiTheme(uiRequirements, uiDesignSpec);
 
     useEffect(() => {
         if (activeScreenIndex === null) return;
@@ -488,6 +494,9 @@ export function UiDesignWorkbench({
         const colorSystem = uiRequirements.colorSystem[0] || "Not defined";
         const typography = uiRequirements.typography[0] || "Not defined";
         const responsive = uiRequirements.responsiveStrategy[0] || "Not defined";
+        const isWireframe = mode === "wireframe";
+        const isVisual = mode === "visual";
+        const isColorMode = mode === "render" || mode === "visual";
 
         return (
             <>
@@ -511,82 +520,149 @@ export function UiDesignWorkbench({
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
-                    {wireframes.map((screen, index) => (
-                        <section
-                            key={`${screen.name}-${index}`}
-                            ref={(el) => {
-                                screenRefs.current[index] = el;
-                            }}
-                            onClick={() => onSelectScreen(index)}
-                            className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${mode === "render" ? "" : "bg-white/80 dark:bg-slate-900/50"} ${activeScreenIndex === index
-                                ? "border-blue-300 ring-2 ring-blue-300/70 dark:border-blue-500/70 dark:ring-blue-500/60"
-                                : "border-[color:var(--border)] hover:border-blue-200 dark:hover:border-blue-500/40"}`}
-                            style={mode === "render" ? { borderColor: theme.border, background: theme.surfaceAlt } : undefined}
-                        >
-                            <div className="mb-3 flex items-center justify-between">
-                                <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100" style={mode === "render" ? { color: theme.text } : undefined}>{screen.name}</h4>
-                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                                    Screen {index + 1}
-                                </span>
-                            </div>
+                    {wireframes.map((screen, index) => {
+                        const moduleStack = screen.modules.length > 0
+                            ? screen.modules
+                            : ["Primary Content", "Highlights", "CTA Module", "Secondary Feed"];
+                        const primaryModules = moduleStack.slice(0, 3);
+                        const secondaryModules = moduleStack.slice(3, 6);
+                        const visualModules = secondaryModules.length > 0 ? secondaryModules : primaryModules;
 
-                            {mode === "wireframe" ? (
-                                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/45">
-                                    <div className="mb-2 h-2.5 w-24 rounded bg-slate-300/80 dark:bg-slate-600/80" />
-                                    <div className="mb-3 h-7 rounded-md border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900/50" />
-                                    <div className="space-y-2">
-                                        {screen.modules.map((module, moduleIndex) => (
-                                            <div
-                                                key={`${screen.name}-module-${moduleIndex}`}
-                                                className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
-                                            >
-                                                {module}
-                                            </div>
-                                        ))}
-                                    </div>
+                        return (
+                            <section
+                                key={`${screen.name}-${index}`}
+                                ref={(el) => {
+                                    screenRefs.current[index] = el;
+                                }}
+                                onClick={() => onSelectScreen(index)}
+                                className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${isColorMode ? "" : "bg-white/80 dark:bg-slate-900/50"} ${activeScreenIndex === index
+                                    ? "border-blue-300 ring-2 ring-blue-300/70 dark:border-blue-500/70 dark:ring-blue-500/60"
+                                    : "border-[color:var(--border)] hover:border-blue-200 dark:hover:border-blue-500/40"}`}
+                                style={isColorMode ? { borderColor: theme.border, background: theme.surfaceAlt } : undefined}
+                            >
+                                <div className="mb-3 flex items-center justify-between">
+                                    <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100" style={isColorMode ? { color: theme.text } : undefined}>{screen.name}</h4>
+                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                                        Screen {index + 1}
+                                    </span>
                                 </div>
-                            ) : (
-                                <div className="rounded-xl border p-3" style={{ borderColor: theme.border, background: theme.gradient }}>
-                                    <div className="flex items-center justify-between">
-                                        <div className="h-2.5 w-16 rounded-full" style={{ background: theme.accentSoft }} />
-                                        <div className="h-2.5 w-10 rounded-full" style={{ background: theme.muted }} />
-                                    </div>
-                                    <div className="mt-3 rounded-lg p-3" style={{ background: theme.surface }}>
-                                        <div className="h-3 w-24 rounded-full" style={{ background: theme.muted }} />
-                                        <div className="mt-2 h-8 rounded-lg" style={{ border: `1px solid ${theme.border}`, background: theme.surfaceAlt }} />
-                                        <div className="mt-3 grid gap-2">
-                                            {screen.modules.map((module, moduleIndex) => (
+
+                                {isWireframe ? (
+                                    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/45">
+                                        <div className="mb-2 h-2.5 w-24 rounded bg-slate-300/80 dark:bg-slate-600/80" />
+                                        <div className="mb-3 h-7 rounded-md border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900/50" />
+                                        <div className="space-y-2">
+                                            {moduleStack.map((module, moduleIndex) => (
                                                 <div
-                                                    key={`${screen.name}-render-${moduleIndex}`}
-                                                    className="rounded-md px-2 py-1.5 text-xs font-medium"
-                                                    style={{ background: theme.surfaceAlt, color: theme.text, border: `1px solid ${theme.border}` }}
+                                                    key={`${screen.name}-module-${moduleIndex}`}
+                                                    className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
                                                 >
                                                     {module}
                                                 </div>
                                             ))}
                                         </div>
-                                        <div className="mt-3 flex gap-2">
-                                            <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ background: theme.accent, color: "#0b1120" }}>
-                                                Primary
-                                            </span>
-                                            <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${theme.accent}`, color: theme.accent }}>
-                                                Secondary
-                                            </span>
+                                    </div>
+                                ) : isVisual ? (
+                                    <div className="rounded-xl border p-3" style={{ borderColor: theme.border, background: theme.surface }}>
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <div className="h-7 w-7 rounded-lg" style={{ background: theme.accent }} />
+                                                <div>
+                                                    <div className="h-2.5 w-20 rounded" style={{ background: theme.muted }} />
+                                                    <div className="mt-1 h-2 w-14 rounded" style={{ background: theme.muted }} />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <div className="h-6 w-6 rounded-full" style={{ background: theme.accentSoft }} />
+                                                <div className="h-6 w-6 rounded-full" style={{ background: theme.muted }} />
+                                            </div>
+                                        </div>
+                                        <div className="mt-3 rounded-lg p-3" style={{ background: theme.gradient }}>
+                                            <div className="h-3 w-32 rounded" style={{ background: theme.surfaceAlt }} />
+                                            <div className="mt-2 h-2 w-24 rounded" style={{ background: theme.surfaceAlt }} />
+                                            <div className="mt-3 flex gap-2">
+                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ background: theme.accent, color: "#0b1120" }}>
+                                                    Primary
+                                                </span>
+                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${theme.accent}`, color: theme.accent }}>
+                                                    Secondary
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                            <div className="rounded-lg border p-2" style={{ borderColor: theme.border, background: theme.surfaceAlt }}>
+                                                <div className="mb-2 h-2 w-20 rounded" style={{ background: theme.muted }} />
+                                                <div className="space-y-2">
+                                                    {primaryModules.map((module, moduleIndex) => (
+                                                        <div
+                                                            key={`${screen.name}-visual-${moduleIndex}`}
+                                                            className="rounded-md px-2 py-1.5 text-[11px] font-medium"
+                                                            style={{ background: theme.surface, color: theme.text, border: `1px solid ${theme.border}` }}
+                                                        >
+                                                            {module}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <div className="rounded-lg border p-2" style={{ borderColor: theme.border, background: theme.surfaceAlt }}>
+                                                <div className="mb-2 h-2 w-16 rounded" style={{ background: theme.muted }} />
+                                                <div className="grid gap-2">
+                                                    {visualModules.map((module, moduleIndex) => (
+                                                        <div
+                                                            key={`${screen.name}-visual-alt-${moduleIndex}`}
+                                                            className="rounded-md px-2 py-1.5 text-[11px] font-medium"
+                                                            style={{ background: theme.surface, color: theme.text, border: `1px solid ${theme.border}` }}
+                                                        >
+                                                            {module}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            )}
+                                ) : (
+                                    <div className="rounded-xl border p-3" style={{ borderColor: theme.border, background: theme.gradient }}>
+                                        <div className="flex items-center justify-between">
+                                            <div className="h-2.5 w-16 rounded-full" style={{ background: theme.accentSoft }} />
+                                            <div className="h-2.5 w-10 rounded-full" style={{ background: theme.muted }} />
+                                        </div>
+                                        <div className="mt-3 rounded-lg p-3" style={{ background: theme.surface }}>
+                                            <div className="h-3 w-24 rounded-full" style={{ background: theme.muted }} />
+                                            <div className="mt-2 h-8 rounded-lg" style={{ border: `1px solid ${theme.border}`, background: theme.surfaceAlt }} />
+                                            <div className="mt-3 grid gap-2">
+                                                {moduleStack.map((module, moduleIndex) => (
+                                                    <div
+                                                        key={`${screen.name}-render-${moduleIndex}`}
+                                                        className="rounded-md px-2 py-1.5 text-xs font-medium"
+                                                        style={{ background: theme.surfaceAlt, color: theme.text, border: `1px solid ${theme.border}` }}
+                                                    >
+                                                        {module}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <div className="mt-3 flex gap-2">
+                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ background: theme.accent, color: "#0b1120" }}>
+                                                    Primary
+                                                </span>
+                                                <span className="rounded-full px-3 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${theme.accent}`, color: theme.accent }}>
+                                                    Secondary
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
-                            <div className="mt-3 space-y-1 text-[11px]" style={mode === "render" ? { color: theme.muted } : undefined}>
-                                <p>
-                                    <span className="font-semibold" style={mode === "render" ? { color: theme.text } : undefined}>States:</span> {screen.states.join(" | ")}
-                                </p>
-                                <p>
-                                    <span className="font-semibold" style={mode === "render" ? { color: theme.text } : undefined}>Interactions:</span> {screen.interactions.join(" | ")}
-                                </p>
-                            </div>
-                        </section>
-                    ))}
+                                <div className="mt-3 space-y-1 text-[11px]" style={isColorMode ? { color: theme.muted } : undefined}>
+                                    <p>
+                                        <span className="font-semibold" style={isColorMode ? { color: theme.text } : undefined}>States:</span> {screen.states.join(" | ")}
+                                    </p>
+                                    <p>
+                                        <span className="font-semibold" style={isColorMode ? { color: theme.text } : undefined}>Interactions:</span> {screen.interactions.join(" | ")}
+                                    </p>
+                                </div>
+                            </section>
+                        );
+                    })}
                 </div>
             </>
         );
@@ -614,7 +690,7 @@ export function UiDesignWorkbench({
                 )}
                 {uiDesignActive && (
                     <div className="mt-2 inline-flex rounded-lg border border-[color:var(--border)] p-1 text-xs">
-                        {(["spec", "wireframe", "render"] as UiWorkbenchMode[]).map((item) => (
+                        {(["spec", "wireframe", "render", "visual"] as UiWorkbenchMode[]).map((item) => (
                             <button
                                 key={item}
                                 onClick={() => setMode(item)}
@@ -622,7 +698,7 @@ export function UiDesignWorkbench({
                                     ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
                                     : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"}`}
                             >
-                                {item === "spec" ? "Spec Editor" : item === "wireframe" ? "Wireframe" : "Render"}
+                                {item === "spec" ? "Spec Editor" : item === "wireframe" ? "Wireframe" : item === "render" ? "Render" : "Visual"}
                             </button>
                         ))}
                     </div>

@@ -120,7 +120,7 @@ export async function POST(req: Request) {
         if (designStage !== "ready_to_generate") {
             return NextResponse.json(
                 {
-                    error: "Functional architecture is not confirmed. Reach density 100 before checkout.",
+                    error: "Architecture pack is not ready. Resolve blockers and complete review before checkout.",
                     designStage
                 },
                 { status: 409 }
