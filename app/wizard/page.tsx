@@ -101,7 +101,6 @@ const GENERATE_MAX_HISTORY_MESSAGES = 24;
 const GENERATE_MAX_MESSAGE_CONTENT_CHARS = 2_000;
 const GENERATE_MAX_ANALYSIS_CHARS = 10_000;
 const GENERATE_MAX_SUMMARY_CHARS = 50_000;
-const GENERATE_CLIENT_TIMEOUT_MS = 95_000;
 const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
@@ -2294,31 +2293,23 @@ function WizardContent() {
             );
             const outputLanguage = inferScaffoldOutputLanguage(messages);
             const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
-            const controller = new AbortController();
-            const timeoutId = window.setTimeout(() => controller.abort(), GENERATE_CLIENT_TIMEOUT_MS);
-            let res: Response;
-            try {
-                res = await fetch("/api/generate", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        summary: historyText,
-                        diagram: currentDiagram,
-                        projectName: project?.name,
-                        outputLanguage,
-                        oneClickMode: GENERATE_ONE_CLICK_MODE,
-                        ideProfile: GENERATE_IDE_PROFILE,
-                        templateKindHint,
-                        currentProjectTree: generation?.projectTree,
-                        architecturePack,
-                        decisionRecords,
-                        guardrailChecklist
-                    }),
-                    signal: controller.signal
-                });
-            } finally {
-                window.clearTimeout(timeoutId);
-            }
+            const res = await fetch("/api/generate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    summary: historyText,
+                    diagram: currentDiagram,
+                    projectName: project?.name,
+                    outputLanguage,
+                    oneClickMode: GENERATE_ONE_CLICK_MODE,
+                    ideProfile: GENERATE_IDE_PROFILE,
+                    templateKindHint,
+                    currentProjectTree: generation?.projectTree,
+                    architecturePack,
+                    decisionRecords,
+                    guardrailChecklist
+                })
+            });
 
             if (!res.ok) {
                 let errorMessage = "Failed to generate";
@@ -2355,11 +2346,7 @@ function WizardContent() {
 
         } catch (error) {
             console.error(error);
-            if (error instanceof DOMException && error.name === "AbortError") {
-                setGenerateError("Scaffold generation timed out in browser. Please retry.");
-            } else {
-                setGenerateError(error instanceof Error ? error.message : "Scaffold generation failed.");
-            }
+            setGenerateError(error instanceof Error ? error.message : "Scaffold generation failed.");
         } finally {
             setIsGenerating(false);
             generateInFlightRef.current = false;

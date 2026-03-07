@@ -62,10 +62,6 @@ const GEMINI_STREAM_RETRY_JITTER_MS = Math.min(
     1_000,
     Math.max(0, readEnvNumber("GEMINI_STREAM_RETRY_JITTER_MS", 250))
 );
-const SCAFFOLD_MODEL_TIMEOUT_MS = Math.min(
-    90_000,
-    Math.max(10_000, readEnvNumber("SCAFFOLD_MODEL_TIMEOUT_MS", 45_000))
-);
 
 const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
     (GEMINI_API_KEY
@@ -167,20 +163,6 @@ function computeRetryDelayMs(baseMs: number, maxMs: number, jitterMs: number, at
     const exponentialMs = baseMs * Math.pow(2, attempt);
     const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
     return Math.min(maxMs, exponentialMs + jitter);
-}
-
-async function withSoftTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutErrorCode: string): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    try {
-        return await new Promise<T>((resolve, reject) => {
-            timer = setTimeout(() => {
-                reject(new Error(timeoutErrorCode));
-            }, timeoutMs);
-            promise.then(resolve).catch(reject);
-        });
-    } finally {
-        if (timer) clearTimeout(timer);
-    }
 }
 
 console.log(`[AI] Active provider: ${AI_PROVIDER}`);
@@ -919,21 +901,12 @@ export async function generateProjectResources(
 
         let data;
         try {
-            const text = await withSoftTimeout(
-                generateModelText(prompt, true),
-                SCAFFOLD_MODEL_TIMEOUT_MS,
-                "SCAFFOLD_MODEL_TIMEOUT"
-            );
+            const text = await generateModelText(prompt, true);
             console.log("[AI] Scaffold Raw Response:", text.substring(0, 200) + "...");
             data = parseJsonResponse(text);
         } catch (primaryError) {
             const primaryMessage = getErrorMessage(primaryError);
-            const hitModelTimeout = /SCAFFOLD_MODEL_TIMEOUT/.test(primaryMessage);
-            if (hitModelTimeout) {
-                console.warn("[AI] Scaffold model call timed out. Falling back to minimal actionable scaffold.");
-            } else {
-                console.warn(`[AI] JSON parse failed. Falling back to minimal actionable scaffold. error=${primaryMessage}`);
-            }
+            console.warn(`[AI] JSON parse failed. Falling back to minimal actionable scaffold. error=${primaryMessage}`);
             data = {
                 projectTree: Array.isArray(existingProjectTree)
                     ? JSON.parse(JSON.stringify(existingProjectTree))

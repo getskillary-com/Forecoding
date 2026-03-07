@@ -5,12 +5,6 @@ import type { Message, Attachment } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
 const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 10_000, 5_000, 20_000);
-// Clamp timeout values so misconfigured env vars cannot cause multi-minute UI stalls.
-const EVALUATE_MODEL_IDLE_TIMEOUT_MS = readBoundedIntEnv("EVALUATE_MODEL_IDLE_TIMEOUT_MS", 25_000, 8_000, 30_000);
-const EVALUATE_TOTAL_TIMEOUT_MS = Math.max(
-    readBoundedIntEnv("EVALUATE_TOTAL_TIMEOUT_MS", 70_000, 20_000, 90_000),
-    EVALUATE_MODEL_IDLE_TIMEOUT_MS + 5_000
-);
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
@@ -68,10 +62,6 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
         return Math.min(max, Math.max(min, intValue));
     }
     return Math.min(max, Math.max(min, fallback));
-}
-
-function isErrorWithMessage(error: unknown, message: string) {
-    return error instanceof Error && error.message === message;
 }
 
 function isGeminiStreamParseError(error: unknown) {
@@ -216,19 +206,8 @@ async function* streamWithTimeGuards(
         preferBackupModel?: boolean;
         designMemory?: string;
         diagramPolicy?: string;
-        idleTimeoutMs?: number;
-        totalTimeoutMs?: number;
     }
 ) {
-    const startedAt = Date.now();
-    const idleTimeoutMs = Math.max(
-        1_000,
-        Math.floor(options?.idleTimeoutMs ?? EVALUATE_MODEL_IDLE_TIMEOUT_MS)
-    );
-    const totalTimeoutMs = Math.max(
-        idleTimeoutMs + 1_000,
-        Math.floor(options?.totalTimeoutMs ?? EVALUATE_TOTAL_TIMEOUT_MS)
-    );
     const iterator = streamEvaluateInput(messages, contextText, {
         generationReady,
         preferBackupModel: options?.preferBackupModel === true,
@@ -237,27 +216,7 @@ async function* streamWithTimeGuards(
     })[Symbol.asyncIterator]();
     try {
         while (true) {
-            const elapsedMs = Date.now() - startedAt;
-            const remainingTotalMs = totalTimeoutMs - elapsedMs;
-            if (remainingTotalMs <= 0) {
-                throw new Error("EVALUATE_TOTAL_TIMEOUT");
-            }
-
-            // Cap each next() wait by the remaining total budget to avoid timeout overshoot.
-            const nextTimeoutMs = Math.max(
-                1_000,
-                Math.min(idleTimeoutMs, remainingTotalMs)
-            );
-            const timeoutMessage =
-                nextTimeoutMs < idleTimeoutMs
-                    ? "EVALUATE_TOTAL_TIMEOUT"
-                    : "EVALUATE_MODEL_IDLE_TIMEOUT";
-
-            const next = await withTimeout(
-                iterator.next(),
-                nextTimeoutMs,
-                timeoutMessage
-            );
+            const next = await iterator.next();
 
             if (next.done) {
                 break;
@@ -274,40 +233,6 @@ async function* streamWithTimeGuards(
                 // Swallow cleanup errors so timeout paths can return gracefully.
             }
         }
-    }
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const guardedPromise: Promise<
-        { status: "resolved"; value: T } | { status: "rejected"; error: unknown }
-    > = promise
-        .then((value) => ({ status: "resolved" as const, value }))
-        .catch((error) => ({ status: "rejected" as const, error }));
-
-    try {
-        const outcome = await Promise.race([
-            guardedPromise,
-            new Promise<{ status: "timeout" }>((resolve) => {
-                timer = setTimeout(() => {
-                    resolve({ status: "timeout" });
-                }, timeoutMs);
-            })
-        ]);
-
-        if (outcome.status === "resolved") {
-            return outcome.value;
-        }
-
-        if (outcome.status === "rejected") {
-            throw outcome.error;
-        }
-
-        // Keep observing the original promise so late failures stay handled after timeout.
-        void guardedPromise;
-        throw new Error(timeoutMessage);
-    } finally {
-        if (timer) clearTimeout(timer);
     }
 }
 
@@ -353,13 +278,9 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
         const provider = getActiveAiProvider();
-        const timeoutBudget = {
-            idleTimeoutMs: EVALUATE_MODEL_IDLE_TIMEOUT_MS,
-            totalTimeoutMs: EVALUATE_TOTAL_TIMEOUT_MS
-        };
         const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
+            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
         );
 
         const stream = new ReadableStream({
@@ -402,9 +323,7 @@ export async function POST(req: Request) {
                         generationReady === true,
                         {
                             designMemory: designMemoryText,
-                            diagramPolicy: normalizedDiagramPolicy,
-                            idleTimeoutMs: timeoutBudget.idleTimeoutMs,
-                            totalTimeoutMs: timeoutBudget.totalTimeoutMs
+                            diagramPolicy: normalizedDiagramPolicy
                         }
                     )) {
                         if (chunk) {
@@ -432,16 +351,13 @@ export async function POST(req: Request) {
                 } catch (e) {
                     if (
                         !emittedMeaningfulChunk &&
-                        (isErrorWithMessage(e, "EVALUATE_MODEL_IDLE_TIMEOUT") ||
-                            isErrorWithMessage(e, "EVALUATE_TOTAL_TIMEOUT") ||
-                            isGeminiStreamParseError(e) ||
+                        (isGeminiStreamParseError(e) ||
                             isUpstreamOverloadError(e))
                     ) {
                         console.warn(
-                            `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}; retrying compact payload`
+                            `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt}; retrying compact payload`
                         );
                         try {
-                            const compactRetryTimeoutBudget = timeoutBudget;
                             const retryMessages = buildRetryMessages(messages);
                             const retryContext = contextText
                                 ? clipText(contextText, EVALUATE_RETRY_CONTEXT_CHARS)
@@ -457,9 +373,7 @@ export async function POST(req: Request) {
                                 {
                                     preferBackupModel: true,
                                     designMemory: retryDesignMemory,
-                                    diagramPolicy: normalizedDiagramPolicy,
-                                    idleTimeoutMs: compactRetryTimeoutBudget.idleTimeoutMs,
-                                    totalTimeoutMs: compactRetryTimeoutBudget.totalTimeoutMs
+                                    diagramPolicy: normalizedDiagramPolicy
                                 }
                             )) {
                                 if (retryChunk.trim().length > 0) {
@@ -478,12 +392,12 @@ export async function POST(req: Request) {
                             );
                         } catch (retryError) {
                             console.error(
-                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt} idleTimeoutMs=${timeoutBudget.idleTimeoutMs} totalTimeoutMs=${timeoutBudget.totalTimeoutMs}`
+                                `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt}`
                             );
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(retryError)
                                     ? "AI service is experiencing high demand. Please try again in a moment."
-                                    : "AI response timed out. Please retry with a shorter prompt."
+                                    : "AI response failed before any content was returned. Please retry."
                             );
                             emittedMeaningfulChunk = true;
                         }
