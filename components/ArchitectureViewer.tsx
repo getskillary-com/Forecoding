@@ -1,6 +1,7 @@
 ﻿
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Maximize2, Minimize2 } from "lucide-react";
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
 const customStyles = `
@@ -197,9 +198,11 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
     const [error, setError] = useState<string | null>(null);
     const [warning, setWarning] = useState<string | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const viewerRef = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
     const dragOriginRef = useRef({ x: 0, y: 0 });
     const dragMovedRef = useRef(false);
@@ -337,6 +340,25 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
         return () => { cancelled = true; };
     }, [code]);
 
+    useEffect(() => {
+        if (!isExpanded || typeof document === "undefined") return;
+
+        const previousOverflow = document.body.style.overflow;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setIsExpanded(false);
+            }
+        };
+
+        document.body.style.overflow = "hidden";
+        window.addEventListener("keydown", handleKeyDown);
+
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [isExpanded]);
+
     const handleWheel = (e: React.WheelEvent) => {
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
@@ -373,6 +395,7 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
         setZoom(1);
         setPan({ x: 0, y: 0 });
     };
+    const toggleExpanded = () => setIsExpanded((current) => !current);
 
     const handleDownload = () => {
         if (!svg) return;
@@ -406,7 +429,14 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
     }, [onNodeSelect]);
 
     return (
-        <div className="w-full h-full flex flex-col relative bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 rounded-xl shadow-inner overflow-hidden border border-slate-800/50">
+        <div
+            ref={viewerRef}
+            className={`w-full h-full flex flex-col relative bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 shadow-inner overflow-hidden border border-slate-800/50 ${
+                isExpanded
+                    ? "fixed inset-0 z-[120] rounded-none border-none"
+                    : "rounded-xl"
+            }`}
+        >
             {/* Subtle grid overlay for depth */}
             <div
                 className="absolute inset-0 opacity-[0.03] pointer-events-none"
@@ -418,6 +448,19 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
                     backgroundSize: '40px 40px'
                 }}
             />
+
+            {svg && !error && (
+                <div className="absolute left-4 top-4 z-20">
+                    <button
+                        onClick={toggleExpanded}
+                        className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700/60 bg-slate-900/90 text-slate-200 shadow-lg backdrop-blur-sm transition-colors hover:bg-slate-800 hover:text-white"
+                        title={isExpanded ? "Restore view" : "Expand to fullscreen"}
+                        aria-label={isExpanded ? "Restore view" : "Expand to fullscreen"}
+                    >
+                        {isExpanded ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
+                    </button>
+                </div>
+            )}
 
             <div
                 className="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing"
