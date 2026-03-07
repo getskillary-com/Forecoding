@@ -128,6 +128,40 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     statesAndFeedback: "States and feedback"
 };
 
+const ARCHITECT_STAGE_GUIDANCE: Record<ArchitectureStage, { title: string; description: string }> = {
+    context: {
+        title: "Clarifying the product direction",
+        description: "The architect is consolidating product goal, target users, and the primary journey before locking system boundaries."
+    },
+    boundaries: {
+        title: "Defining system boundaries",
+        description: "The architect is sorting modules, ownership, and service edges so the build can stay coherent as scope grows."
+    },
+    decisions: {
+        title: "Locking key decisions",
+        description: "The architect is turning open choices into explicit decisions, contracts, and non-functional priorities."
+    },
+    guardrails: {
+        title: "Setting delivery guardrails",
+        description: "The architect is translating the design into implementation order, acceptance criteria, and testing expectations."
+    },
+    review: {
+        title: "Reviewing implementation direction",
+        description: "The architect has enough context to check code plans against boundaries, contracts, and quality guardrails."
+    },
+    ready_to_generate: {
+        title: "Ready to scaffold",
+        description: "The architect has enough structured context to approve scaffold generation without losing the design intent."
+    }
+};
+
+const SOURCE_ARTIFACT_LABELS: Record<SourceArtifact["sourceType"], string> = {
+    chat: "Conversation",
+    text: "Text note",
+    pdf: "PDF brief",
+    image: "Image reference"
+};
+
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
     if (!Array.isArray(value)) return [];
     const dedupe = new Set<string>();
@@ -141,6 +175,110 @@ function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
             return true;
         });
     return normalized.slice(0, maxItems);
+}
+
+function humanizeArchitectureBlocker(issue: string) {
+    const normalized = issue.trim().toLowerCase();
+    if (!normalized) return "";
+    if (normalized.includes("business context")) {
+        return "Describe the product goal, who it is for, and the main user journey you want to get right first.";
+    }
+    if (normalized.includes("system boundaries")) {
+        return "Explain the main product areas or subsystems and where each one should own its responsibilities and data.";
+    }
+    if (normalized.includes("architecture decisions")) {
+        return "Confirm the key technical decisions, external integrations, and any performance, security, or scale expectations.";
+    }
+    if (normalized.includes("delivery guardrails")) {
+        return "Define implementation order, what 'done' means, and the level of testing and review you expect.";
+    }
+    if (normalized.includes("experience constraints")) {
+        return "Describe the key screens, shared UI patterns, and how the product should behave across desktop and mobile.";
+    }
+    return issue;
+}
+
+function buildArchitectNarrative(
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    latestReview: ArchitectureReviewResult | null
+) {
+    const goal = architecturePack.businessContext.productGoal;
+    const targetUsers = architecturePack.businessContext.targetUsers.slice(0, 2);
+    const latestDecision = decisionRecords[decisionRecords.length - 1];
+
+    if (goal && targetUsers.length > 0) {
+        return `The architect is shaping ${goal} for ${targetUsers.join(" and ")}.`;
+    }
+    if (goal) {
+        return `The architect is shaping the product around this goal: ${goal}.`;
+    }
+    if (latestDecision) {
+        return `The architect is already forming decisions around ${latestDecision.title.toLowerCase()}.`;
+    }
+    if (latestReview?.verdict === "aligned") {
+        return "The architect has enough context to keep the implementation aligned and move toward scaffold generation.";
+    }
+
+    return "The architect is gathering the minimum context needed to make durable product and system decisions.";
+}
+
+function collectArchitectHighlights(
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    experienceGapLabels: string[]
+) {
+    const highlights: string[] = [];
+
+    if (architecturePack.businessContext.productGoal) {
+        highlights.push(`Product direction: ${architecturePack.businessContext.productGoal}`);
+    }
+    if (architecturePack.businessContext.targetUsers.length > 0) {
+        highlights.push(`Primary users: ${architecturePack.businessContext.targetUsers.slice(0, 3).join(", ")}`);
+    }
+    if (architecturePack.businessContext.userJourneys.length > 0) {
+        highlights.push(`Core journeys: ${architecturePack.businessContext.userJourneys.slice(0, 2).join(" | ")}`);
+    }
+    if (architecturePack.experienceConstraints.keyScreens.length > 0) {
+        highlights.push(`Experience focus: ${architecturePack.experienceConstraints.keyScreens.slice(0, 3).join(", ")}`);
+    } else if (experienceGapLabels.length > 0) {
+        highlights.push(`Experience still needs: ${experienceGapLabels.slice(0, 3).join(", ")}`);
+    }
+    if (architecturePack.nonFunctionalRequirements.length > 0) {
+        highlights.push(
+            `Quality priorities: ${architecturePack.nonFunctionalRequirements.slice(0, 3).map((item) => item.category).join(", ")}`
+        );
+    }
+    if (decisionRecords.length > 0) {
+        highlights.push(`Latest decision thread: ${decisionRecords[decisionRecords.length - 1].title}`);
+    }
+
+    return normalizeStringList(highlights, 5);
+}
+
+function collectArchitectOpenItems(
+    readiness: ReadinessChecklist,
+    evaluation: EvaluationResponse | null
+) {
+    const candidateItems = [
+        ...readiness.blockingIssues.map(humanizeArchitectureBlocker),
+        ...normalizeStringList(evaluation?.openQuestions ?? evaluation?.analysis?.missing ?? [], 3).map(
+            (item) => `Clarify this next: ${item}`
+        )
+    ];
+    const normalized = normalizeStringList(candidateItems, 5);
+    if (normalized.length > 0) return normalized;
+    if (readiness.nextMilestone) return [readiness.nextMilestone];
+    return ["Reply with the next product constraint or workflow you want the architect to lock down."];
+}
+
+function describeArtifactForHumans(artifact: SourceArtifact) {
+    const sourceLabel = SOURCE_ARTIFACT_LABELS[artifact.sourceType];
+    const summary = artifact.summary.trim();
+    if (summary) {
+        return `${sourceLabel}: ${summary}`;
+    }
+    return `${sourceLabel}: ${artifact.name}`;
 }
 
 function createEmptyUiRequirements(): UiRequirements {
@@ -1241,6 +1379,13 @@ function WizardContent() {
     const reviewApproved = latestReview?.verdict === "aligned";
     const isReadyToGenerateStage = isArchitecturePackReady && reviewApproved;
     const architectureViewerCode = currentDiagram;
+    const architectGuidance = ARCHITECT_STAGE_GUIDANCE[architectureStage];
+    const architectNarrative = buildArchitectNarrative(architecturePack, decisionRecords, latestReview);
+    const architectHighlights = collectArchitectHighlights(architecturePack, decisionRecords, experienceGapLabels);
+    const architectOpenItems = collectArchitectOpenItems(architectureReadiness, evaluation);
+    const recentDecisions = decisionRecords.slice(-3).reverse();
+    const recentArtifacts = sourceArtifacts.slice(-5).reverse();
+    const primaryArchitectAsk = architectOpenItems[0] || architectureReadiness.nextMilestone;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -2602,10 +2747,10 @@ function WizardContent() {
                                         Architect Stage: {ARCHITECTURE_STAGE_LABELS[architectureStage]} | Readiness {Math.round(architectureCompletion)}%
                                         {latestReview ? ` | Last review: ${latestReview.verdict.replace("_", " ")}` : ""}
                                     </div>
-                                    {architectureBlockers.length > 0 && (
+                                    {primaryArchitectAsk && (
                                         <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200">
-                                            <p className="font-semibold">Current blocker</p>
-                                            <p>{architectureBlockers[0]}</p>
+                                            <p className="font-semibold">Architect needs from you</p>
+                                            <p>{primaryArchitectAsk}</p>
                                         </div>
                                     )}
                                 </div>
@@ -2773,7 +2918,7 @@ function WizardContent() {
                         active={activeTab === 'architecture'}
                         onClick={() => setActiveTab('architecture')}
                         icon={<BrainCircuit className="w-4 h-4" />}
-                        label="Architecture"
+                        label="Architect"
                     />
                     <TabButton
                         active={activeTab === 'review'}
@@ -2803,138 +2948,74 @@ function WizardContent() {
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
-                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)]">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
                                 <div className="space-y-4">
+                                    <section className="rounded-3xl border border-[color:var(--border)] bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.18),transparent_46%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(2,6,23,0.94))] p-5 text-white shadow-[0_20px_60px_rgba(2,6,23,0.28)]">
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-100/70">Architect workspace</p>
+                                        <h2 className="mt-3 text-2xl font-semibold">{architectGuidance.title}</h2>
+                                        <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-200">{architectNarrative}</p>
+                                        <p className="mt-3 max-w-3xl text-xs leading-5 text-blue-100/70">
+                                            Detailed architecture pack fields stay internal and are used live during chat, review, and scaffold generation.
+                                        </p>
+                                    </section>
+
                                     <div className="grid gap-3 md:grid-cols-3">
                                         <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Stage</p>
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Current focus</p>
                                             <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{ARCHITECTURE_STAGE_LABELS[architectureStage]}</p>
-                                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Architecture pack drives delivery, review, and scaffold gating.</p>
+                                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{architectGuidance.description}</p>
                                         </div>
                                         <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Readiness</p>
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Progress</p>
                                             <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{Math.round(architectureCompletion)}%</p>
                                             <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{architectureReadiness.nextMilestone}</p>
                                         </div>
                                         <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Evidence</p>
-                                            <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{sourceArtifacts.length} artifacts</p>
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Context loaded</p>
+                                            <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{sourceArtifacts.length} sources</p>
                                             <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{decisionRecords.length} decisions, {reviewHistory.length} reviews</p>
                                         </div>
                                     </div>
 
-                                    {architectureBlockers.length > 0 && (
-                                        <section className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 dark:border-amber-700/40 dark:bg-amber-900/20">
-                                            <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-200">Blocking issues</h3>
+                                    <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">What the architect understands so far</h3>
+                                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                                            This is the user-facing summary of the architect&apos;s current understanding. The full structured pack stays internal.
+                                        </p>
+                                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                            {architectHighlights.length > 0 ? architectHighlights.map((item) => (
+                                                <div key={item} className="rounded-2xl border border-[color:var(--border)] bg-slate-50/80 px-4 py-3 text-sm text-slate-700 dark:bg-slate-800/50 dark:text-slate-200">
+                                                    {item}
+                                                </div>
+                                            )) : (
+                                                <div className="rounded-2xl border border-dashed border-[color:var(--border)] bg-slate-50/60 px-4 py-6 text-sm text-slate-500 dark:bg-slate-800/30 dark:text-slate-400">
+                                                    The architect has not locked enough signal yet. Keep answering the next question in chat and attach reference materials when useful.
+                                                </div>
+                                            )}
+                                        </div>
+                                    </section>
+
+                                    <section className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.85fr)]">
+                                        <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 dark:border-amber-700/40 dark:bg-amber-900/20">
+                                            <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-200">What the architect still needs from you</h3>
                                             <ul className="mt-3 space-y-2 text-sm text-amber-700 dark:text-amber-100">
-                                                {architectureBlockers.map((issue) => (
-                                                    <li key={issue} className="rounded-xl bg-white/60 px-3 py-2 dark:bg-slate-900/40">{issue}</li>
+                                                {architectOpenItems.map((item) => (
+                                                    <li key={item} className="rounded-xl bg-white/70 px-3 py-2 dark:bg-slate-900/40">{item}</li>
                                                 ))}
                                             </ul>
-                                        </section>
-                                    )}
-
-                                    <section className="grid gap-4 lg:grid-cols-2">
-                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Business Context</h3>
-                                            <p className="mt-3 text-sm text-slate-700 dark:text-slate-200">{architecturePack.businessContext.productGoal || "Architect is still defining the product goal."}</p>
-                                            <div className="mt-4 space-y-3 text-xs text-slate-600 dark:text-slate-300">
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Target users</p>
-                                                    <p className="mt-1">{architecturePack.businessContext.targetUsers.join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">User journeys</p>
-                                                    <p className="mt-1">{architecturePack.businessContext.userJourneys.join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Constraints & risks</p>
-                                                    <p className="mt-1">{[...architecturePack.businessContext.constraints, ...architecturePack.businessContext.risks].join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                            </div>
                                         </div>
 
                                         <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Experience Constraints</h3>
-                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Key screens</p>
-                                                    <p className="mt-1">{architecturePack.experienceConstraints.keyScreens.join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Shared components</p>
-                                                    <p className="mt-1">{architecturePack.experienceConstraints.uiComponents.join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Responsive strategy</p>
-                                                    <p className="mt-1">{architecturePack.experienceConstraints.responsiveStrategy.join(" | ") || experienceGapLabels.join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </section>
-
-                                    <section className="grid gap-4 lg:grid-cols-2">
-                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Boundaries & Ownership</h3>
-                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Bounded contexts</p>
-                                                    <div className="mt-2 space-y-2">
-                                                        {architecturePack.boundedContexts.length > 0 ? architecturePack.boundedContexts.map((item) => (
-                                                            <div key={item.name} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 dark:bg-slate-800/50">
-                                                                <p className="font-semibold text-slate-800 dark:text-slate-100">{item.name}</p>
-                                                                <p className="mt-1">{item.responsibility}</p>
-                                                            </div>
-                                                        )) : <p>Not captured yet</p>}
+                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Recent decisions forming the build</h3>
+                                            <div className="mt-3 space-y-3">
+                                                {recentDecisions.length > 0 ? recentDecisions.map((item) => (
+                                                    <div key={item.title} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-3 dark:bg-slate-800/50">
+                                                        <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{item.title}</p>
+                                                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{item.decision}</p>
                                                     </div>
-                                                </div>
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Data ownership</p>
-                                                    <p className="mt-1">{architecturePack.dataOwnership.map((item) => `${item.data} -> ${item.owner}`).join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Contracts & Decisions</h3>
-                                            <div className="mt-3 space-y-3 text-xs text-slate-600 dark:text-slate-300">
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Integration contracts</p>
-                                                    <p className="mt-1">{architecturePack.integrationContracts.map((item) => `${item.name} [${item.kind}]`).join(" | ") || "Not captured yet"}</p>
-                                                </div>
-                                                <div>
-                                                    <p className="font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Decision records</p>
-                                                    <div className="mt-2 space-y-2">
-                                                        {decisionRecords.length > 0 ? decisionRecords.map((item) => (
-                                                            <div key={item.title} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 dark:bg-slate-800/50">
-                                                                <p className="font-semibold text-slate-800 dark:text-slate-100">{item.title}</p>
-                                                                <p className="mt-1">{item.decision}</p>
-                                                            </div>
-                                                        )) : <p>No explicit decisions yet.</p>}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </section>
-
-                                    <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Delivery Guardrails</h3>
-                                        <div className="mt-3 grid gap-4 md:grid-cols-2">
-                                            <div>
-                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Implementation order</p>
-                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.implementationOrder.join(" -> ") || "Not defined yet"}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Acceptance criteria</p>
-                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.acceptanceCriteria.join(" | ") || "Not defined yet"}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Test strategy</p>
-                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.testStrategy.join(" | ") || "Not defined yet"}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Review checklist</p>
-                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{guardrailChecklist.reviewChecklist.join(" | ") || "Not defined yet"}</p>
+                                                )) : (
+                                                    <p className="text-sm text-slate-500 dark:text-slate-400">No stable decisions yet. The architect is still gathering enough context to lock them in.</p>
+                                                )}
                                             </div>
                                         </div>
                                     </section>
@@ -2942,7 +3023,8 @@ function WizardContent() {
 
                                 <div className="space-y-4">
                                     <div className="rounded-2xl border border-[color:var(--border)] bg-slate-50/70 p-4 dark:bg-black/25">
-                                        <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">Architecture Diagram</h3>
+                                        <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">Live System View</h3>
+                                        <p className="mb-3 text-xs text-slate-500 dark:text-slate-300">This is the current system picture the architect is maintaining behind the conversation.</p>
                                         <div className="relative h-[420px] overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
                                             <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
                                         </div>
@@ -2959,6 +3041,23 @@ function WizardContent() {
                                         ) : (
                                             <p className="mt-3 text-xs text-slate-600 dark:text-slate-300">Run an architecture review after you have an implementation plan or code direction.</p>
                                         )}
+                                    </div>
+
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Sources the architect is using</h3>
+                                        <div className="mt-3 space-y-2">
+                                            {recentArtifacts.length > 0 ? recentArtifacts.map((artifact) => (
+                                                <div key={artifact.id} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 dark:bg-slate-800/50">
+                                                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+                                                        {SOURCE_ARTIFACT_LABELS[artifact.sourceType]}
+                                                    </p>
+                                                    <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{artifact.name}</p>
+                                                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{describeArtifactForHumans(artifact)}</p>
+                                                </div>
+                                            )) : (
+                                                <p className="text-sm text-slate-500 dark:text-slate-400">No external notes or attachments have been captured yet.</p>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
