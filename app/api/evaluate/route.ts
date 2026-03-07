@@ -403,8 +403,18 @@ export async function POST(req: Request) {
                         }
                     } else {
                         console.error(`[evaluate][${requestId}] streamingError:`, e);
-                        enqueueQuestionFallback("Sorry, the AI service is temporarily unavailable. Please try again in a moment.");
-                        emittedMeaningfulChunk = true;
+                        if (!emittedMeaningfulChunk) {
+                            enqueueQuestionFallback(
+                                isUpstreamOverloadError(e)
+                                    ? "AI service is experiencing high demand. Please try again in a moment."
+                                    : "Sorry, the AI service is temporarily unavailable. Please try again in a moment."
+                            );
+                            emittedMeaningfulChunk = true;
+                        } else {
+                            console.warn(
+                                `[evaluate][${requestId}] partialStreamInterrupted afterMs=${Date.now() - streamStartedAt}; preserving partial output`
+                            );
+                        }
                     }
                 } finally {
                     clearInterval(heartbeat);
