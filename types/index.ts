@@ -42,6 +42,10 @@ export interface SourceArtifact {
     sourceType: "chat" | "text" | "pdf" | "image";
     name: string;
     summary: string;
+    excerpt?: string;
+    mimeType?: string;
+    sourceMessageIndex?: number;
+    attachmentIndex?: number;
     createdAt: number;
 }
 
@@ -157,6 +161,7 @@ export interface ArchitectureReviewResult {
     verdict: "aligned" | "needs_changes" | "blocked";
     findings: ReviewFinding[];
     reviewedAt: number;
+    reviewedArchitectureFingerprint: string;
 }
 
 export interface UiDesignTokens {

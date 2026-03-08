@@ -46,6 +46,15 @@ function clipText(text: string, maxChars: number) {
     return `${text.slice(0, maxChars)}...`;
 }
 
+const SOURCE_ARTIFACT_SUMMARY_CHARS = 220;
+const SOURCE_ARTIFACT_EXCERPT_CHARS = 2400;
+
+function buildSourceArtifactExcerpt(value: unknown) {
+    const text = normalizeString(value);
+    if (!text) return "";
+    return clipText(text, SOURCE_ARTIFACT_EXCERPT_CHARS);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
 }
@@ -272,6 +281,29 @@ export function normalizeReviewFindings(value: unknown): ReviewFinding[] {
     }, 16);
 }
 
+export function normalizeArchitectureReviewHistory(value: unknown): ArchitectureReviewResult[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((item): item is ArchitectureReviewResult => Boolean(item && typeof item === "object"))
+        .map((item) => {
+            const verdict =
+                item.verdict === "aligned" || item.verdict === "needs_changes" || item.verdict === "blocked"
+                    ? item.verdict
+                    : "needs_changes";
+            return {
+                summary: typeof item.summary === "string" ? item.summary.trim() : "",
+                verdict,
+                findings: normalizeReviewFindings(item.findings),
+                reviewedAt: typeof item.reviewedAt === "number" ? item.reviewedAt : Date.now(),
+                reviewedArchitectureFingerprint:
+                    typeof item.reviewedArchitectureFingerprint === "string"
+                        ? item.reviewedArchitectureFingerprint.trim()
+                        : ""
+            };
+        })
+        .slice(-20);
+}
+
 export function createReadinessChecklist(
     pack: ArchitecturePack,
     decisions: DecisionRecord[],
@@ -385,13 +417,17 @@ export function extractSourceArtifacts(messages: Message[]): SourceArtifact[] {
     const artifacts: SourceArtifact[] = [];
 
     messages.forEach((message, messageIndex) => {
-        if (message.role === "user" && normalizeString(message.content)) {
+        const artifactOrderBase = messageIndex * 10;
+        const normalizedContent = normalizeString(message.content);
+        if (message.role === "user" && normalizedContent) {
             artifacts.push({
                 id: `chat-${messageIndex}`,
                 sourceType: "chat",
                 name: `Conversation turn ${messageIndex + 1}`,
-                summary: clipText(normalizeString(message.content), 220),
-                createdAt: messageIndex
+                summary: clipText(normalizedContent, SOURCE_ARTIFACT_SUMMARY_CHARS),
+                excerpt: buildSourceArtifactExcerpt(normalizedContent),
+                sourceMessageIndex: messageIndex,
+                createdAt: artifactOrderBase
             });
         }
 
@@ -404,8 +440,11 @@ export function extractSourceArtifacts(messages: Message[]): SourceArtifact[] {
                         : "text";
 
             let summary = attachment.name;
+            let excerpt = "";
             if (sourceType === "text") {
-                summary = clipText(normalizeString(attachment.content), 220) || attachment.name;
+                const normalizedAttachment = normalizeString(attachment.content);
+                summary = clipText(normalizedAttachment, SOURCE_ARTIFACT_SUMMARY_CHARS) || attachment.name;
+                excerpt = buildSourceArtifactExcerpt(normalizedAttachment);
             } else {
                 summary = `${attachment.name} (${attachment.mimeType})`;
             }
@@ -415,7 +454,11 @@ export function extractSourceArtifacts(messages: Message[]): SourceArtifact[] {
                 sourceType,
                 name: attachment.name,
                 summary,
-                createdAt: messageIndex * 100 + attachmentIndex
+                excerpt,
+                mimeType: attachment.mimeType,
+                sourceMessageIndex: messageIndex,
+                attachmentIndex,
+                createdAt: artifactOrderBase + attachmentIndex + 1
             });
         });
     });
@@ -618,6 +661,7 @@ export function buildArchitectureReview(
                     ? "needs_changes"
                     : "aligned",
         findings,
-        reviewedAt: Date.now()
+        reviewedAt: Date.now(),
+        reviewedArchitectureFingerprint: ""
     };
 }

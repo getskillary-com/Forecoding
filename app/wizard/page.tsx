@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState, useEffect, useEffectEvent, useRef, Suspense, type ReactNode } from "react";
+import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
 import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square, ShieldAlert, ListChecks } from "lucide-react";
 import {
     ArchitecturePack,
@@ -75,11 +75,13 @@ import {
     extractSourceArtifacts,
     inferArchitectureStage,
     normalizeArchitecturePack,
+    normalizeArchitectureReviewHistory,
     normalizeDecisionRecords,
     normalizeGuardrailChecklist,
     normalizeReviewFindings,
     seedArchitecturePackFromAnalysis
 } from "@/lib/architecture";
+import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
 const MESSAGE_WINDOW_SIZE = 60;
@@ -96,6 +98,8 @@ const EVALUATE_COMPACT_TEXT_ATTACHMENT_CHARS = 6000;
 const EVALUATE_COMPACT_CONTEXT_CHARS = 4000;
 const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_COMPACT_DESIGN_MEMORY_CHARS = 5_000;
+const EVALUATE_SOURCE_CONTEXT_CHARS = 6_000;
+const EVALUATE_COMPACT_SOURCE_CONTEXT_CHARS = 2_500;
 const EVALUATE_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 522, 523, 524]);
 const GENERATE_MAX_HISTORY_MESSAGES = 24;
 const GENERATE_MAX_MESSAGE_CONTENT_CHARS = 2_000;
@@ -105,6 +109,27 @@ const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
 const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
+const SOURCE_CONTEXT_ITEM_EXCERPT_CHARS = 700;
+const SOURCE_CONTEXT_MAX_ITEMS = 6;
+const SOURCE_SEARCH_TERM_MAX_COUNT = 24;
+const SOURCE_SEARCH_STOP_WORDS = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "this",
+    "that",
+    "from",
+    "into",
+    "about",
+    "need",
+    "want",
+    "build",
+    "make",
+    "please",
+    "then",
+    "also"
+]);
 const UI_REQUIREMENT_KEYS: UiRequirementKey[] = [
     "visualStyle",
     "colorSystem",
@@ -292,19 +317,8 @@ function normalizeReadiness(
     const fallback = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist);
     if (!value || typeof value !== "object") return fallback;
     const candidate = value as Partial<ReadinessChecklist>;
-    const candidateScore =
-        typeof candidate.score === "number"
-            ? Math.max(0, Math.min(100, Math.round(candidate.score)))
-            : fallback.score;
-    const candidateBlockingIssues = normalizeStringList(candidate.blockingIssues, 12);
-    const functionalReady = candidate.functionalReady === true || fallback.functionalReady;
-    const uiReady = candidate.uiReady === true || fallback.uiReady;
     return {
-        score: Math.max(candidateScore, fallback.score),
-        functionalReady,
-        uiReady,
-        paymentReady: candidate.paymentReady === true || (functionalReady && uiReady),
-        blockingIssues: candidateBlockingIssues.length > 0 ? candidateBlockingIssues : fallback.blockingIssues,
+        ...fallback,
         nextMilestone: typeof candidate.nextMilestone === "string" && candidate.nextMilestone.trim()
             ? candidate.nextMilestone.trim()
             : fallback.nextMilestone
@@ -369,24 +383,6 @@ function createUiReadinessReport(
     };
 }
 
-function isDesignStage(value: unknown): value is DesignStage {
-    return (
-        value === "functional_architecture" ||
-        value === "ready_to_generate"
-    );
-}
-
-function inferDesignStageFromEvaluation(
-    evaluation: EvaluationResponse | null
-): DesignStage {
-    const readiness = evaluation?.readiness;
-    if (readiness?.functionalReady && readiness.uiReady) {
-        return "ready_to_generate";
-    }
-    const density = evaluation?.density_score ?? 0;
-    return density < 100 ? "functional_architecture" : "ready_to_generate";
-}
-
 function normalizeUiReadinessReport(
     raw: unknown,
     evaluation: EvaluationResponse | null,
@@ -446,29 +442,18 @@ function normalizeSourceArtifacts(value: unknown): SourceArtifact[] {
                 sourceType,
                 name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : `Artifact ${index + 1}`,
                 summary: typeof item.summary === "string" ? item.summary.trim() : "",
+                excerpt: typeof item.excerpt === "string"
+                    ? clipText(item.excerpt.trim(), 2400)
+                    : ((sourceType === "chat" || sourceType === "text") && typeof item.summary === "string"
+                        ? clipText(item.summary.trim(), 2400)
+                        : ""),
+                mimeType: typeof item.mimeType === "string" && item.mimeType.trim() ? item.mimeType.trim() : undefined,
+                sourceMessageIndex: typeof item.sourceMessageIndex === "number" ? item.sourceMessageIndex : undefined,
+                attachmentIndex: typeof item.attachmentIndex === "number" ? item.attachmentIndex : undefined,
                 createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now()
             };
         })
         .slice(-40);
-}
-
-function normalizeReviewHistory(value: unknown): ArchitectureReviewResult[] {
-    if (!Array.isArray(value)) return [];
-    return value
-        .filter((item): item is ArchitectureReviewResult => Boolean(item && typeof item === "object"))
-        .map((item) => {
-            const verdict =
-                item.verdict === "aligned" || item.verdict === "needs_changes" || item.verdict === "blocked"
-                    ? item.verdict
-                    : "needs_changes";
-            return {
-                summary: typeof item.summary === "string" ? item.summary.trim() : "",
-                verdict,
-                findings: normalizeReviewFindings(item.findings),
-                reviewedAt: typeof item.reviewedAt === "number" ? item.reviewedAt : Date.now()
-            };
-        })
-        .slice(-20);
 }
 
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
@@ -481,32 +466,30 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
     );
     const decisionRecords = normalizeDecisionRecords(data?.decisionRecords ?? evaluation?.decisionDrafts);
     const guardrailChecklist = normalizeGuardrailChecklist(data?.guardrailChecklist ?? evaluation?.guardrailDrafts);
-    const reviewHistory = normalizeReviewHistory(data?.reviewHistory);
+    const reviewHistory = normalizeArchitectureReviewHistory(data?.reviewHistory);
     const sourceArtifacts = normalizeSourceArtifacts(data?.sourceArtifacts);
+    const scaffoldEligibility = computeScaffoldEligibility({
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewHistory
+    });
     const architectureStage = normalizeArchitectureStage(
         data?.architectureStage ?? evaluation?.stage,
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+        scaffoldEligibility.reviewState === "approved_review"
     );
     const readiness = applyArchitectureStageScoreFloor(
-        normalizeReadiness(
-            evaluation?.readiness,
-            architecturePack,
-            decisionRecords,
-            guardrailChecklist
-        ),
+        scaffoldEligibility.readiness,
         architectureStage
     );
-    const inferredStage = inferDesignStageFromEvaluation(evaluation);
     const rawStoredStage = (data as { designStage?: unknown } | null | undefined)?.designStage;
     const hasLegacyUiStage = rawStoredStage === "ui_design";
     const designStage = hasLegacyUiStage
         ? "functional_architecture"
-        : (isDesignStage(data?.designStage)
-            ? data.designStage
-            : (readiness.functionalReady && readiness.uiReady ? "ready_to_generate" : inferredStage));
+        : scaffoldEligibility.designStage;
     const functionalLockedAt =
         typeof data?.functionalLockedAt === "number"
             ? (hasLegacyUiStage ? null : data.functionalLockedAt)
@@ -580,6 +563,126 @@ function buildProjectStructureContext(tree?: FileNode[]): string | null {
     }
 
     return result || null;
+}
+
+function extractSourceSearchTerms(text: string) {
+    const source = (text || "").toLowerCase();
+    const terms = new Set<string>();
+    const asciiMatches = source.match(/[a-z0-9][a-z0-9_-]{1,31}/g) || [];
+
+    for (const word of asciiMatches) {
+        if (SOURCE_SEARCH_STOP_WORDS.has(word)) continue;
+        terms.add(word);
+        if (terms.size >= SOURCE_SEARCH_TERM_MAX_COUNT) {
+            return [...terms];
+        }
+    }
+
+    const cjkMatches = source.match(/[\u4e00-\u9fff]{2,16}/g) || [];
+    for (const phrase of cjkMatches) {
+        terms.add(phrase);
+        const maxGram = Math.min(4, phrase.length);
+        for (let gram = 2; gram <= maxGram; gram += 1) {
+            for (let index = 0; index <= phrase.length - gram && index < 8; index += 1) {
+                terms.add(phrase.slice(index, index + gram));
+                if (terms.size >= SOURCE_SEARCH_TERM_MAX_COUNT) {
+                    return [...terms];
+                }
+            }
+        }
+    }
+
+    return [...terms];
+}
+
+function buildSourceArtifactHaystack(artifact: SourceArtifact) {
+    return [
+        artifact.name,
+        artifact.summary,
+        artifact.excerpt || "",
+        artifact.mimeType || ""
+    ]
+        .join("\n")
+        .toLowerCase();
+}
+
+function scoreSourceArtifact(
+    artifact: SourceArtifact,
+    searchTerms: string[],
+    recencyRank: number
+) {
+    const haystack = buildSourceArtifactHaystack(artifact);
+    let score = Math.max(0, 8 - recencyRank);
+
+    for (const term of searchTerms) {
+        if (!term || !haystack.includes(term)) continue;
+        score += term.length >= 6 ? 7 : term.length >= 4 ? 5 : 3;
+    }
+
+    if (artifact.excerpt) score += 3;
+    if (artifact.sourceType === "text") score += 2;
+    if (artifact.sourceType === "chat") score += 1;
+
+    return score;
+}
+
+function renderSourceArtifactEvidence(artifact: SourceArtifact) {
+    const lines = [
+        `- ${artifact.name} [${artifact.sourceType}]`,
+        `  Summary: ${clipText(artifact.summary || artifact.name, 220)}`
+    ];
+
+    if (artifact.excerpt) {
+        lines.push(`  Evidence: ${clipText(artifact.excerpt, SOURCE_CONTEXT_ITEM_EXCERPT_CHARS)}`);
+    }
+
+    return lines.join("\n");
+}
+
+function buildSourceContext(
+    sourceArtifacts: SourceArtifact[],
+    messages: Message[],
+    maxChars: number = EVALUATE_SOURCE_CONTEXT_CHARS
+) {
+    if (!sourceArtifacts.length) return null;
+
+    const recentUserText = messages
+        .filter((message) => message.role === "user")
+        .slice(-4)
+        .map((message) => message.content || "")
+        .join("\n");
+    const searchTerms = extractSourceSearchTerms(recentUserText);
+    const recencyOrdered = [...sourceArtifacts].sort((a, b) => b.createdAt - a.createdAt);
+    const scored = recencyOrdered.map((artifact, recencyRank) => ({
+        artifact,
+        score: scoreSourceArtifact(artifact, searchTerms, recencyRank)
+    }));
+    const ranked = (scored.some((item) => item.score > 8)
+        ? scored
+        : recencyOrdered.map((artifact, recencyRank) => ({
+            artifact,
+            score: Math.max(0, 8 - recencyRank)
+        })))
+        .sort((a, b) => b.score - a.score || b.artifact.createdAt - a.artifact.createdAt);
+
+    const sections = [
+        "# Retrieved Source Evidence",
+        "Treat these snippets as durable user-provided evidence. Prefer them over reconstructing old context from recent chat alone.",
+        "If evidence conflicts with the latest user turn, call out the conflict and ask for confirmation."
+    ];
+    let selectedCount = 0;
+
+    for (const { artifact } of ranked) {
+        if (selectedCount >= SOURCE_CONTEXT_MAX_ITEMS) break;
+        const nextBlock = renderSourceArtifactEvidence(artifact);
+        const candidate = [...sections, nextBlock].join("\n\n");
+        if (candidate.length > maxChars && selectedCount > 0) break;
+        sections.push(nextBlock);
+        selectedCount += 1;
+    }
+
+    if (selectedCount === 0) return null;
+    return clipText(sections.join("\n\n"), maxChars);
 }
 
 function buildDefaultDiagramGovernance(): DiagramGovernance {
@@ -1039,6 +1142,7 @@ function buildEvaluateMessages(messages: Message[], options: EvaluateMessageBuil
 function buildEvaluateRequestBody(
     messages: Message[],
     structureContext: string | null,
+    sourceContext: string | null,
     generationReady: boolean,
     compactMode: boolean,
     designMemory: string | null,
@@ -1059,6 +1163,12 @@ function buildEvaluateRequestBody(
     const context = compactMode && structureContext
         ? clipText(structureContext, EVALUATE_COMPACT_CONTEXT_CHARS)
         : structureContext;
+    const sourceContextText = sourceContext
+        ? clipText(
+            sourceContext,
+            compactMode ? EVALUATE_COMPACT_SOURCE_CONTEXT_CHARS : EVALUATE_SOURCE_CONTEXT_CHARS
+        )
+        : null;
     const designMemoryText = designMemory
         ? clipText(
             designMemory,
@@ -1069,6 +1179,7 @@ function buildEvaluateRequestBody(
     return JSON.stringify({
         messages: evaluateMessages,
         context,
+        sourceContext: sourceContextText,
         generationReady,
         designMemory: designMemoryText,
         diagramPolicy
@@ -1092,6 +1203,17 @@ function compactProjectTreeForPricing(nodes?: FileNode[]): FileNode[] {
             type: "file"
         };
     });
+}
+
+function compactSourceArtifactsForPricing(artifacts: SourceArtifact[]): SourceArtifact[] {
+    return artifacts.slice(-12).map((artifact) => ({
+        id: artifact.id,
+        sourceType: artifact.sourceType,
+        name: artifact.name,
+        summary: clipText(artifact.summary || artifact.name, 160),
+        mimeType: artifact.mimeType,
+        createdAt: artifact.createdAt
+    }));
 }
 
 function buildPricingProjectSnapshot(
@@ -1153,7 +1275,7 @@ function buildPricingProjectSnapshot(
             decisionRecords,
             guardrailChecklist,
             reviewHistory,
-            sourceArtifacts,
+            sourceArtifacts: compactSourceArtifactsForPricing(sourceArtifacts),
             architectureStage,
             functionalLockedAt,
             uiReadyAt
@@ -1260,12 +1382,20 @@ function WizardContent() {
     const hiddenMessageCount = baseMessageIndex;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
-    const architectureCompletion = architectureReadiness.score;
-    const isArchitecturePackReady = architectureReadiness.functionalReady && architectureReadiness.uiReady;
-    const architectureBlockers = architectureReadiness.blockingIssues;
-    const latestReview = reviewHistory[reviewHistory.length - 1] || null;
-    const reviewApproved = latestReview?.verdict === "aligned";
-    const isReadyToGenerateStage = isArchitecturePackReady && reviewApproved;
+    const scaffoldEligibility = computeScaffoldEligibility({
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewHistory
+    });
+    const architectureCompletion = scaffoldEligibility.readiness.score;
+    const isArchitecturePackReady = scaffoldEligibility.readiness.functionalReady && scaffoldEligibility.readiness.uiReady;
+    const architectureBlockers = scaffoldEligibility.blockingReasons.length > 0
+        ? scaffoldEligibility.blockingReasons
+        : scaffoldEligibility.readiness.blockingIssues;
+    const latestReview = scaffoldEligibility.latestReview;
+    const reviewApproved = scaffoldEligibility.reviewState === "approved_review";
+    const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
     const architectureViewerCode = currentDiagram;
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
@@ -1455,28 +1585,27 @@ function WizardContent() {
             uiDesignSpec ? deriveUiRequirements(uiDesignSpec) : evaluation?.analysis?.ui
         );
         const packChanged = JSON.stringify(normalizedArchitecturePack) !== JSON.stringify(architecturePack);
+        const nextScaffoldEligibility = computeScaffoldEligibility({
+            architecturePack: normalizedArchitecturePack,
+            decisionRecords,
+            guardrailChecklist,
+            reviewHistory
+        });
         const nextArchitectureStage = normalizeArchitectureStage(
             evaluation?.stage ?? architectureStage,
             normalizedArchitecturePack,
             decisionRecords,
             guardrailChecklist,
-            reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+            nextScaffoldEligibility.reviewState === "approved_review"
         );
         const nextArchitectureReadiness = applyArchitectureStageScoreFloor(
-            normalizeReadiness(
-            evaluation?.readiness ?? architectureReadiness,
-            normalizedArchitecturePack,
-            decisionRecords,
-            guardrailChecklist
-            ),
+            nextScaffoldEligibility.readiness,
             nextArchitectureStage
         );
         const architectureReadinessChanged =
             JSON.stringify(nextArchitectureReadiness) !== JSON.stringify(architectureReadiness);
         const architectureStageChanged = nextArchitectureStage !== architectureStage;
-        const nextStage = (nextArchitectureReadiness.functionalReady && nextArchitectureReadiness.uiReady)
-            ? "ready_to_generate"
-            : "functional_architecture";
+        const nextStage = nextScaffoldEligibility.designStage;
         const stageChanged = nextStage !== designStage;
         const nextNeedsResync = nextStage === "functional_architecture" ? uiDesignState.needsResync : false;
         const needsResyncChanged = nextNeedsResync !== uiDesignState.needsResync;
@@ -1931,6 +2060,8 @@ function WizardContent() {
         try {
             await yieldToBrowser();
             const structureContext = buildProjectStructureContext(generation?.projectTree);
+            const latestSourceArtifacts = extractSourceArtifacts(newMessages);
+            const sourceContext = buildSourceContext(latestSourceArtifacts, newMessages);
             const designMemory = buildDesignMemory(
                 currentDiagram,
                 evaluation,
@@ -1946,6 +2077,7 @@ function WizardContent() {
             const requestBody = buildEvaluateRequestBody(
                 newMessages,
                 structureContext,
+                sourceContext,
                 Boolean(generation),
                 false,
                 designMemory,
@@ -1973,6 +2105,7 @@ function WizardContent() {
                 const compactRequestBody = buildEvaluateRequestBody(
                     newMessages,
                     structureContext,
+                    sourceContext,
                     Boolean(generation),
                     true,
                     designMemory,
@@ -2113,7 +2246,7 @@ function WizardContent() {
                         currentEval.architecturePackDraft ?? architecturePack,
                         currentEval.decisionDrafts ?? decisionRecords,
                         currentEval.guardrailDrafts ?? guardrailChecklist,
-                        reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+                        reviewApproved
                     );
                     currentEval.stage = parsedStage;
                     setArchitectureStage(parsedStage);
@@ -2224,7 +2357,7 @@ function WizardContent() {
                         currentEval.architecturePackDraft,
                         currentEval.decisionDrafts ?? decisionRecords,
                         currentEval.guardrailDrafts ?? guardrailChecklist,
-                        reviewHistory[reviewHistory.length - 1]?.verdict === "aligned"
+                        reviewApproved
                     );
                 }
 
@@ -2322,6 +2455,10 @@ function WizardContent() {
     // --- Generation Handler ---
     const generateScaffold = async () => {
         if (generateInFlightRef.current) return;
+        if (!projectId || !currentVersion) {
+            setGenerateError("Missing project context for scaffold generation.");
+            return;
+        }
         generateInFlightRef.current = true;
         setIsGenerating(true);
         setGenerateError(null);
@@ -2340,6 +2477,8 @@ function WizardContent() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    projectId,
+                    versionId: currentVersion.id,
                     summary: historyText,
                     diagram: currentDiagram,
                     projectName: project?.name,
@@ -2357,9 +2496,20 @@ function WizardContent() {
             if (!res.ok) {
                 let errorMessage = "Failed to generate";
                 try {
-                    const payload = await res.json() as { error?: string; details?: string };
+                    const payload = await res.json() as {
+                        error?: string;
+                        details?: string;
+                        code?: string;
+                        blockingReasons?: string[];
+                    };
                     if (payload.error) {
                         errorMessage = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
+                    }
+                    if (Array.isArray(payload.blockingReasons) && payload.blockingReasons.length > 0) {
+                        errorMessage = payload.blockingReasons[0];
+                    }
+                    if (payload.code === "REVIEW_REQUIRED" || payload.code === "REVIEW_STALE") {
+                        setActiveTab("review");
                     }
                 } catch {
                     // ignore parse error and keep fallback message
@@ -2395,17 +2545,6 @@ function WizardContent() {
             generateInFlightRef.current = false;
         }
     };
-
-    const runAutoGenerate = useEffectEvent(() => {
-        void generateScaffold();
-    });
-
-    useEffect(() => {
-        if (!hasPaid || isAdmin) return;
-        if (!isReadyToGenerateStage) return;
-        if (generation || isGenerating || generateInFlightRef.current) return;
-        runAutoGenerate();
-    }, [hasPaid, isAdmin, isReadyToGenerateStage, generation, isGenerating]);
 
     const startCheckout = async () => {
         if (!projectId || !currentVersion) {
@@ -2465,6 +2604,10 @@ function WizardContent() {
 
             const data = (await res.json()) as { checkoutUrl?: string; error?: string };
             if (!res.ok || !data.checkoutUrl) {
+                const blockingCode = (data as { code?: string }).code;
+                if (blockingCode === "REVIEW_REQUIRED" || blockingCode === "REVIEW_STALE") {
+                    setActiveTab("review");
+                }
                 throw new Error(data.error || "Unable to start Stripe checkout.");
             }
 
@@ -2489,7 +2632,11 @@ function WizardContent() {
             return;
         }
         if (!reviewApproved) {
-            setGenerateError("Run an architecture review and resolve findings before scaffold generation.");
+            setGenerateError(
+                scaffoldEligibility.reviewState === "stale_review"
+                    ? "Architecture changed after the last approved review. Run review again before scaffold generation."
+                    : "Run an architecture review and resolve findings before scaffold generation."
+            );
             setActiveTab("review");
             return;
         }
@@ -2541,7 +2688,8 @@ function WizardContent() {
                 summary: payload.summary,
                 verdict: payload.verdict,
                 findings: normalizeReviewFindings(payload.findings),
-                reviewedAt: typeof payload.reviewedAt === "number" ? payload.reviewedAt : Date.now()
+                reviewedAt: typeof payload.reviewedAt === "number" ? payload.reviewedAt : Date.now(),
+                reviewedArchitectureFingerprint: scaffoldEligibility.architectureFingerprint
             };
 
             setReviewHistory((prev) => [...prev, nextReview].slice(-20));
@@ -2619,10 +2767,12 @@ function WizardContent() {
                                 <div className="mb-3 space-y-2">
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-slate-300">
                                         Architect Stage: {ARCHITECTURE_STAGE_LABELS[architectureStage]} | Readiness {Math.round(architectureCompletion)}%
-                                        {latestReview ? ` | Last review: ${latestReview.verdict.replace("_", " ")}` : ""}
+                                        {latestReview
+                                            ? ` | Last review: ${latestReview.verdict.replace("_", " ")}${scaffoldEligibility.reviewState === "stale_review" ? " (stale)" : ""}`
+                                            : ""}
                                     </div>
                                 </div>
-                                {(isReadyToGenerateStage || Boolean(generation)) ? (
+                                {(isArchitecturePackReady || Boolean(generation)) ? (
                                     <div className="flex flex-col gap-2">
                                         {generation ? (
                                             <>
@@ -2648,6 +2798,10 @@ function WizardContent() {
                                                     ? "Redirecting to Payment..."
                                                     : isGenerating
                                                         ? "Architecting Solution..."
+                                                        : !reviewApproved
+                                                            ? (scaffoldEligibility.reviewState === "stale_review"
+                                                                ? "Re-run Review Before Generate"
+                                                                : "Run Review Before Generate")
                                                         : !requiresPayment
                                                             ? "Generate Scaffold"
                                                             : checkoutQuote?.displayAmount
@@ -2664,6 +2818,10 @@ function WizardContent() {
                                                     ? "Checking permissions..."
                                                     : isAdmin
                                                     ? "Admin mode: payment bypass enabled"
+                                                    : !reviewApproved
+                                                        ? (scaffoldEligibility.reviewState === "stale_review"
+                                                            ? "Architecture changed after the last approved review. Re-run review before generating."
+                                                            : "Architecture pack is ready, but an approved current review is required before payment or generation.")
                                                     : hasPaid
                                                         ? "Architecture pack is approved. Ready to build or update scaffold."
                                                     : checkoutQuote

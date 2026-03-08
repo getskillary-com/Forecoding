@@ -12,8 +12,12 @@ import {
     isStripeDynamicPricingEnabled,
     isStripePaymentsPaused
 } from "@/lib/stripe";
-import { formatCurrencyCents, inferProjectDesignStage, quoteProjectCreditPrice } from "@/lib/pricing";
+import { formatCurrencyCents, quoteProjectCreditPrice } from "@/lib/pricing";
 import { getWorkspaceByUserId } from "@/lib/data/workspaces";
+import {
+    buildScaffoldEligibilityErrorMessage,
+    computeProjectScaffoldEligibility
+} from "@/lib/scaffold-eligibility";
 
 export const runtime = "nodejs";
 
@@ -58,14 +62,6 @@ function parseProjects(raw: unknown): Project[] {
     });
 }
 
-function parseProjectSnapshot(raw: unknown, projectId: string): Project | null {
-    if (!raw || typeof raw !== "object") return null;
-    const candidate = raw as Project;
-    if (typeof candidate.id !== "string" || candidate.id !== projectId) return null;
-    if (!Array.isArray(candidate.versions)) return null;
-    return candidate;
-}
-
 async function loadProjectForUser(userId: string, projectId: string) {
     const workspace = await getWorkspaceByUserId(userId);
     const projects = parseProjects(workspace?.projects);
@@ -107,21 +103,21 @@ export async function POST(req: Request) {
 
         const body = (await req.json()) as CheckoutRequestBody;
         const projectId = sanitizeText(body.projectId, "project-credit");
-        const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
-        const projectFromWorkspace = await loadProjectForUser(user.uid, projectId);
-        const project = projectFromWorkspace || projectFromSnapshot;
+        const project = await loadProjectForUser(user.uid, projectId);
         if (!project) {
             return NextResponse.json(
                 { error: "Project context not found for checkout." },
                 { status: 404 }
             );
         }
-        const designStage = inferProjectDesignStage(project);
-        if (designStage !== "ready_to_generate") {
+        const eligibility = computeProjectScaffoldEligibility(project);
+        if (!eligibility?.canCheckout) {
             return NextResponse.json(
                 {
-                    error: "Architecture pack is not ready. Resolve blockers and complete review before checkout.",
-                    designStage
+                    error: buildScaffoldEligibilityErrorMessage(eligibility || { code: "ARCHITECTURE_NOT_READY" }),
+                    code: eligibility?.code || "ARCHITECTURE_NOT_READY",
+                    blockingReasons: eligibility?.blockingReasons || ["Architecture pack is not ready for scaffold generation."],
+                    designStage: eligibility?.designStage || "functional_architecture"
                 },
                 { status: 409 }
             );

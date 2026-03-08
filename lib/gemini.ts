@@ -684,6 +684,7 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
 type EvaluateRuntimeOptions = {
     generationReady?: boolean;
     preferBackupModel?: boolean;
+    sourceContext?: string;
     designMemory?: string;
     diagramPolicy?: string;
 };
@@ -694,10 +695,14 @@ export async function* streamEvaluateInput(
     options?: EvaluateRuntimeOptions
 ) {
     const maxContextChars = 12000;
+    const maxSourceContextChars = 6000;
     const maxDesignMemoryChars = 14000;
     const defaultDiagramPolicy = "incremental_auto_apply_v1";
     const safeContext = typeof context === "string" && context.trim()
         ? context.trim().slice(0, maxContextChars)
+        : "";
+    const safeSourceContext = typeof options?.sourceContext === "string" && options.sourceContext.trim()
+        ? options.sourceContext.trim().slice(0, maxSourceContextChars)
         : "";
     const safeDesignMemory = typeof options?.designMemory === "string" && options.designMemory.trim()
         ? options.designMemory.trim().slice(0, maxDesignMemoryChars)
@@ -708,6 +713,9 @@ export async function* streamEvaluateInput(
     const structureBlock = safeContext
         ? `\n\n# Existing Project Structure (Context)\n${safeContext}\n\n# Guidance\n- Use the structure above as the current source of truth for existing features.\n- If the user asks about functionality, infer from file specs before asking new questions.`
         : "";
+    const sourceEvidenceBlock = safeSourceContext
+        ? `\n\n${safeSourceContext}\n\n# Evidence Handling Rules\n- Treat these snippets as durable evidence gathered from earlier user turns or uploaded artifacts.\n- Prefer these snippets over incomplete recent chat history when reconstructing requirements.\n- If retrieved evidence conflicts with the latest user turn, call out the conflict explicitly and ask for confirmation before changing architecture.`
+        : "";
     const designMemoryBlock = safeDesignMemory
         ? `\n\n# Persistent Design Memory\n${safeDesignMemory}`
         : "";
@@ -717,7 +725,7 @@ export async function* streamEvaluateInput(
         ? `\n\n# Runtime Mode\nScaffold already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`
         : "";
 
-    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
+    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
         const activeProvider = getActiveAiProvider();

@@ -2,17 +2,37 @@
 import { NextResponse } from "next/server";
 import {
     buildArchitecturePackScaffoldInput,
-    createReadinessChecklist,
     normalizeArchitecturePack,
     normalizeDecisionRecords,
     normalizeGuardrailChecklist
 } from "@/lib/architecture";
 import { generateProjectResources } from "@/lib/gemini";
+import { isAdminUser } from "@/lib/admin";
+import { getWorkspaceByUserId } from "@/lib/data/workspaces";
+import { getServerUser } from "@/lib/server-auth";
+import {
+    buildScaffoldEligibilityErrorMessage,
+    computeVersionScaffoldEligibility
+} from "@/lib/scaffold-eligibility";
+import type { Project } from "@/types";
 
 type OutputLanguage = "zh" | "en";
 type OneClickMode = "strict_build_v1";
 type IdeProfile = "generic";
 type TemplateKindHint = "next_root" | "next_src" | "monorepo_multiapp";
+
+type GenerateRequestBody = {
+    summary?: unknown;
+    diagram?: unknown;
+    currentProjectTree?: unknown;
+    projectName?: unknown;
+    outputLanguage?: unknown;
+    oneClickMode?: unknown;
+    ideProfile?: unknown;
+    templateKindHint?: unknown;
+    projectId?: unknown;
+    versionId?: unknown;
+};
 
 const MAX_GENERATE_SUMMARY_CHARS = Math.min(
     200_000,
@@ -54,67 +74,112 @@ function clipText(text: string, maxChars: number) {
     return `${text.slice(0, maxChars)}\n... [truncated]`;
 }
 
+function sanitizeText(value: unknown) {
+    return typeof value === "string" ? value.trim().slice(0, 160) : "";
+}
+
+function parseProjects(raw: unknown): Project[] {
+    if (!Array.isArray(raw)) return [];
+
+    return raw.filter((item): item is Project => {
+        if (!item || typeof item !== "object") return false;
+        const id = (item as { id?: unknown }).id;
+        return typeof id === "string" && id.length > 0;
+    });
+}
+
+function resolveProjectVersion(projects: Project[], projectId: string, versionId: string) {
+    for (const project of projects) {
+        if (project.id !== projectId) continue;
+        const version = project.versions.find((candidate) => candidate.id === versionId) || null;
+        if (version) {
+            return { project, version };
+        }
+    }
+
+    return null;
+}
+
 export async function POST(req: Request) {
     try {
-        const {
-            summary,
-            diagram,
-            currentProjectTree,
-            projectName,
-            outputLanguage,
-            oneClickMode,
-            ideProfile,
-            templateKindHint,
-            architecturePack,
-            decisionRecords,
-            guardrailChecklist
-        } = await req.json();
-        if (!architecturePack || typeof architecturePack !== "object") {
+        const user = await getServerUser();
+        if (!user?.uid) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+        const body = (await req.json()) as GenerateRequestBody;
+        const projectId = sanitizeText(body.projectId);
+        const versionId = sanitizeText(body.versionId);
+        if (!projectId || !versionId) {
             return NextResponse.json(
-                { error: "Architecture pack is required before scaffold generation." },
+                { error: "projectId and versionId are required before scaffold generation." },
                 { status: 400 }
             );
         }
-        const normalizedArchitecturePack = normalizeArchitecturePack(architecturePack);
-        const normalizedDecisionRecords = normalizeDecisionRecords(decisionRecords);
-        const normalizedGuardrailChecklist = normalizeGuardrailChecklist(guardrailChecklist);
-        const readiness = createReadinessChecklist(
-            normalizedArchitecturePack,
-            normalizedDecisionRecords,
-            normalizedGuardrailChecklist
-        );
-        if (!readiness.functionalReady || !readiness.uiReady) {
+
+        const workspace = await getWorkspaceByUserId(user.uid);
+        const projects = parseProjects(workspace?.projects);
+        const resolved = resolveProjectVersion(projects, projectId, versionId);
+        if (!resolved) {
+            return NextResponse.json(
+                { error: "Project version not found for scaffold generation." },
+                { status: 404 }
+            );
+        }
+
+        const { project, version } = resolved;
+        const eligibility = computeVersionScaffoldEligibility(version.data);
+        if (!eligibility.canGenerate) {
             return NextResponse.json(
                 {
-                    error: "Architecture pack is not ready for scaffold generation.",
-                    blockingIssues: readiness.blockingIssues,
-                    readiness
+                    error: buildScaffoldEligibilityErrorMessage(eligibility),
+                    code: eligibility.code,
+                    blockingReasons: eligibility.blockingReasons,
+                    readiness: eligibility.readiness
                 },
                 { status: 409 }
             );
         }
+
+        const hasPaid = version.data.paymentStatus === "paid";
+        const isAdmin = isAdminUser({ email: user.email });
+        if (!hasPaid && !isAdmin) {
+            return NextResponse.json(
+                {
+                    error: "Payment required before scaffold generation.",
+                    code: "PAYMENT_REQUIRED"
+                },
+                { status: 402 }
+            );
+        }
+
+        const architecturePack = version.data.architecturePack;
+        const decisionRecords = version.data.decisionRecords;
+        const guardrailChecklist = version.data.guardrailChecklist;
+        const normalizedArchitecturePack = normalizeArchitecturePack(architecturePack);
+        const normalizedDecisionRecords = normalizeDecisionRecords(decisionRecords);
+        const normalizedGuardrailChecklist = normalizeGuardrailChecklist(guardrailChecklist);
         const renderedSummary = buildArchitecturePackScaffoldInput(
             normalizedArchitecturePack,
             normalizedDecisionRecords,
             normalizedGuardrailChecklist
         );
         const normalizedSummary = clipText(
-            renderedSummary || String(summary || "").trim(),
+            renderedSummary,
             MAX_GENERATE_SUMMARY_CHARS
         );
         const normalizedDiagram =
-            typeof diagram === "string" && diagram.trim()
-                ? clipText(diagram.trim(), MAX_GENERATE_DIAGRAM_CHARS)
+            typeof version.data.currentDiagram === "string" && version.data.currentDiagram.trim()
+                ? clipText(version.data.currentDiagram.trim(), MAX_GENERATE_DIAGRAM_CHARS)
                 : undefined;
-        const parsedOneClickMode = parseOneClickMode(oneClickMode);
-        const parsedIdeProfile = parseIdeProfile(ideProfile);
-        const parsedTemplateKindHint = parseTemplateKindHint(templateKindHint);
-        const parsedOutputLanguage = parseOutputLanguage(outputLanguage);
+        const parsedOneClickMode = parseOneClickMode(body.oneClickMode);
+        const parsedIdeProfile = parseIdeProfile(body.ideProfile);
+        const parsedTemplateKindHint = parseTemplateKindHint(body.templateKindHint);
+        const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage);
         console.info(
             `[generate] request outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
         );
-        const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, currentProjectTree, {
-            projectName: typeof projectName === "string" ? projectName : undefined,
+        const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, version.data.generation?.projectTree, {
+            projectName: project.name || sanitizeText(body.projectName) || undefined,
             outputLanguage: parsedOutputLanguage,
             oneClickMode: parsedOneClickMode,
             ideProfile: parsedIdeProfile,

@@ -8,6 +8,8 @@ const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEA
 const EVALUATE_RETRY_HISTORY_MESSAGES = 10;
 const EVALUATE_RETRY_CONTENT_CHARS = 2_500;
 const EVALUATE_RETRY_CONTEXT_CHARS = 3_000;
+const EVALUATE_SOURCE_CONTEXT_CHARS = 6_000;
+const EVALUATE_RETRY_SOURCE_CONTEXT_CHARS = 2_500;
 const EVALUATE_RETRY_TEXT_ATTACHMENT_CHARS = 2_000;
 const EVALUATE_DESIGN_MEMORY_CHARS = 14_000;
 const EVALUATE_RETRY_DESIGN_MEMORY_CHARS = 5_000;
@@ -21,6 +23,7 @@ export const runtime = "nodejs";
 type EvaluateRequestBody = {
     messages?: unknown;
     context?: unknown;
+    sourceContext?: unknown;
     generationReady?: unknown;
     designMemory?: unknown;
     diagramPolicy?: unknown;
@@ -204,6 +207,7 @@ async function* streamWithTimeGuards(
     generationReady: boolean,
     options?: {
         preferBackupModel?: boolean;
+        sourceContext?: string;
         designMemory?: string;
         diagramPolicy?: string;
     }
@@ -211,6 +215,7 @@ async function* streamWithTimeGuards(
     const iterator = streamEvaluateInput(messages, contextText, {
         generationReady,
         preferBackupModel: options?.preferBackupModel === true,
+        sourceContext: options?.sourceContext,
         designMemory: options?.designMemory,
         diagramPolicy: options?.diagramPolicy
     })[Symbol.asyncIterator]();
@@ -260,8 +265,12 @@ export async function POST(req: Request) {
     const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).slice(0, 12);
     const requestStartedAt = Date.now();
     try {
-        const { messages, context, generationReady, designMemory, diagramPolicy } = await parseEvaluateRequest(req);
+        const { messages, context, sourceContext, generationReady, designMemory, diagramPolicy } = await parseEvaluateRequest(req);
         const contextText = typeof context === "string" ? context : undefined;
+        const sourceContextText =
+            typeof sourceContext === "string" && sourceContext.trim()
+                ? clipText(sourceContext.trim(), EVALUATE_SOURCE_CONTEXT_CHARS)
+                : undefined;
         const designMemoryText =
             typeof designMemory === "string" && designMemory.trim()
                 ? clipText(designMemory.trim(), EVALUATE_DESIGN_MEMORY_CHARS)
@@ -280,7 +289,7 @@ export async function POST(req: Request) {
         const provider = getActiveAiProvider();
         const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
+            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} sourceContextChars=${sourceContextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
         );
 
         const stream = new ReadableStream({
@@ -322,6 +331,7 @@ export async function POST(req: Request) {
                         contextText,
                         generationReady === true,
                         {
+                            sourceContext: sourceContextText,
                             designMemory: designMemoryText,
                             diagramPolicy: normalizedDiagramPolicy
                         }
@@ -362,6 +372,9 @@ export async function POST(req: Request) {
                             const retryContext = contextText
                                 ? clipText(contextText, EVALUATE_RETRY_CONTEXT_CHARS)
                                 : undefined;
+                            const retrySourceContext = sourceContextText
+                                ? clipText(sourceContextText, EVALUATE_RETRY_SOURCE_CONTEXT_CHARS)
+                                : undefined;
                             const retryDesignMemory = designMemoryText
                                 ? clipText(designMemoryText, EVALUATE_RETRY_DESIGN_MEMORY_CHARS)
                                 : undefined;
@@ -372,6 +385,7 @@ export async function POST(req: Request) {
                                 generationReady === true,
                                 {
                                     preferBackupModel: true,
+                                    sourceContext: retrySourceContext,
                                     designMemory: retryDesignMemory,
                                     diagramPolicy: normalizedDiagramPolicy
                                 }
