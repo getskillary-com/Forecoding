@@ -805,23 +805,136 @@ function isGenericOptionLabel(label: string) {
     return /^(option|choice|selection|answer|question|item|step|type|mode|entry|device)\b/.test(normalized);
 }
 
-function normalizeSingleQuestion(raw: string) {
+function detectResponseLanguage(...texts: string[]) {
+    return /[\u4e00-\u9fff]/.test(texts.join(" ")) ? "zh" : "en";
+}
+
+function parseQuestionBlock(raw: string) {
     const normalized = raw.replace(/\r\n/g, "\n").trim();
-    if (!normalized) return "";
+    if (!normalized) {
+        return {
+            recommendation: "",
+            question: "",
+            displayText: ""
+        };
+    }
 
     const lines = normalized
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean);
-    if (lines.length === 0) return "";
-
-    const selected: string[] = [];
-    for (const line of lines) {
-        selected.push(line);
-        if (/[?？]/.test(line)) break;
+    if (lines.length === 0) {
+        return {
+            recommendation: "",
+            question: "",
+            displayText: ""
+        };
     }
 
-    return selected.join("\n").trim() || lines[0];
+    const questionIndex = lines.findIndex((line) => /[?？]/.test(line));
+    const recommendation = questionIndex > 0
+        ? lines.slice(0, questionIndex).join(" ").trim()
+        : questionIndex === -1 && lines.length > 1
+            ? lines.slice(0, -1).join(" ").trim()
+            : "";
+    const question = questionIndex >= 0
+        ? lines.slice(questionIndex).join(" ").trim()
+        : lines[lines.length - 1];
+    const language = detectResponseLanguage(recommendation, question);
+    const parts: string[] = [];
+
+    if (recommendation) {
+        parts.push(clipText(recommendation, 280));
+    }
+
+    if (question) {
+        parts.push(`${language === "zh" ? "需要确认：" : "Please confirm:"}\n${clipText(question, 260)}`);
+    }
+
+    return {
+        recommendation,
+        question,
+        displayText: parts.join("\n\n").trim() || clipText(lines.join(" "), 360)
+    };
+}
+
+function normalizeSingleQuestion(raw: string) {
+    const parsed = parseQuestionBlock(raw);
+    if (parsed.question) return clipText(parsed.question, 260);
+    return clipText(raw.replace(/\s+/g, " ").trim(), 260);
+}
+
+function buildAssistantDisplayContent(
+    rawQuestion: string,
+    analysis?: EvaluationResponse["analysis"] | null
+) {
+    const parsed = parseQuestionBlock(rawQuestion);
+    if (parsed.recommendation) return parsed.displayText;
+
+    const clarified = normalizeAnalysis(analysis).clarified
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 2);
+
+    if (clarified.length === 0) {
+        return parsed.displayText || clipText(rawQuestion.replace(/\s+/g, " ").trim(), 360);
+    }
+
+    const language = detectResponseLanguage(rawQuestion, clarified.join(" "));
+    const summaryTitle = language === "zh" ? "当前判断：" : "Current view:";
+    const parts = [
+        `${summaryTitle}\n- ${clarified.join("\n- ")}`
+    ];
+
+    if (parsed.question) {
+        parts.push(`${language === "zh" ? "需要确认：" : "Please confirm:"}\n${clipText(parsed.question, 260)}`);
+    }
+
+    return parts.join("\n\n");
+}
+
+function buildCommonFallbackOptions(language: "zh" | "en") {
+    if (language === "zh") {
+        return [
+            { label: "按推荐方案继续", value: "按你推荐的默认方案继续。" },
+            { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
+            { label: "给我常见选项", value: "请给我 2 到 3 个常见方案并说明取舍。" },
+            { label: "暂时不确定", value: "我暂时不确定，请按最稳妥的默认方案推进。" }
+        ];
+    }
+
+    return [
+        { label: "Proceed with your recommendation", value: "Proceed with your recommended default approach." },
+        { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
+        { label: "Show me common options", value: "Please show me 2 or 3 common options and explain the tradeoffs." },
+        { label: "I'm not sure yet", value: "I'm not sure yet. Please continue with the safest default approach." }
+    ];
+}
+
+function ensureCommonQuestionOptions(
+    questionText: string,
+    options: Array<{ label: string; value: string }>,
+    contextText: string
+) {
+    const normalizedQuestion = questionText.trim();
+    if (!normalizedQuestion) return options;
+
+    const language = detectResponseLanguage(normalizedQuestion, contextText);
+    const normalized = [...options];
+    const seen = new Set(
+        normalized.map((option) => `${option.label.trim().toLowerCase()}::${option.value.trim().toLowerCase()}`)
+    );
+    const common = buildCommonFallbackOptions(language);
+
+    for (const option of common) {
+        if (normalized.length >= 4) break;
+        const key = `${option.label.toLowerCase()}::${option.value.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        normalized.push(option);
+        seen.add(key);
+    }
+
+    return normalized.slice(0, 4);
 }
 
 function extractFallbackAssistantText(raw: string) {
@@ -830,7 +943,7 @@ function extractFallbackAssistantText(raw: string) {
 
     const questionMatch = normalized.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
     if (questionMatch && questionMatch[1]) {
-        const questionText = normalizeSingleQuestion(questionMatch[1]);
+        const questionText = buildAssistantDisplayContent(questionMatch[1]);
         if (questionText) return questionText;
     }
 
@@ -2051,6 +2164,10 @@ function WizardContent() {
         const newMessages = [...messages, newUserMessage];
         const assistantPlaceholder: Message = { role: "assistant", content: "" };
         const assistantIndex = newMessages.length;
+        const latestUserContext = [...newMessages]
+            .reverse()
+            .find((message) => message.role === "user")
+            ?.content ?? "";
         setMessages([...newMessages, assistantPlaceholder]);
         setMessageWindow(MESSAGE_WINDOW_SIZE);
         setInput("");
@@ -2225,15 +2342,26 @@ function WizardContent() {
 
                 const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
                 if (questionMatch && questionMatch[1]) {
-                    const q = normalizeSingleQuestion(questionMatch[1]);
+                    const rawQuestion = questionMatch[1];
+                    const q = normalizeSingleQuestion(rawQuestion);
                     if (q) {
                         currentEval.next_step.question = q;
+                        const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis);
                         setMessages(prev => {
                             if (evalRequestIdRef.current !== requestId) return prev;
                             const updated = [...prev];
                             const current = updated[assistantIndex];
                             if (!current || current.role !== "assistant") return prev;
-                            updated[assistantIndex] = { ...current, content: q };
+                            const ensuredOptions = ensureCommonQuestionOptions(
+                                q,
+                                current.options ?? [],
+                                latestUserContext
+                            );
+                            updated[assistantIndex] = {
+                                ...current,
+                                content: displayContent || q,
+                                options: ensuredOptions
+                            };
                             return updated;
                         });
                     }
@@ -2255,16 +2383,6 @@ function WizardContent() {
                 const densityMatch = buffer.match(/<density>\s*(\d+)\s*<\/density>/);
                 if (densityMatch) {
                     currentEval.density_score = parseInt(densityMatch[1]);
-                    if (currentEval.density_score >= 100) {
-                        setMessages(prev => {
-                            if (evalRequestIdRef.current !== requestId) return prev;
-                            const updated = [...prev];
-                            const current = updated[assistantIndex];
-                            if (!current || current.role !== "assistant") return prev;
-                            updated[assistantIndex] = { ...current, options: [] };
-                            return updated;
-                        });
-                    }
                 }
 
                 const readyMatch = buffer.match(/<is_ready>\s*(true|false)\s*<\/is_ready>/);
@@ -2364,9 +2482,11 @@ function WizardContent() {
                 // Options
                 const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
                 if (optionsMatch) {
-                    const options = (currentEval.readiness?.functionalReady && currentEval.readiness?.uiReady)
-                        ? []
-                        : parseOptionsBlock(optionsMatch[1]);
+                    const options = ensureCommonQuestionOptions(
+                        currentEval.next_step.question || "",
+                        parseOptionsBlock(optionsMatch[1]),
+                        latestUserContext
+                    );
                     setMessages(prev => {
                         if (evalRequestIdRef.current !== requestId) return prev;
                         const updated = [...prev];
@@ -2403,9 +2523,17 @@ function WizardContent() {
                     const updated = [...prev];
                     const current = updated[assistantIndex];
                     if (!current || current.role !== "assistant") return prev;
-                    if (current.content.trim().length > 0) return prev;
-                    if (current.options && current.options.length > 0) return prev;
-                    updated[assistantIndex] = { ...current, content: fallbackText, options: [] };
+                    const fallbackOptions = ensureCommonQuestionOptions(
+                        currentEval.next_step.question || fallbackText,
+                        current.options ?? [],
+                        latestUserContext
+                    );
+                    const nextContent = current.content.trim().length > 0 ? current.content : fallbackText;
+                    const nextOptions = current.options && current.options.length > 0
+                        ? current.options
+                        : fallbackOptions;
+                    if (nextContent === current.content && nextOptions === current.options) return prev;
+                    updated[assistantIndex] = { ...current, content: nextContent, options: nextOptions };
                     return updated;
                 });
             }
