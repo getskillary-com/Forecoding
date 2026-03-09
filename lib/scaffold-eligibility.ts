@@ -7,10 +7,12 @@ import type {
     Project,
     ProjectVersion,
     ProjectVersionData,
+    MinimumViableLoopChecklist,
     ReadinessChecklist,
     ReadinessOverride
 } from "@/types";
 import {
+    createMinimumViableLoopChecklist,
     createReadinessChecklist,
     normalizeArchitecturePack,
     normalizeArchitectureReviewHistory,
@@ -31,6 +33,7 @@ export type ScaffoldEligibilityCode =
 
 export type ScaffoldEligibility = {
     readiness: ReadinessChecklist;
+    minimumViableLoop: MinimumViableLoopChecklist;
     architectureFingerprint: string;
     latestReview: ArchitectureReviewResult | null;
     reviewState: ScaffoldReviewState;
@@ -129,6 +132,12 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
         guardrailChecklist,
         readinessOverrides
     );
+    const minimumViableLoop = createMinimumViableLoopChecklist(
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        readinessOverrides
+    );
     const architectureFingerprint = buildArchitectureFingerprint(
         architecturePack,
         decisionRecords,
@@ -143,15 +152,16 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
             : "stale_review";
     }
 
-    if (!readiness.functionalReady || !readiness.uiReady) {
+    if (!minimumViableLoop.ready) {
         return {
             readiness,
+            minimumViableLoop,
             architectureFingerprint,
             latestReview,
             reviewState,
             canCheckout: false,
             canGenerate: false,
-            blockingReasons: readiness.blockingIssues,
+            blockingReasons: minimumViableLoop.blockingIssues,
             code: "ARCHITECTURE_NOT_READY",
             designStage: "functional_architecture"
         };
@@ -160,6 +170,7 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
     if (reviewState === "missing_review") {
         return {
             readiness,
+            minimumViableLoop,
             architectureFingerprint,
             latestReview,
             reviewState,
@@ -174,6 +185,7 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
     if (reviewState === "stale_review") {
         return {
             readiness,
+            minimumViableLoop,
             architectureFingerprint,
             latestReview,
             reviewState,
@@ -187,6 +199,7 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
 
     return {
         readiness,
+        minimumViableLoop,
         architectureFingerprint,
         latestReview,
         reviewState,

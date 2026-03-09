@@ -76,6 +76,7 @@ import {
 import {
     ARCHITECTURE_STAGE_LABELS,
     buildArchitecturePackScaffoldInput,
+    createMinimumViableLoopChecklist,
     createReadinessChecklist,
     extractSourceArtifacts,
     findReadinessRequirement,
@@ -1717,6 +1718,12 @@ function buildDesignMemory(
 ) {
     const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
     const readiness = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist, readinessOverrides);
+    const minimumViableLoop = createMinimumViableLoopChecklist(
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        readinessOverrides
+    );
     const clarified = normalizedAnalysis.clarified;
     const resolvedConfirmations = buildResolvedConfirmationLog(messages);
     const resolvedQuestionKeys = new Set(
@@ -1764,6 +1771,13 @@ function buildDesignMemory(
         readinessOverrides.length > 0
             ? readinessOverrides.map((override) => `- ${override.requirementKey}: ${clipText(override.rationale, 220)}`).join("\n")
             : "- None",
+        "",
+        "# Minimum Viable Loop",
+        `- Ready: ${minimumViableLoop.ready ? "yes" : "no"}`,
+        `- Score: ${minimumViableLoop.score}`,
+        minimumViableLoop.blockingIssues.length > 0
+            ? `- Blocking: ${minimumViableLoop.blockingIssues.join(" ; ")}`
+            : "- Blocking: none",
         "",
         "# UI Requirement Profile",
         ...UI_REQUIREMENT_KEYS.map((key) => {
@@ -2208,11 +2222,12 @@ function WizardContent() {
         readinessOverrides,
         reviewHistory
     });
+    const minimumViableLoop = scaffoldEligibility.minimumViableLoop;
+    const minimumViableLoopReady = minimumViableLoop.ready;
     const architectureCompletion = scaffoldEligibility.readiness.score;
-    const isArchitecturePackReady = scaffoldEligibility.readiness.functionalReady && scaffoldEligibility.readiness.uiReady;
-    const architectureBlockers = scaffoldEligibility.blockingReasons.length > 0
+    const minimumLoopBlockers = scaffoldEligibility.blockingReasons.length > 0
         ? scaffoldEligibility.blockingReasons
-        : scaffoldEligibility.readiness.blockingIssues;
+        : minimumViableLoop.blockingIssues;
     const latestReview = scaffoldEligibility.latestReview;
     const reviewApproved = scaffoldEligibility.reviewState === "approved_review";
     const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
@@ -3884,8 +3899,8 @@ Do you want to start scaffold generation now?`;
         });
 
         setGenerateError(null);
-        if (!isArchitecturePackReady) {
-            const message = architectureBlockers[0] || "Complete the architecture pack before generating scaffold.";
+        if (!minimumViableLoopReady) {
+            const message = minimumLoopBlockers[0] || "Complete the minimum viable architecture loop before generating scaffold.";
             setGenerateError(message);
             if (source === "chat") {
                 const language = detectResponseLanguage(
@@ -4016,7 +4031,7 @@ Do you want to start scaffold generation now?`;
             };
 
             setReviewHistory((prev) => [...prev, nextReview].slice(-20));
-            if (nextReview.verdict === "aligned" && isArchitecturePackReady) {
+            if (nextReview.verdict === "aligned" && minimumViableLoopReady) {
                 setArchitectureStage("ready_to_generate");
             } else {
                 setArchitectureStage("review");
@@ -4090,28 +4105,30 @@ Do you want to start scaffold generation now?`;
                                 <div className="mb-3 space-y-2">
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-slate-300">
                                         Architect Stage: {ARCHITECTURE_STAGE_LABELS[architectureStage]} | Readiness {Math.round(architectureCompletion)}%
+                                        {` | MVL ${minimumViableLoopReady ? "Ready" : `${Math.round(minimumViableLoop.score)}%`}`}
                                         {latestReview
                                             ? ` | Last review: ${latestReview.verdict.replace("_", " ")}${scaffoldEligibility.reviewState === "stale_review" ? " (stale)" : ""}`
                                             : ""}
                                     </div>
                                 </div>
-                                {(isArchitecturePackReady || Boolean(generation)) ? (
-                                    <div className="flex flex-col gap-2">
-                                        {generation ? (
-                                            <>
-                                                <div className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-6 py-4 font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
-                                                    <Check className="w-5 h-5" />
-                                                    Scaffold Generated
-                                                </div>
-                                                <p className="text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">Scaffold generated successfully! Check the Scaffold tab.</p>
-                                            </>
-                                        ) : (
-                                            <>
+                                <div className="mb-4 flex flex-col gap-2">
+                                    {generation ? (
+                                        <>
+                                            <div className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-6 py-4 font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
+                                                <Check className="w-5 h-5" />
+                                                Scaffold Generated
+                                            </div>
+                                            <p className="text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                                                Scaffold generated successfully. You can still continue refining the architecture or review direction below.
+                                            </p>
+                                        </>
+                                    ) : (
+                                        <>
                                             <button
                                                 onClick={() => {
                                                     void handleGenerate();
                                                 }}
-                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded}
+                                                disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded || !minimumViableLoopReady}
                                                 className="fc-button-primary flex w-full items-center justify-center gap-2 px-6 py-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 {isGenerating || isCheckingOut
@@ -4119,21 +4136,23 @@ Do you want to start scaffold generation now?`;
                                                     : <Sparkles className="w-5 h-5" />}
                                                 {!isAdminStatusLoaded
                                                     ? "Checking access..."
+                                                    : !minimumViableLoopReady
+                                                    ? "Generate Locked Until MVL Ready"
                                                     : isCheckingOut
                                                     ? "Redirecting to Payment..."
                                                     : isGenerating
-                                                        ? "Architecting Solution..."
-                                                        : !reviewApproved
-                                                            ? (scaffoldEligibility.reviewState === "stale_review"
-                                                                ? "Re-run Review Before Generate"
-                                                                : "Run Review Before Generate")
-                                                        : !requiresPayment
-                                                            ? "Generate Scaffold"
-                                                            : checkoutQuote?.displayAmount
-                                                                ? `Proceed to Payment (${checkoutQuote.displayAmount})`
-                                                                : isQuoteLoading
-                                                                    ? "Proceed to Payment (Calculating...)"
-                                                                    : "Proceed to Payment"}
+                                                    ? "Architecting Solution..."
+                                                    : !reviewApproved
+                                                    ? (scaffoldEligibility.reviewState === "stale_review"
+                                                        ? "Re-run Review Before Generate"
+                                                        : "Run Review Before Generate")
+                                                    : !requiresPayment
+                                                    ? "Generate Scaffold"
+                                                    : checkoutQuote?.displayAmount
+                                                    ? `Proceed to Payment (${checkoutQuote.displayAmount})`
+                                                    : isQuoteLoading
+                                                    ? "Proceed to Payment (Calculating...)"
+                                                    : "Proceed to Payment"}
                                             </button>
                                             {generateError && (
                                                 <div className="text-xs text-red-500 text-center">{generateError}</div>
@@ -4141,114 +4160,115 @@ Do you want to start scaffold generation now?`;
                                             <p className="text-center text-xs text-slate-500 dark:text-slate-300">
                                                 {!isAdminStatusLoaded
                                                     ? "Checking permissions..."
+                                                    : !minimumViableLoopReady
+                                                    ? `Minimum viable loop is not ready yet. ${minimumLoopBlockers[0] || "Continue editing below to close the remaining gap."}`
                                                     : isAdmin
                                                     ? "Admin mode: payment bypass enabled"
                                                     : !reviewApproved
-                                                        ? (scaffoldEligibility.reviewState === "stale_review"
-                                                            ? "Architecture changed after the last approved review. Re-run review before generating."
-                                                            : "Architecture pack is ready, but an approved current review is required before payment or generation.")
+                                                    ? (scaffoldEligibility.reviewState === "stale_review"
+                                                        ? "Architecture changed after the last approved review. Re-run review before generating. You can keep editing below."
+                                                        : "Minimum viable loop is ready, but a current approved review is still required before generation.")
                                                     : hasPaid
-                                                        ? "Architecture pack is approved. Ready to build or update scaffold."
+                                                    ? "Minimum viable loop and review are approved. Ready to build or update scaffold."
                                                     : checkoutQuote
-                                                        ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
-                                                        : isQuoteLoading
-                                                            ? "Calculating complexity-based price..."
-                                                            : "Payment required before generation"}
+                                                    ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
+                                                    : isQuoteLoading
+                                                    ? "Calculating complexity-based price..."
+                                                    : "Payment required before generation"}
                                             </p>
                                         </>
                                     )}
-                                    </div>
-                                ) : (
-                                    <div className="flex flex-col gap-2">
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                    {!minimumViableLoopReady && (
                                         <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                            Use the Architect chat to complete context, boundaries, decisions, and guardrails. Run a review before scaffold generation.
+                                            Continue editing below. Next MVL blocker: {minimumLoopBlockers[0] || "Close the remaining architecture gap."}
                                         </p>
-                                        {generateError && (
-                                            <div className="px-1 text-xs text-red-500">{generateError}</div>
-                                        )}
-                                        {/* Pending Attachments Preview */}
-                                        {pendingAttachments.length > 0 && (
-                                            <div className="flex gap-2 overflow-x-auto px-1 pb-2">
-                                                {pendingAttachments.map((att, idx) => (
-                                                    att.type === 'image' ? (
-                                                        <div key={idx} className="relative group shrink-0">
-                                                            <div className="h-20 w-20 overflow-hidden rounded-xl border-2 border-blue-200 shadow-sm dark:border-blue-800">
-                                                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                                                <img src={att.content} alt={att.name} className="w-full h-full object-cover" />
-                                                            </div>
-                                                            <button
-                                                                onClick={() => removeAttachment(idx)}
-                                                                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                                                            >
-                                                                <X className="w-3 h-3" />
-                                                            </button>
-                                                            <span className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] text-center truncate px-1 py-0.5 rounded-b-xl">{att.name}</span>
+                                    )}
+                                    {pendingAttachments.length > 0 && (
+                                        <div className="flex gap-2 overflow-x-auto px-1 pb-2">
+                                            {pendingAttachments.map((att, idx) => (
+                                                att.type === 'image' ? (
+                                                    <div key={idx} className="relative group shrink-0">
+                                                        <div className="h-20 w-20 overflow-hidden rounded-xl border-2 border-blue-200 shadow-sm dark:border-blue-800">
+                                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                            <img src={att.content} alt={att.name} className="w-full h-full object-cover" />
                                                         </div>
-                                                    ) : (
-                                                        <div key={idx} className="relative group flex shrink-0 items-center gap-2 rounded-xl border border-[color:var(--border)] bg-slate-100 p-2 pr-8 dark:bg-slate-800">
-                                                            <FileText className="h-5 w-5 text-slate-500 dark:text-slate-300" />
-                                                            <span className="max-w-[100px] truncate text-xs text-slate-600 dark:text-slate-300" title={att.name}>{att.name}</span>
-                                                            <button
-                                                                onClick={() => removeAttachment(idx)}
-                                                                className="absolute right-1 top-1 rounded-full p-1 transition-colors hover:bg-slate-200 dark:hover:bg-slate-600"
-                                                            >
-                                                                <X className="h-3 w-3 text-slate-500 dark:text-slate-300" />
-                                                            </button>
-                                                        </div>
-                                                    )
-                                                ))}
-                                            </div>
-                                        )}
-
-                                        <div className="relative flex items-end gap-2 rounded-xl border border-[color:var(--border)] bg-white/95 p-2 transition-all focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/30 dark:bg-slate-800/80">
-                                            <input
-                                                type="file"
-                                                multiple
-                                                ref={fileInputRef}
-                                                className="hidden"
-                                                onChange={handleFileSelect}
-                                                accept="image/*,application/pdf,text/*,.txt,.md,.json,.ts,.js"
-                                            />
-                                            <button
-                                                onClick={() => fileInputRef.current?.click()}
-                                                className="mb-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 dark:text-slate-300 dark:hover:bg-blue-900/20"
-                                                title="Attach files"
-                                            >
-                                                <Paperclip className="w-5 h-5" />
-                                            </button>
-
-                                            <textarea
-                                                value={input}
-                                                onChange={(e) => {
-                                                    setInput(e.target.value);
-                                                    e.target.style.height = 'auto';
-                                                    e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
-                                                }}
-                                                onKeyDown={(e) => {
-                                                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
-                                                }}
-                                                onPaste={handlePaste}
-                                                placeholder={`Describe architecture goals, module boundaries, contracts, risks, or attach documents for ${project.name}...`}
-                                                disabled={isGenerating}
-                                                rows={1}
-                                                className="min-h-[40px] max-h-[150px] flex-1 resize-none overflow-hidden border-none bg-transparent p-2 text-slate-900 focus:outline-none focus:ring-0 dark:text-slate-100"
-                                            />
-
-                                            <button
-                                                onClick={() => handleSend()}
-                                                disabled={isGenerating || (!isLoading && !input.trim() && pendingAttachments.length === 0)}
-                                                className="fc-button-primary mb-1 rounded-lg p-2 disabled:cursor-not-allowed disabled:opacity-50"
-                                            >
-                                                {isLoading ? <Square className="w-5 h-5" /> : <Send className="w-5 h-5" />}
-                                            </button>
+                                                        <button
+                                                            onClick={() => removeAttachment(idx)}
+                                                            className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                                                        >
+                                                            <X className="w-3 h-3" />
+                                                        </button>
+                                                        <span className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] text-center truncate px-1 py-0.5 rounded-b-xl">{att.name}</span>
+                                                    </div>
+                                                ) : (
+                                                    <div key={idx} className="relative group flex shrink-0 items-center gap-2 rounded-xl border border-[color:var(--border)] bg-slate-100 p-2 pr-8 dark:bg-slate-800">
+                                                        <FileText className="h-5 w-5 text-slate-500 dark:text-slate-300" />
+                                                        <span className="max-w-[100px] truncate text-xs text-slate-600 dark:text-slate-300" title={att.name}>{att.name}</span>
+                                                        <button
+                                                            onClick={() => removeAttachment(idx)}
+                                                            className="absolute right-1 top-1 rounded-full p-1 transition-colors hover:bg-slate-200 dark:hover:bg-slate-600"
+                                                        >
+                                                            <X className="h-3 w-3 text-slate-500 dark:text-slate-300" />
+                                                        </button>
+                                                    </div>
+                                                )
+                                            ))}
                                         </div>
-                                        {isLoading && (
-                                            <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                                AI is responding. Press the square button to stop and ask a new question.
-                                            </p>
-                                        )}
+                                    )}
+
+                                    <div className="relative flex items-end gap-2 rounded-xl border border-[color:var(--border)] bg-white/95 p-2 transition-all focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/30 dark:bg-slate-800/80">
+                                        <input
+                                            type="file"
+                                            multiple
+                                            ref={fileInputRef}
+                                            className="hidden"
+                                            onChange={handleFileSelect}
+                                            accept="image/*,application/pdf,text/*,.txt,.md,.json,.ts,.js"
+                                        />
+                                        <button
+                                            onClick={() => fileInputRef.current?.click()}
+                                            className="mb-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 dark:text-slate-300 dark:hover:bg-blue-900/20"
+                                            title="Attach files"
+                                        >
+                                            <Paperclip className="w-5 h-5" />
+                                        </button>
+
+                                        <textarea
+                                            value={input}
+                                            onChange={(e) => {
+                                                setInput(e.target.value);
+                                                e.target.style.height = 'auto';
+                                                e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+                                            }}
+                                            onPaste={handlePaste}
+                                            placeholder={generation
+                                                ? `Describe changes, review concerns, or implementation direction updates for ${project.name}...`
+                                                : `Describe architecture goals, module boundaries, contracts, risks, or attach documents for ${project.name}...`}
+                                            disabled={isGenerating}
+                                            rows={1}
+                                            className="min-h-[40px] max-h-[150px] flex-1 resize-none overflow-hidden border-none bg-transparent p-2 text-slate-900 focus:outline-none focus:ring-0 dark:text-slate-100"
+                                        />
+
+                                        <button
+                                            onClick={() => handleSend()}
+                                            disabled={isGenerating || (!isLoading && !input.trim() && pendingAttachments.length === 0)}
+                                            className="fc-button-primary mb-1 rounded-lg p-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {isLoading ? <Square className="w-5 h-5" /> : <Send className="w-5 h-5" />}
+                                        </button>
                                     </div>
-                                )}
+                                    {isLoading && (
+                                        <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
+                                            AI is responding. Press the square button to stop and ask a new question.
+                                        </p>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </div>

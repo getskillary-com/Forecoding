@@ -13,6 +13,7 @@ import type {
     ReadinessRequirementStatus,
     ReadinessCriterionStatus,
     ReadinessChecklist,
+    MinimumViableLoopChecklist,
     ReadinessOverride,
     ReadinessOverrideKey,
     ReviewFinding,
@@ -696,6 +697,113 @@ export function createReadinessChecklist(
         nextMilestone: blockingIssues[0] || "Run architecture review and proceed to scaffold when ready.",
         criteria,
         overrides: [...overrideIndex.values()]
+    };
+}
+
+export function createMinimumViableLoopChecklist(
+    pack: ArchitecturePack,
+    decisions: DecisionRecord[],
+    guardrails: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[] = []
+): MinimumViableLoopChecklist {
+    const overrideIndex = buildReadinessOverrideIndex(normalizeReadinessOverrides(readinessOverrides));
+    const meaningfulTargetUsers = countMeaningfulStrings(pack.businessContext.targetUsers, 3);
+    const meaningfulJourneys = countMeaningfulStrings(pack.businessContext.userJourneys, 8);
+    const coreShapeCount = Math.max(pack.boundedContexts.length, pack.moduleResponsibilities.length);
+    const decisionDepthCount = countMeaningfulDecisionRecords(decisions);
+    const nfrCount = countMeaningfulNonFunctionalRequirements(pack);
+    const keyScreenCount = countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4);
+
+    const requirements = [
+        buildReadinessRequirement({
+            key: "business_context.product_goal",
+            label: "Product goal",
+            satisfiedCount: Number(isMeaningfulText(pack.businessContext.productGoal, 8)),
+            requiredCount: 1,
+            missing: !isMeaningfulText(pack.businessContext.productGoal, 8) ? ["Define the core product goal."] : [],
+            override: overrideIndex.get("business_context.product_goal")
+        }),
+        buildReadinessRequirement({
+            key: "business_context.target_users",
+            label: "Target users",
+            satisfiedCount: meaningfulTargetUsers,
+            requiredCount: 1,
+            missing: meaningfulTargetUsers < 1 ? ["Define at least 1 concrete target user group."] : [],
+            override: overrideIndex.get("business_context.target_users")
+        }),
+        buildReadinessRequirement({
+            key: "business_context.user_journeys",
+            label: "Primary journey",
+            satisfiedCount: meaningfulJourneys,
+            requiredCount: 1,
+            missing: meaningfulJourneys < 1 ? ["Define at least 1 concrete happy-path user journey."] : [],
+            override: overrideIndex.get("business_context.user_journeys")
+        }),
+        buildReadinessRequirement({
+            key: "boundaries.module_responsibilities",
+            label: "Core system shape",
+            satisfiedCount: coreShapeCount,
+            requiredCount: 1,
+            missing: coreShapeCount < 1 ? ["Define at least 1 concrete system/module responsibility."] : [],
+            override: overrideIndex.get("boundaries.module_responsibilities")
+        }),
+        buildReadinessRequirement({
+            key: "decisions.decision_records",
+            label: "Key architecture decision",
+            satisfiedCount: decisionDepthCount,
+            requiredCount: 1,
+            missing: decisionDepthCount < 1 ? ["Record at least 1 architecture decision with rationale."] : [],
+            override: overrideIndex.get("decisions.decision_records")
+        }),
+        buildReadinessRequirement({
+            key: "decisions.non_functional_requirements",
+            label: "Non-functional requirement",
+            satisfiedCount: nfrCount,
+            requiredCount: 1,
+            missing: nfrCount < 1 ? ["Define at least 1 non-functional requirement."] : [],
+            override: overrideIndex.get("decisions.non_functional_requirements")
+        }),
+        buildReadinessRequirement({
+            key: "guardrails.implementation_order",
+            label: "Implementation order",
+            satisfiedCount: countMeaningfulStrings(guardrails.implementationOrder, 4),
+            requiredCount: 1,
+            missing: countMeaningfulStrings(guardrails.implementationOrder, 4) < 1 ? ["Define the first implementation step."] : [],
+            override: overrideIndex.get("guardrails.implementation_order")
+        }),
+        buildReadinessRequirement({
+            key: "guardrails.acceptance_criteria",
+            label: "Acceptance criteria",
+            satisfiedCount: countMeaningfulStrings(guardrails.acceptanceCriteria, 4),
+            requiredCount: 1,
+            missing: countMeaningfulStrings(guardrails.acceptanceCriteria, 4) < 1 ? ["Define at least 1 acceptance criterion."] : [],
+            override: overrideIndex.get("guardrails.acceptance_criteria")
+        }),
+        buildReadinessRequirement({
+            key: "ui.key_screens",
+            label: "Key screens",
+            satisfiedCount: keyScreenCount,
+            requiredCount: 1,
+            missing: keyScreenCount < 1 ? ["Define at least 1 key screen."] : [],
+            override: overrideIndex.get("ui.key_screens")
+        })
+    ];
+
+    const satisfiedCount = requirements.filter((requirement) =>
+        requirement.status === "confirmed" || requirement.status === "waived"
+    ).length;
+    const totalRequired = requirements.length;
+    const score = totalRequired === 0 ? 0 : Math.round((satisfiedCount / totalRequired) * 100);
+    const blockingIssues = requirements
+        .filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
+        .map((requirement) => requirement.missing[0] || `Complete ${requirement.label}.`);
+
+    return {
+        ready: blockingIssues.length === 0,
+        score,
+        blockingIssues,
+        nextMilestone: blockingIssues[0] || "Run review and proceed to scaffold generation.",
+        requirements
     };
 }
 

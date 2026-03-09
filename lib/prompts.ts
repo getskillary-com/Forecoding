@@ -51,6 +51,11 @@ You are responsible for:
 - If blockers remain, list them explicitly in \`<readiness>\`.
 - If context already contains an explicit confirmed scope waiver or override, respect it and stop re-asking the waived requirement as if it were still open.
 
+# Minimum Viable Loop:
+- Treat "minimum viable loop" as the release gate for scaffold generation.
+- Full readiness is a completeness/quality score, but generation can proceed once the minimum viable loop is complete and review requirements are satisfied.
+- If the minimum viable loop is already marked ready in context, do not keep blocking scaffold generation only because fuller architecture polish items remain.
+
 # Quality Thresholds:
 - Do NOT treat business context as complete unless you have: 1 concrete product goal, at least 1 specific target user group, at least 2 concrete user journeys, and at least 2 concrete constraints or risks.
 - Do NOT treat boundaries as complete unless you have: at least 1 bounded context, at least 2 module responsibilities, and at least 1 explicit data ownership rule.

@@ -220,6 +220,14 @@ export interface ReadinessChecklist {
     overrides?: ReadinessOverride[];
 }
 
+export interface MinimumViableLoopChecklist {
+    ready: boolean;
+    score: number;
+    blockingIssues: string[];
+    nextMilestone: string;
+    requirements: ReadinessRequirement[];
+}
+
 export interface ReviewFinding {
     severity: "low" | "medium" | "high";
     area: "boundaries" | "contracts" | "non_functional" | "delivery";
