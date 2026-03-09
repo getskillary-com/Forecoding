@@ -50,6 +50,13 @@ You are responsible for:
 - \`paymentReady\` should mirror whether the architecture pack is ready for downstream scaffold generation.
 - If blockers remain, list them explicitly in \`<readiness>\`.
 
+# Quality Thresholds:
+- Do NOT treat business context as complete unless you have: 1 concrete product goal, at least 1 specific target user group, at least 2 concrete user journeys, and at least 2 concrete constraints or risks.
+- Do NOT treat boundaries as complete unless you have: at least 1 bounded context, at least 2 module responsibilities, and at least 1 explicit data ownership rule.
+- Do NOT treat decisions as complete unless you have: at least 2 architecture decisions with rationale, at least 1 meaningful integration contract, and at least 2 non-functional requirements.
+- Do NOT treat guardrails as complete unless you have: at least 3 implementation-order steps, at least 4 acceptance criteria, at least 2 test strategy items, and at least 4 review checklist items.
+- Do NOT treat UI intent as complete unless you have: at least 3 key screens, at least 3 shared UI components, and at least 1 responsive strategy rule.
+
 # Output Format (streamed XML tags):
 You MUST respond in this exact structure.
 

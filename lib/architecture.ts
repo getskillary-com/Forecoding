@@ -6,6 +6,9 @@ import type {
     DecisionRecord,
     GuardrailChecklist,
     Message,
+    ReadinessCriterion,
+    ReadinessCriterionKey,
+    ReadinessCriterionStatus,
     ReadinessChecklist,
     ReviewFinding,
     SourceArtifact,
@@ -45,6 +48,8 @@ function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return `${text.slice(0, maxChars)}...`;
 }
+
+const READINESS_PLACEHOLDER_PATTERN = /^(tbd|todo|unknown|n\/a|na|none|phase|item|items|thing|things|screen|screens|module|modules|component|components|user|users|journey|journeys|constraint|constraints|risk|risks|decision|decisions|contract|contracts|checklist)$/i;
 
 const SOURCE_ARTIFACT_SUMMARY_CHARS = 220;
 const SOURCE_ARTIFACT_EXCERPT_CHARS = 2400;
@@ -257,6 +262,70 @@ export function normalizeGuardrailChecklist(value: unknown): GuardrailChecklist 
     };
 }
 
+function isMeaningfulText(value: unknown, minChars: number = 4) {
+    const normalized = normalizeString(value);
+    if (!normalized) return false;
+    if (normalized.length < minChars) return false;
+    if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(normalized)) return false;
+    if (READINESS_PLACEHOLDER_PATTERN.test(normalized)) return false;
+    return true;
+}
+
+function countMeaningfulStrings(values: string[], minChars: number = 4) {
+    return values.filter((value) => isMeaningfulText(value, minChars)).length;
+}
+
+function countMeaningfulDecisionRecords(records: DecisionRecord[]) {
+    return records.filter((record) =>
+        isMeaningfulText(record.title, 4) &&
+        isMeaningfulText(record.decision, 6) &&
+        isMeaningfulText(record.rationale, 12)
+    ).length;
+}
+
+function countMeaningfulIntegrationContracts(pack: ArchitecturePack) {
+    return pack.integrationContracts.filter((contract) =>
+        isMeaningfulText(contract.name, 4) &&
+        (
+            (isMeaningfulText(contract.producer, 3) && isMeaningfulText(contract.consumer, 3)) ||
+            isMeaningfulText(contract.payload, 8)
+        )
+    ).length;
+}
+
+function countMeaningfulNonFunctionalRequirements(pack: ArchitecturePack) {
+    return pack.nonFunctionalRequirements.filter((item) =>
+        isMeaningfulText(item.requirement, 8) &&
+        (isMeaningfulText(item.rationale, 8) || isMeaningfulText(item.category, 3))
+    ).length;
+}
+
+function buildReadinessCriterion(input: {
+    key: ReadinessCriterionKey;
+    label: string;
+    satisfiedCount: number;
+    requiredCount: number;
+    missing: string[];
+}): ReadinessCriterion {
+    const cappedSatisfiedCount = Math.max(0, Math.min(input.satisfiedCount, input.requiredCount));
+    let status: ReadinessCriterionStatus = "missing";
+
+    if (cappedSatisfiedCount >= input.requiredCount) {
+        status = "confirmed";
+    } else if (cappedSatisfiedCount > 0) {
+        status = "partial";
+    }
+
+    return {
+        key: input.key,
+        label: input.label,
+        status,
+        satisfiedCount: cappedSatisfiedCount,
+        requiredCount: input.requiredCount,
+        missing: input.missing
+    };
+}
+
 export function normalizeReviewFindings(value: unknown): ReviewFinding[] {
     return normalizeObjectList(value, (item) => {
         const severity = item.severity;
@@ -309,56 +378,111 @@ export function createReadinessChecklist(
     decisions: DecisionRecord[],
     guardrails: GuardrailChecklist
 ): ReadinessChecklist {
-    const blockingIssues: string[] = [];
+    const businessConstraintCount = countMeaningfulStrings([
+        ...pack.businessContext.constraints,
+        ...pack.businessContext.risks
+    ], 4);
+    const businessContext = buildReadinessCriterion({
+        key: "business_context",
+        label: "Business context",
+        satisfiedCount:
+            Number(isMeaningfulText(pack.businessContext.productGoal, 8)) +
+            Number(countMeaningfulStrings(pack.businessContext.targetUsers, 3) >= 1) +
+            Number(countMeaningfulStrings(pack.businessContext.userJourneys, 8) >= 2) +
+            Number(businessConstraintCount >= 2),
+        requiredCount: 4,
+        missing: [
+            !isMeaningfulText(pack.businessContext.productGoal, 8) ? "Define a concrete product goal." : "",
+            countMeaningfulStrings(pack.businessContext.targetUsers, 3) < 1 ? "Name at least 1 specific target user group." : "",
+            countMeaningfulStrings(pack.businessContext.userJourneys, 8) < 2 ? "Capture at least 2 concrete user journeys." : "",
+            businessConstraintCount < 2 ? "Capture at least 2 concrete constraints or risks." : ""
+        ].filter(Boolean)
+    });
 
-    if (!pack.businessContext.productGoal || pack.businessContext.targetUsers.length === 0 || pack.businessContext.userJourneys.length === 0) {
-        blockingIssues.push("Business context is incomplete. Define product goal, target users, and main user journey.");
-    }
+    const boundaries = buildReadinessCriterion({
+        key: "boundaries",
+        label: "System boundaries",
+        satisfiedCount:
+            Number(pack.boundedContexts.length >= 1) +
+            Number(pack.moduleResponsibilities.length >= 2) +
+            Number(pack.dataOwnership.length >= 1),
+        requiredCount: 3,
+        missing: [
+            pack.boundedContexts.length < 1 ? "Define at least 1 bounded context." : "",
+            pack.moduleResponsibilities.length < 2 ? "Define at least 2 concrete module responsibilities." : "",
+            pack.dataOwnership.length < 1 ? "Define at least 1 explicit data ownership rule." : ""
+        ].filter(Boolean)
+    });
 
-    if (pack.boundedContexts.length === 0 || pack.moduleResponsibilities.length === 0 || pack.dataOwnership.length === 0) {
-        blockingIssues.push("System boundaries are incomplete. Add bounded contexts, module responsibilities, and data ownership.");
-    }
+    const decisionDepthCount = countMeaningfulDecisionRecords(decisions);
+    const integrationContractCount = countMeaningfulIntegrationContracts(pack);
+    const nfrCount = countMeaningfulNonFunctionalRequirements(pack);
+    const decisionCriteria = buildReadinessCriterion({
+        key: "decisions",
+        label: "Architecture decisions",
+        satisfiedCount:
+            Number(decisionDepthCount >= 2) +
+            Number(integrationContractCount >= 1) +
+            Number(nfrCount >= 2),
+        requiredCount: 3,
+        missing: [
+            decisionDepthCount < 2 ? "Record at least 2 concrete architecture decisions with rationale." : "",
+            integrationContractCount < 1 ? "Define at least 1 meaningful integration contract." : "",
+            nfrCount < 2 ? "Define at least 2 non-functional requirements." : ""
+        ].filter(Boolean)
+    });
 
-    if (decisions.length === 0 || pack.integrationContracts.length === 0 || pack.nonFunctionalRequirements.length === 0) {
-        blockingIssues.push("Architecture decisions are incomplete. Add explicit decisions, contracts, and non-functional requirements.");
-    }
+    const guardrailCriteria = buildReadinessCriterion({
+        key: "guardrails",
+        label: "Delivery guardrails",
+        satisfiedCount:
+            Number(countMeaningfulStrings(guardrails.implementationOrder, 4) >= 3) +
+            Number(countMeaningfulStrings(guardrails.acceptanceCriteria, 4) >= 4) +
+            Number(countMeaningfulStrings(guardrails.testStrategy, 4) >= 2) +
+            Number(countMeaningfulStrings(guardrails.reviewChecklist, 4) >= 4),
+        requiredCount: 4,
+        missing: [
+            countMeaningfulStrings(guardrails.implementationOrder, 4) < 3 ? "Define at least 3 implementation-order steps." : "",
+            countMeaningfulStrings(guardrails.acceptanceCriteria, 4) < 4 ? "Define at least 4 acceptance criteria." : "",
+            countMeaningfulStrings(guardrails.testStrategy, 4) < 2 ? "Define at least 2 concrete test strategy items." : "",
+            countMeaningfulStrings(guardrails.reviewChecklist, 4) < 4 ? "Define at least 4 review checklist items." : ""
+        ].filter(Boolean)
+    });
 
-    if (
-        guardrails.implementationOrder.length === 0 ||
-        guardrails.acceptanceCriteria.length === 0 ||
-        guardrails.testStrategy.length === 0 ||
-        guardrails.reviewChecklist.length === 0
-    ) {
-        blockingIssues.push("Delivery guardrails are incomplete. Define implementation order, acceptance criteria, test strategy, and review checklist.");
-    }
+    const uiCriteria = buildReadinessCriterion({
+        key: "ui",
+        label: "Experience constraints",
+        satisfiedCount:
+            Number(countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4) >= 3) +
+            Number(countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4) >= 3) +
+            Number(countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4) >= 1),
+        requiredCount: 3,
+        missing: [
+            countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4) < 3 ? "Define at least 3 key screens." : "",
+            countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4) < 3 ? "Define at least 3 shared UI components." : "",
+            countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4) < 1 ? "Define at least 1 responsive strategy rule." : ""
+        ].filter(Boolean)
+    });
 
-    const uiReady =
-        pack.experienceConstraints.keyScreens.length > 0 &&
-        pack.experienceConstraints.uiComponents.length > 0 &&
-        pack.experienceConstraints.responsiveStrategy.length > 0;
-
-    if (!uiReady) {
-        blockingIssues.push("Experience constraints are incomplete. Define key screens, shared UI components, and responsive strategy.");
-    }
-
-    const completedSections = [
-        Number(Boolean(pack.businessContext.productGoal)),
-        Number(pack.businessContext.targetUsers.length > 0),
-        Number(pack.businessContext.userJourneys.length > 0),
-        Number(pack.boundedContexts.length > 0),
-        Number(pack.moduleResponsibilities.length > 0),
-        Number(pack.dataOwnership.length > 0),
-        Number(decisions.length > 0),
-        Number(pack.integrationContracts.length > 0),
-        Number(pack.nonFunctionalRequirements.length > 0),
-        Number(guardrails.implementationOrder.length > 0),
-        Number(guardrails.acceptanceCriteria.length > 0),
-        Number(guardrails.testStrategy.length > 0),
-        Number(guardrails.reviewChecklist.length > 0),
-        Number(uiReady)
+    const criteria = [
+        businessContext,
+        boundaries,
+        decisionCriteria,
+        guardrailCriteria,
+        uiCriteria
     ];
-    const score = Math.round((completedSections.reduce((sum, item) => sum + item, 0) / completedSections.length) * 100);
-    const functionalReady = blockingIssues.length === 0 || (blockingIssues.length === 1 && !uiReady);
+    const blockingIssues = criteria
+        .filter((criterion) => criterion.status !== "confirmed")
+        .map((criterion) => `${criterion.label} is incomplete. ${criterion.missing[0] || "Add more concrete detail."}`);
+    const totalSatisfied = criteria.reduce((sum, criterion) => sum + criterion.satisfiedCount, 0);
+    const totalRequired = criteria.reduce((sum, criterion) => sum + criterion.requiredCount, 0);
+    const score = totalRequired === 0 ? 0 : Math.round((totalSatisfied / totalRequired) * 100);
+    const functionalReady =
+        businessContext.status === "confirmed" &&
+        boundaries.status === "confirmed" &&
+        decisionCriteria.status === "confirmed" &&
+        guardrailCriteria.status === "confirmed";
+    const uiReady = uiCriteria.status === "confirmed";
 
     return {
         score,
@@ -366,7 +490,8 @@ export function createReadinessChecklist(
         uiReady,
         paymentReady: functionalReady && uiReady,
         blockingIssues,
-        nextMilestone: blockingIssues[0] || "Run architecture review and proceed to scaffold when ready."
+        nextMilestone: blockingIssues[0] || "Run architecture review and proceed to scaffold when ready.",
+        criteria
     };
 }
 
@@ -376,23 +501,24 @@ export function inferArchitectureStage(
     guardrails: GuardrailChecklist,
     reviewApproved: boolean = false
 ): ArchitectureStage {
-    if (!pack.businessContext.productGoal || pack.businessContext.targetUsers.length === 0 || pack.businessContext.userJourneys.length === 0) {
+    const readiness = createReadinessChecklist(pack, decisions, guardrails);
+    const criterionByKey = new Map(readiness.criteria.map((criterion) => [criterion.key, criterion]));
+
+    if (criterionByKey.get("business_context")?.status !== "confirmed") {
         return "context";
     }
 
-    if (pack.boundedContexts.length === 0 || pack.moduleResponsibilities.length === 0 || pack.dataOwnership.length === 0) {
+    if (criterionByKey.get("boundaries")?.status !== "confirmed") {
         return "boundaries";
     }
 
-    if (decisions.length === 0 || pack.integrationContracts.length === 0 || pack.nonFunctionalRequirements.length === 0) {
+    if (criterionByKey.get("decisions")?.status !== "confirmed") {
         return "decisions";
     }
 
     if (
-        guardrails.implementationOrder.length === 0 ||
-        guardrails.acceptanceCriteria.length === 0 ||
-        guardrails.testStrategy.length === 0 ||
-        guardrails.reviewChecklist.length === 0
+        criterionByKey.get("guardrails")?.status !== "confirmed" ||
+        criterionByKey.get("ui")?.status !== "confirmed"
     ) {
         return "guardrails";
     }

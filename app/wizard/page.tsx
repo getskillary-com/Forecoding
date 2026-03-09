@@ -159,15 +159,6 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     statesAndFeedback: "States and feedback"
 };
 
-const ARCHITECTURE_STAGE_SCORE_FLOOR: Record<ArchitectureStage, number> = {
-    context: 15,
-    boundaries: 35,
-    decisions: 55,
-    guardrails: 75,
-    review: 90,
-    ready_to_generate: 100
-};
-
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
     if (!Array.isArray(value)) return [];
     const dedupe = new Set<string>();
@@ -462,8 +453,7 @@ function normalizeEvaluation(value: EvaluationResponse | null | undefined): Eval
     const guardrailDrafts = normalizeGuardrailChecklist(value.guardrailDrafts);
     const stage = normalizeArchitectureStage(value.stage, architecturePackDraft, decisionDrafts, guardrailDrafts, false);
     const readiness = applyArchitectureStageScoreFloor(
-        normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts),
-        stage
+        normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts)
     );
     return {
         ...value,
@@ -519,33 +509,13 @@ function normalizeArchitectureStage(
     guardrailChecklist: GuardrailChecklist,
     reviewApproved: boolean
 ): ArchitectureStage {
-    if (
-        value === "context" ||
-        value === "boundaries" ||
-        value === "decisions" ||
-        value === "guardrails" ||
-        value === "review" ||
-        value === "ready_to_generate"
-    ) {
-        const inferred = inferArchitectureStage(architecturePack, decisionRecords, guardrailChecklist, reviewApproved);
-        return ARCHITECTURE_STAGE_SCORE_FLOOR[value] >= ARCHITECTURE_STAGE_SCORE_FLOOR[inferred]
-            ? value
-            : inferred;
-    }
-
     return inferArchitectureStage(architecturePack, decisionRecords, guardrailChecklist, reviewApproved);
 }
 
 function applyArchitectureStageScoreFloor(
-    readiness: ReadinessChecklist,
-    stage: ArchitectureStage
+    readiness: ReadinessChecklist
 ): ReadinessChecklist {
-    const floor = ARCHITECTURE_STAGE_SCORE_FLOOR[stage];
-    if (readiness.score >= floor) return readiness;
-    return {
-        ...readiness,
-        score: floor
-    };
+    return readiness;
 }
 
 function normalizeReadiness(
@@ -722,10 +692,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         guardrailChecklist,
         scaffoldEligibility.reviewState === "approved_review"
     );
-    const readiness = applyArchitectureStageScoreFloor(
-        scaffoldEligibility.readiness,
-        architectureStage
-    );
+    const readiness = applyArchitectureStageScoreFloor(scaffoldEligibility.readiness);
     const rawStoredStage = (data as { designStage?: unknown } | null | undefined)?.designStage;
     const hasLegacyUiStage = rawStoredStage === "ui_design";
     const designStage = hasLegacyUiStage
@@ -1370,6 +1337,7 @@ function buildDesignMemory(
     maxChars: number = EVALUATE_DESIGN_MEMORY_CHARS
 ) {
     const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
+    const readiness = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist);
     const clarified = normalizedAnalysis.clarified;
     const resolvedConfirmations = buildResolvedConfirmationLog(messages);
     const resolvedQuestionKeys = new Set(
@@ -1407,6 +1375,11 @@ function buildDesignMemory(
         "",
         "# Architecture Pack Snapshot",
         clipText(buildArchitecturePackScaffoldInput(architecturePack, decisionRecords, guardrailChecklist), 5000),
+        "",
+        "# Readiness Criteria",
+        readiness.criteria
+            .map((criterion) => `- ${criterion.label}: ${criterion.status} (${criterion.satisfiedCount}/${criterion.requiredCount})${criterion.missing.length > 0 ? ` | Missing: ${criterion.missing.join(" ; ")}` : ""}`)
+            .join("\n"),
         "",
         "# UI Requirement Profile",
         ...UI_REQUIREMENT_KEYS.map((key) => {
@@ -2022,10 +1995,7 @@ function WizardContent() {
             guardrailChecklist,
             nextScaffoldEligibility.reviewState === "approved_review"
         );
-        const nextArchitectureReadiness = applyArchitectureStageScoreFloor(
-            nextScaffoldEligibility.readiness,
-            nextArchitectureStage
-        );
+        const nextArchitectureReadiness = applyArchitectureStageScoreFloor(nextScaffoldEligibility.readiness);
         const architectureReadinessChanged =
             JSON.stringify(nextArchitectureReadiness) !== JSON.stringify(architectureReadiness);
         const architectureStageChanged = nextArchitectureStage !== architectureStage;

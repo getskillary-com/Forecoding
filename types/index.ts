@@ -140,6 +140,27 @@ export interface GuardrailChecklist {
     reviewChecklist: string[];
 }
 
+export type ReadinessCriterionKey =
+    | "business_context"
+    | "boundaries"
+    | "decisions"
+    | "guardrails"
+    | "ui";
+
+export type ReadinessCriterionStatus =
+    | "missing"
+    | "partial"
+    | "confirmed";
+
+export interface ReadinessCriterion {
+    key: ReadinessCriterionKey;
+    label: string;
+    status: ReadinessCriterionStatus;
+    satisfiedCount: number;
+    requiredCount: number;
+    missing: string[];
+}
+
 export interface ReadinessChecklist {
     score: number;
     functionalReady: boolean;
@@ -147,6 +168,7 @@ export interface ReadinessChecklist {
     paymentReady: boolean;
     blockingIssues: string[];
     nextMilestone: string;
+    criteria: ReadinessCriterion[];
 }
 
 export interface ReviewFinding {
