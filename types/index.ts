@@ -147,10 +147,56 @@ export type ReadinessCriterionKey =
     | "guardrails"
     | "ui";
 
+export type ReadinessRequirementKey =
+    | "business_context.product_goal"
+    | "business_context.target_users"
+    | "business_context.user_journeys"
+    | "business_context.constraints_or_risks"
+    | "boundaries.bounded_contexts"
+    | "boundaries.module_responsibilities"
+    | "boundaries.data_ownership"
+    | "decisions.decision_records"
+    | "decisions.integration_contracts"
+    | "decisions.non_functional_requirements"
+    | "guardrails.implementation_order"
+    | "guardrails.acceptance_criteria"
+    | "guardrails.test_strategy"
+    | "guardrails.review_checklist"
+    | "ui.key_screens"
+    | "ui.shared_components"
+    | "ui.responsive_strategy";
+
+export type ReadinessOverrideKey =
+    | "single_screen_experience";
+
+export type ReadinessRequirementStatus =
+    | "missing"
+    | "partial"
+    | "confirmed"
+    | "waived";
+
 export type ReadinessCriterionStatus =
     | "missing"
     | "partial"
     | "confirmed";
+
+export interface ReadinessOverride {
+    key: ReadinessOverrideKey;
+    requirementKey: ReadinessRequirementKey;
+    rationale: string;
+    createdAt?: number;
+}
+
+export interface ReadinessRequirement {
+    key: ReadinessRequirementKey;
+    label: string;
+    status: ReadinessRequirementStatus;
+    satisfiedCount: number;
+    requiredCount: number;
+    missing: string[];
+    overrideKey?: ReadinessOverrideKey;
+    overrideReason?: string;
+}
 
 export interface ReadinessCriterion {
     key: ReadinessCriterionKey;
@@ -159,6 +205,8 @@ export interface ReadinessCriterion {
     satisfiedCount: number;
     requiredCount: number;
     missing: string[];
+    requirements: ReadinessRequirement[];
+    overrideApplied?: boolean;
 }
 
 export interface ReadinessChecklist {
@@ -169,6 +217,7 @@ export interface ReadinessChecklist {
     blockingIssues: string[];
     nextMilestone: string;
     criteria: ReadinessCriterion[];
+    overrides?: ReadinessOverride[];
 }
 
 export interface ReviewFinding {
@@ -260,7 +309,10 @@ export interface Analysis {
 export type MessageAction =
     | "send_message"
     | "generate_scaffold"
-    | "run_review";
+    | "run_review"
+    | "focus_requirement"
+    | "fill_requirement"
+    | "show_blockers";
 
 export type MessageQuestionStatus =
     | "pending"
@@ -272,6 +324,7 @@ export interface MessageOption {
     value: string;
     action?: MessageAction;
     questionKey?: string | null;
+    requirementKey?: ReadinessRequirementKey | null;
     stale?: boolean;
 }
 
@@ -394,6 +447,7 @@ export interface Message {
     questionKey?: string | null;
     questionStatus?: MessageQuestionStatus | null;
     questionAction?: MessageAction | null;
+    questionRequirementKey?: ReadinessRequirementKey | null;
     answeredQuestionKey?: string | null;
     triggeredAction?: MessageAction | null;
 }
@@ -427,6 +481,7 @@ export interface ProjectVersionData {
     guardrailChecklist?: GuardrailChecklist;
     reviewHistory?: ArchitectureReviewResult[];
     architectureStage?: ArchitectureStage;
+    readinessOverrides?: ReadinessOverride[];
 }
 
 // Represents a specific snapshot/iteration of a project

@@ -17,6 +17,8 @@ import {
     DesignStage,
     GuardrailChecklist,
     ReadinessChecklist,
+    ReadinessOverride,
+    ReadinessRequirementKey,
     ReviewFinding,
     SourceArtifact,
     UiDesignState,
@@ -76,11 +78,14 @@ import {
     buildArchitecturePackScaffoldInput,
     createReadinessChecklist,
     extractSourceArtifacts,
+    findReadinessRequirement,
+    getPrimaryIncompleteReadinessRequirement,
     inferArchitectureStage,
     normalizeArchitecturePack,
     normalizeArchitectureReviewHistory,
     normalizeDecisionRecords,
     normalizeGuardrailChecklist,
+    normalizeReadinessOverrides,
     normalizeReviewFindings,
     seedArchitecturePackFromAnalysis
 } from "@/lib/architecture";
@@ -175,9 +180,39 @@ function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
 }
 
 function normalizeMessageAction(value: unknown): MessageAction | null {
-    return value === "generate_scaffold" || value === "run_review" || value === "send_message"
+    return value === "generate_scaffold" ||
+        value === "run_review" ||
+        value === "send_message" ||
+        value === "focus_requirement" ||
+        value === "fill_requirement" ||
+        value === "show_blockers"
         ? value
         : null;
+}
+
+function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementKey | null {
+    switch (value) {
+        case "business_context.product_goal":
+        case "business_context.target_users":
+        case "business_context.user_journeys":
+        case "business_context.constraints_or_risks":
+        case "boundaries.bounded_contexts":
+        case "boundaries.module_responsibilities":
+        case "boundaries.data_ownership":
+        case "decisions.decision_records":
+        case "decisions.integration_contracts":
+        case "decisions.non_functional_requirements":
+        case "guardrails.implementation_order":
+        case "guardrails.acceptance_criteria":
+        case "guardrails.test_strategy":
+        case "guardrails.review_checklist":
+        case "ui.key_screens":
+        case "ui.shared_components":
+        case "ui.responsive_strategy":
+            return value;
+        default:
+            return null;
+    }
 }
 
 function normalizeMessageQuestionStatus(value: unknown): MessageQuestionStatus | null {
@@ -241,6 +276,7 @@ function normalizeMessageOptionValue(value: unknown): MessageOption | null {
         questionKey: typeof candidate.questionKey === "string" && candidate.questionKey.trim()
             ? normalizeQuestionKey(candidate.questionKey)
             : undefined,
+        requirementKey: normalizeReadinessRequirementKey(candidate.requirementKey) ?? undefined,
         stale: candidate.stale === true ? true : undefined
     };
 }
@@ -269,6 +305,9 @@ function normalizeMessageValue(value: unknown): Message | null {
     const inferredQuestionAction =
         normalizeMessageAction(candidate.questionAction) ??
         (looksLikeTrackedQuestion && content.trim() ? inferQuestionAction(content) ?? undefined : undefined);
+    const inferredQuestionRequirementKey =
+        normalizeReadinessRequirementKey(candidate.questionRequirementKey) ??
+        undefined;
     const options = Array.isArray(candidate.options)
         ? candidate.options.reduce<MessageOption[]>((acc, option) => {
             const normalizedOption = normalizeMessageOptionValue(option);
@@ -277,7 +316,8 @@ function normalizeMessageValue(value: unknown): Message | null {
             acc.push({
                 ...normalizedOption,
                 action: resolveOptionAction(normalizedOption, inferredQuestionAction ?? null) ?? undefined,
-                questionKey: inferredQuestionKey ?? normalizedOption.questionKey ?? undefined
+                questionKey: inferredQuestionKey ?? normalizedOption.questionKey ?? undefined,
+                requirementKey: inferredQuestionRequirementKey ?? normalizedOption.requirementKey ?? undefined
             });
             return acc;
         }, [])
@@ -294,6 +334,7 @@ function normalizeMessageValue(value: unknown): Message | null {
         questionKey: inferredQuestionKey,
         questionStatus: inferredQuestionStatus,
         questionAction: inferredQuestionAction,
+        questionRequirementKey: inferredQuestionRequirementKey,
         answeredQuestionKey: typeof candidate.answeredQuestionKey === "string" && candidate.answeredQuestionKey.trim()
             ? normalizeQuestionKey(candidate.answeredQuestionKey)
             : undefined,
@@ -324,6 +365,10 @@ function isAffirmativeForAction(value: string, action: MessageAction | null) {
 
     if (action === "run_review") {
         return RUN_REVIEW_PATTERN.test(value) || AFFIRMATIVE_RESPONSE_PATTERN.test(value);
+    }
+
+    if (action === "fill_requirement" || action === "focus_requirement" || action === "show_blockers") {
+        return AFFIRMATIVE_RESPONSE_PATTERN.test(value);
     }
 
     return false;
@@ -445,15 +490,25 @@ function normalizeAnalysis(raw: EvaluationResponse["analysis"] | null | undefine
     };
 }
 
-function normalizeEvaluation(value: EvaluationResponse | null | undefined): EvaluationResponse | null {
+function normalizeEvaluation(
+    value: EvaluationResponse | null | undefined,
+    readinessOverrides: ReadinessOverride[] = []
+): EvaluationResponse | null {
     if (!value || typeof value !== "object") return null;
     const analysis = normalizeAnalysis(value.analysis);
     const architecturePackDraft = normalizeArchitecturePack(value.architecturePackDraft, analysis.ui);
     const decisionDrafts = normalizeDecisionRecords(value.decisionDrafts);
     const guardrailDrafts = normalizeGuardrailChecklist(value.guardrailDrafts);
-    const stage = normalizeArchitectureStage(value.stage, architecturePackDraft, decisionDrafts, guardrailDrafts, false);
+    const stage = normalizeArchitectureStage(
+        value.stage,
+        architecturePackDraft,
+        decisionDrafts,
+        guardrailDrafts,
+        false,
+        readinessOverrides
+    );
     const readiness = applyArchitectureStageScoreFloor(
-        normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts)
+        normalizeReadiness(value.readiness, architecturePackDraft, decisionDrafts, guardrailDrafts, readinessOverrides)
     );
     return {
         ...value,
@@ -507,9 +562,16 @@ function normalizeArchitectureStage(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
-    reviewApproved: boolean
+    reviewApproved: boolean,
+    readinessOverrides: ReadinessOverride[] = []
 ): ArchitectureStage {
-    return inferArchitectureStage(architecturePack, decisionRecords, guardrailChecklist, reviewApproved);
+    return inferArchitectureStage(
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        reviewApproved,
+        readinessOverrides
+    );
 }
 
 function applyArchitectureStageScoreFloor(
@@ -522,9 +584,10 @@ function normalizeReadiness(
     value: unknown,
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
-    guardrailChecklist: GuardrailChecklist
+    guardrailChecklist: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[] = []
 ): ReadinessChecklist {
-    const fallback = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist);
+    const fallback = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist, readinessOverrides);
     if (!value || typeof value !== "object") return fallback;
     const candidate = value as Partial<ReadinessChecklist>;
     return {
@@ -668,7 +731,8 @@ function normalizeSourceArtifacts(value: unknown): SourceArtifact[] {
 
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
     const messages = normalizeMessages(data?.messages);
-    const evaluation = normalizeEvaluation(data?.evaluation ?? null);
+    const readinessOverrides = normalizeReadinessOverrides(data?.readinessOverrides);
+    const evaluation = normalizeEvaluation(data?.evaluation ?? null, readinessOverrides);
     const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
     const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
     const architecturePack = normalizeArchitecturePack(
@@ -683,6 +747,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         architecturePack,
         decisionRecords,
         guardrailChecklist,
+        readinessOverrides,
         reviewHistory
     });
     const architectureStage = normalizeArchitectureStage(
@@ -690,7 +755,8 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        scaffoldEligibility.reviewState === "approved_review"
+        scaffoldEligibility.reviewState === "approved_review",
+        readinessOverrides
     );
     const readiness = applyArchitectureStageScoreFloor(scaffoldEligibility.readiness);
     const rawStoredStage = (data as { designStage?: unknown } | null | undefined)?.designStage;
@@ -720,6 +786,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         sourceArtifacts,
         architectureStage,
         readiness,
+        readinessOverrides,
         functionalLockedAt,
         uiReadyAt
     };
@@ -1159,14 +1226,199 @@ function buildCommonFallbackOptions(
     ];
 }
 
+function getReadinessRequirementLabel(
+    requirementKey: ReadinessRequirementKey,
+    language: "zh" | "en"
+) {
+    const labels: Record<ReadinessRequirementKey, { zh: string; en: string }> = {
+        "business_context.product_goal": { zh: "产品目标", en: "product goal" },
+        "business_context.target_users": { zh: "目标用户", en: "target users" },
+        "business_context.user_journeys": { zh: "用户旅程", en: "user journeys" },
+        "business_context.constraints_or_risks": { zh: "约束与风险", en: "constraints and risks" },
+        "boundaries.bounded_contexts": { zh: "限界上下文", en: "bounded contexts" },
+        "boundaries.module_responsibilities": { zh: "模块职责", en: "module responsibilities" },
+        "boundaries.data_ownership": { zh: "数据归属", en: "data ownership" },
+        "decisions.decision_records": { zh: "架构决策", en: "architecture decisions" },
+        "decisions.integration_contracts": { zh: "集成契约", en: "integration contracts" },
+        "decisions.non_functional_requirements": { zh: "非功能性需求", en: "non-functional requirements" },
+        "guardrails.implementation_order": { zh: "实现顺序", en: "implementation order" },
+        "guardrails.acceptance_criteria": { zh: "验收标准", en: "acceptance criteria" },
+        "guardrails.test_strategy": { zh: "测试策略", en: "test strategy" },
+        "guardrails.review_checklist": { zh: "审核清单", en: "review checklist" },
+        "ui.key_screens": { zh: "关键界面", en: "key screens" },
+        "ui.shared_components": { zh: "共享 UI 组件", en: "shared UI components" },
+        "ui.responsive_strategy": { zh: "响应式策略", en: "responsive strategy" }
+    };
+
+    return labels[requirementKey][language];
+}
+
+function isSingleScreenScopeCandidate(
+    architecturePack: ArchitecturePack,
+    messages: Message[]
+) {
+    const keyScreenCount = architecturePack.experienceConstraints.keyScreens.filter((item) => item.trim().length > 0).length;
+    if (keyScreenCount !== 1) return false;
+
+    const messageContext = messages
+        .slice(-12)
+        .map((message) => message.content)
+        .join(" ");
+
+    return /single screen|only the main|main calculator interface|only one screen|一个主界面|单屏|只有.*界面|仅需.*界面/i.test(messageContext) ||
+        /calculator|计算器/i.test(`${architecturePack.businessContext.productGoal} ${architecturePack.experienceConstraints.keyScreens.join(" ")}`);
+}
+
+function buildFocusedRequirementQuestion(
+    language: "zh" | "en",
+    requirementKey: ReadinessRequirementKey,
+    architecturePack: ArchitecturePack,
+    messages: Message[]
+) {
+    if (requirementKey === "decisions.non_functional_requirements") {
+        const content = language === "zh"
+            ? `当前判断：
+- 现在只缺一个额外的非功能性需求就能通过当前门槛。
+- 对这个计算器类产品，我推荐补充“准确性”，因为它直接决定计算结果是否可靠。
+
+需要确认：
+是否按推荐把“准确性”加入架构包？`
+            : `Current view:
+- You only need one more non-functional requirement to clear the current gate.
+- For a calculator-style product, I recommend adding accuracy because reliable results are core to the product.
+
+Please confirm:
+Should I add accuracy to the architecture pack now?`;
+
+        const questionText = language === "zh"
+            ? "是否按推荐把“准确性”加入架构包？"
+            : "Should I add accuracy to the architecture pack now?";
+
+        return {
+            content,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐添加准确性", value: "请按推荐添加准确性。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来指定其他需求", value: "我来指定另一个非功能性需求。" },
+                    { label: "列出当前阻塞项", value: "请列出当前阻塞项。", action: "show_blockers" as const, requirementKey }
+                ]
+                : [
+                    { label: "Add accuracy", value: "Add accuracy as recommended.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will specify another one", value: "I will specify a different non-functional requirement." },
+                    { label: "List blockers", value: "List the current blockers.", action: "show_blockers" as const, requirementKey }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)) {
+        const content = language === "zh"
+            ? `当前判断：
+- 你已经明确这是一个单屏工作流产品，只有主计算界面是有意为之。
+- 对这种范围较窄的工具型产品，更合理的做法是应用“单屏例外”，而不是强行补出 3 个伪界面。
+
+需要确认：
+是否按推荐应用单屏例外，并放行这个 UI 门槛？`
+            : `Current view:
+- You already defined this as an intentional single-screen workflow.
+- For a narrow utility product, the better default is to apply a single-screen exception instead of inventing fake supporting screens.
+
+Please confirm:
+Should I apply the single-screen exception and waive this UI threshold?`;
+
+        const questionText = language === "zh"
+            ? "是否按推荐应用单屏例外，并放行这个 UI 门槛？"
+            : "Should I apply the single-screen exception and waive this UI threshold?";
+
+        return {
+            content,
+            options: language === "zh"
+                ? [
+                    { label: "应用单屏例外", value: "请应用单屏例外。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来手动定义屏幕", value: "我来手动定义关键界面。" },
+                    { label: "列出当前阻塞项", value: "请列出当前阻塞项。", action: "show_blockers" as const, requirementKey }
+                ]
+                : [
+                    { label: "Apply single-screen exception", value: "Apply the single-screen exception.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define screens manually", value: "I will define the key screens manually." },
+                    { label: "List blockers", value: "List the current blockers.", action: "show_blockers" as const, requirementKey }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    const label = getReadinessRequirementLabel(requirementKey, language);
+    const content = language === "zh"
+        ? `当前判断：
+- 当前主要缺口是“${label}”。
+- 我建议先把这一项补齐，因为它是现在最直接的阻塞项。
+
+需要确认：
+是否先集中补齐这个缺口？`
+        : `Current view:
+- The primary gap right now is ${label}.
+- I recommend fixing this first because it is the most direct blocker.
+
+Please confirm:
+Should we focus on this gap first?`;
+    const questionText = language === "zh" ? "是否先集中补齐这个缺口？" : "Should we focus on this gap first?";
+
+    return {
+        content,
+        options: language === "zh"
+            ? [
+                { label: "按推荐继续", value: "按推荐继续补齐这个缺口。", action: "fill_requirement" as const, requirementKey },
+                { label: "列出当前阻塞项", value: "请列出所有当前阻塞项。", action: "show_blockers" as const, requirementKey },
+                { label: "我来手动补充", value: `我来手动补充${label}。` }
+            ]
+            : [
+                { label: "Proceed with recommendation", value: "Proceed with the recommended fix.", action: "fill_requirement" as const, requirementKey },
+                { label: "List blockers", value: "List all current blockers.", action: "show_blockers" as const, requirementKey },
+                { label: "I will fill it manually", value: `I will fill ${label} manually.` }
+            ],
+        questionKey: normalizeQuestionKey(questionText),
+        questionAction: "fill_requirement" as const,
+        questionRequirementKey: requirementKey
+    };
+}
+
+function buildBlockersSummary(
+    language: "zh" | "en",
+    readiness: ReadinessChecklist
+) {
+    const incompleteRequirements = readiness.criteria.flatMap((criterion) =>
+        criterion.requirements.filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
+    );
+
+    if (incompleteRequirements.length === 0) {
+        return language === "zh" ? "当前没有未完成的 readiness 阻塞项。" : "There are no remaining readiness blockers.";
+    }
+
+    const lines = incompleteRequirements
+        .slice(0, 6)
+        .map((requirement) => `- ${getReadinessRequirementLabel(requirement.key, language)}: ${requirement.missing[0] || "Needs more detail."}`);
+
+    return [
+        language === "zh" ? "当前阻塞项：" : "Current blockers:",
+        ...lines
+    ].join("\n");
+}
+
 function buildBlockedGenerateQuestion(
     language: "zh" | "en",
     architectureStage: ArchitectureStage,
     readiness: ReadinessChecklist,
-    reviewState: "missing_review" | "stale_review" | "approved_review"
+    reviewState: "missing_review" | "stale_review" | "approved_review",
+    architecturePack: ArchitecturePack,
+    messages: Message[]
 ) {
     const stageLabel = ARCHITECTURE_STAGE_LABELS[architectureStage];
     const primaryBlocker = readiness.blockingIssues[0] || "Add the missing architecture detail before generation.";
+    const primaryRequirement = getPrimaryIncompleteReadinessRequirement(readiness);
 
     if (!readiness.functionalReady || !readiness.uiReady) {
         const content = language === "zh"
@@ -1185,14 +1437,48 @@ Should we fill this gap first, or should I continue refining the architecture pa
 
         const options = language === "zh"
             ? [
-                { label: "我来补充这个缺口", value: "我来补充这个缺口，请继续问我最关键的问题。" },
-                { label: "列出当前阻塞项", value: "请明确列出当前阻塞生成的缺口，并告诉我先补哪一个。" },
-                { label: "按默认方案继续完善", value: "按你推荐的默认方案继续完善架构包。" }
+                {
+                    label: "我来补充这个缺口",
+                    value: "我来补充这个缺口，请继续问我最关键的问题。",
+                    action: "focus_requirement" as const,
+                    requirementKey: primaryRequirement?.key
+                },
+                {
+                    label: "列出当前阻塞项",
+                    value: "请明确列出当前阻塞生成的缺口，并告诉我先补哪一个。",
+                    action: "show_blockers" as const,
+                    requirementKey: primaryRequirement?.key
+                },
+                {
+                    label: primaryRequirement?.key === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)
+                        ? "按推荐应用单屏例外"
+                        : "按默认方案继续完善",
+                    value: "按你推荐的默认方案继续完善架构包。",
+                    action: "fill_requirement" as const,
+                    requirementKey: primaryRequirement?.key
+                }
             ]
             : [
-                { label: "I will fill the gap", value: "I will fill this gap. Please ask me the most important missing question." },
-                { label: "List blockers", value: "Please list the current generation blockers and tell me which one to fix first." },
-                { label: "Keep refining", value: "Continue refining the architecture pack using your recommended default approach." }
+                {
+                    label: "I will fill the gap",
+                    value: "I will fill this gap. Please ask me the most important missing question.",
+                    action: "focus_requirement" as const,
+                    requirementKey: primaryRequirement?.key
+                },
+                {
+                    label: "List blockers",
+                    value: "Please list the current generation blockers and tell me which one to fix first.",
+                    action: "show_blockers" as const,
+                    requirementKey: primaryRequirement?.key
+                },
+                {
+                    label: primaryRequirement?.key === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)
+                        ? "Apply single-screen exception"
+                        : "Keep refining",
+                    value: "Continue refining the architecture pack using your recommended default approach.",
+                    action: "fill_requirement" as const,
+                    requirementKey: primaryRequirement?.key
+                }
             ];
 
         const questionText = language === "zh"
@@ -1203,7 +1489,8 @@ Should we fill this gap first, or should I continue refining the architecture pa
             content,
             options,
             questionKey: normalizeQuestionKey(questionText),
-            questionAction: undefined
+            questionAction: primaryRequirement ? "fill_requirement" as const : undefined,
+            questionRequirementKey: primaryRequirement?.key
         };
     }
 
@@ -1242,7 +1529,8 @@ Do you want to open the review tab and run review now?`;
         content,
         options,
         questionKey: normalizeQuestionKey(questionText),
-        questionAction: "run_review" as const
+        questionAction: "run_review" as const,
+        questionRequirementKey: undefined
     };
 }
 
@@ -1251,7 +1539,8 @@ function ensureCommonQuestionOptions(
     options: MessageOption[],
     contextText: string,
     questionAction: MessageAction | null = null,
-    questionKey?: string | null
+    questionKey?: string | null,
+    requirementKey?: ReadinessRequirementKey | null
 ) {
     const normalizedQuestion = questionText.trim();
     const effectiveQuestionAction = questionAction ?? inferQuestionAction(normalizedQuestion);
@@ -1259,7 +1548,8 @@ function ensureCommonQuestionOptions(
         acc.push({
             ...option,
             action: resolveOptionAction(option, effectiveQuestionAction) ?? undefined,
-            questionKey: questionKey ?? option.questionKey ?? undefined
+            questionKey: questionKey ?? option.questionKey ?? undefined,
+            requirementKey: requirementKey ?? option.requirementKey ?? undefined
         });
         return acc;
     }, []);
@@ -1282,7 +1572,8 @@ function ensureCommonQuestionOptions(
         if (seen.has(key)) continue;
         normalized.push({
             ...option,
-            questionKey: questionKey ?? option.questionKey
+            questionKey: questionKey ?? option.questionKey,
+            requirementKey: requirementKey ?? option.requirementKey
         });
         seen.add(key);
     }
@@ -1420,11 +1711,12 @@ function buildDesignMemory(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[],
     messages: Message[],
     maxChars: number = EVALUATE_DESIGN_MEMORY_CHARS
 ) {
     const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
-    const readiness = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist);
+    const readiness = createReadinessChecklist(architecturePack, decisionRecords, guardrailChecklist, readinessOverrides);
     const clarified = normalizedAnalysis.clarified;
     const resolvedConfirmations = buildResolvedConfirmationLog(messages);
     const resolvedQuestionKeys = new Set(
@@ -1467,6 +1759,11 @@ function buildDesignMemory(
         readiness.criteria
             .map((criterion) => `- ${criterion.label}: ${criterion.status} (${criterion.satisfiedCount}/${criterion.requiredCount})${criterion.missing.length > 0 ? ` | Missing: ${criterion.missing.join(" ; ")}` : ""}`)
             .join("\n"),
+        "",
+        "# Scope Overrides",
+        readinessOverrides.length > 0
+            ? readinessOverrides.map((override) => `- ${override.requirementKey}: ${clipText(override.rationale, 220)}`).join("\n")
+            : "- None",
         "",
         "# UI Requirement Profile",
         ...UI_REQUIREMENT_KEYS.map((key) => {
@@ -1744,6 +2041,7 @@ function buildPricingProjectSnapshot(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[],
     reviewHistory: ArchitectureReviewResult[],
     sourceArtifacts: SourceArtifact[],
     architectureStage: ArchitectureStage,
@@ -1760,7 +2058,13 @@ function buildPricingProjectSnapshot(
             ...attachment,
             // Pricing only needs attachment count, not payload bytes.
             content: ""
-        }))
+        })),
+        questionKey: message.questionKey,
+        questionStatus: message.questionStatus,
+        questionAction: message.questionAction,
+        questionRequirementKey: message.questionRequirementKey,
+        answeredQuestionKey: message.answeredQuestionKey,
+        triggeredAction: message.triggeredAction
     }));
 
     const compactGeneration: GenerationResponse | null = generation
@@ -1787,6 +2091,7 @@ function buildPricingProjectSnapshot(
             architecturePack,
             decisionRecords,
             guardrailChecklist,
+            readinessOverrides,
             reviewHistory,
             sourceArtifacts: compactSourceArtifactsForPricing(sourceArtifacts),
             architectureStage,
@@ -1850,6 +2155,7 @@ function WizardContent() {
     const [architecturePack, setArchitecturePack] = useState<ArchitecturePack>(initialNormalizedState.architecturePack);
     const [decisionRecords, setDecisionRecords] = useState<DecisionRecord[]>(initialNormalizedState.decisionRecords);
     const [guardrailChecklist, setGuardrailChecklist] = useState<GuardrailChecklist>(initialNormalizedState.guardrailChecklist);
+    const [readinessOverrides, setReadinessOverrides] = useState<ReadinessOverride[]>(initialNormalizedState.readinessOverrides);
     const [reviewHistory, setReviewHistory] = useState<ArchitectureReviewResult[]>(initialNormalizedState.reviewHistory);
     const [sourceArtifacts, setSourceArtifacts] = useState<SourceArtifact[]>(initialNormalizedState.sourceArtifacts);
     const [architectureStage, setArchitectureStage] = useState<ArchitectureStage>(initialNormalizedState.architectureStage);
@@ -1899,6 +2205,7 @@ function WizardContent() {
         architecturePack,
         decisionRecords,
         guardrailChecklist,
+        readinessOverrides,
         reviewHistory
     });
     const architectureCompletion = scaffoldEligibility.readiness.score;
@@ -1988,6 +2295,7 @@ function WizardContent() {
             setArchitecturePack(normalizedDesignState.architecturePack);
             setDecisionRecords(normalizedDesignState.decisionRecords);
             setGuardrailChecklist(normalizedDesignState.guardrailChecklist);
+            setReadinessOverrides(normalizedDesignState.readinessOverrides);
             setReviewHistory(normalizedDesignState.reviewHistory);
             setSourceArtifacts(normalizedDesignState.sourceArtifacts);
             setArchitectureStage(normalizedDesignState.architectureStage);
@@ -2102,6 +2410,7 @@ function WizardContent() {
             architecturePack: normalizedArchitecturePack,
             decisionRecords,
             guardrailChecklist,
+            readinessOverrides,
             reviewHistory
         });
         const nextArchitectureStage = normalizeArchitectureStage(
@@ -2109,7 +2418,8 @@ function WizardContent() {
             normalizedArchitecturePack,
             decisionRecords,
             guardrailChecklist,
-            nextScaffoldEligibility.reviewState === "approved_review"
+            nextScaffoldEligibility.reviewState === "approved_review",
+            readinessOverrides
         );
         const nextArchitectureReadiness = applyArchitectureStageScoreFloor(nextScaffoldEligibility.readiness);
         const architectureReadinessChanged =
@@ -2163,6 +2473,7 @@ function WizardContent() {
         architecturePack,
         decisionRecords,
         guardrailChecklist,
+        readinessOverrides,
         architectureReadiness,
         architectureStage,
         reviewHistory,
@@ -2206,6 +2517,7 @@ function WizardContent() {
                             architecturePack,
                             decisionRecords,
                             guardrailChecklist,
+                            readinessOverrides,
                             reviewHistory,
                             sourceArtifacts,
                             architectureStage,
@@ -2270,6 +2582,7 @@ function WizardContent() {
         architecturePack,
         decisionRecords,
         guardrailChecklist,
+        readinessOverrides,
         reviewHistory,
         sourceArtifacts,
         architectureStage,
@@ -2362,6 +2675,7 @@ function WizardContent() {
                 architecturePack,
                 decisionRecords,
                 guardrailChecklist,
+                readinessOverrides,
                 reviewHistory,
                 sourceArtifacts,
                 architectureStage,
@@ -2413,6 +2727,7 @@ function WizardContent() {
         architecturePack,
         decisionRecords,
         guardrailChecklist,
+        readinessOverrides,
         reviewHistory,
         sourceArtifacts,
         architectureStage,
@@ -2530,6 +2845,274 @@ function WizardContent() {
         if (message) updateAssistantPlaceholder(message);
     };
 
+    const buildAssistantQuestionMessage = (input: {
+        content: string;
+        options?: MessageOption[];
+        questionKey?: string | null;
+        questionAction?: MessageAction | null;
+        questionRequirementKey?: ReadinessRequirementKey | null;
+    }): Message => ({
+        role: "assistant",
+        content: input.content,
+        options: input.options,
+        questionKey: input.questionKey ?? undefined,
+        questionStatus: input.questionKey ? "pending" : undefined,
+        questionAction: input.questionAction ?? undefined,
+        questionRequirementKey: input.questionRequirementKey ?? undefined
+    });
+
+    const buildReadyToGenerateMessage = (
+        language: "zh" | "en"
+    ) => {
+        const content = language === "zh"
+            ? `当前判断：
+- 当前架构门槛已经补齐。
+- 现在可以进入脚手架生成阶段。 
+
+需要确认：
+是否现在开始生成代码脚手架？`
+            : `Current view:
+- The current architecture gate is now satisfied.
+- You can proceed to scaffold generation.
+
+Please confirm:
+Do you want to start scaffold generation now?`;
+        const questionText = language === "zh"
+            ? "是否现在开始生成代码脚手架？"
+            : "Do you want to start scaffold generation now?";
+        return {
+            content,
+            options: buildCommonFallbackOptions(language, "generate_scaffold").map((option) => ({
+                ...option,
+                action: option.action ?? (option.label.toLowerCase().includes("generate") || option.label.includes("生成")
+                    ? "generate_scaffold"
+                    : option.action)
+            })),
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "generate_scaffold" as const
+        };
+    };
+
+    const buildRequirementAlternativesMessage = (
+        language: "zh" | "en",
+        requirementKey: ReadinessRequirementKey
+    ) => {
+        return buildAssistantQuestionMessage({
+            content: buildBlockersSummary(language, scaffoldEligibility.readiness),
+            options: language === "zh"
+                ? [
+                    { label: "按推荐继续", value: "按推荐继续。", action: "fill_requirement", requirementKey },
+                    { label: "我来手动补充", value: "我来手动补充。" }
+                ]
+                : [
+                    { label: "Proceed with recommendation", value: "Proceed with the recommendation.", action: "fill_requirement", requirementKey },
+                    { label: "I will fill it manually", value: "I will fill it manually." }
+                ],
+            questionKey: normalizeQuestionKey(language === "zh" ? "是否按推荐继续补齐这个缺口？" : "Should I proceed with the recommended fix?"),
+            questionAction: "fill_requirement",
+            questionRequirementKey: requirementKey
+        });
+    };
+
+    const applyDefaultRequirementResolution = (
+        requirementKey: ReadinessRequirementKey,
+        language: "zh" | "en",
+        baseMessages: Message[]
+    ) => {
+        if (requirementKey === "decisions.non_functional_requirements") {
+            const existingText = architecturePack.nonFunctionalRequirements
+                .map((item) => `${item.category} ${item.requirement} ${item.rationale}`.toLowerCase());
+            const existing = new Set(
+                architecturePack.nonFunctionalRequirements
+                    .map((item) => `${item.category} ${item.requirement} ${item.rationale}`.toLowerCase())
+            );
+            const candidates = [
+                {
+                    category: language === "zh" ? "质量" : "quality",
+                    requirement: language === "zh" ? "准确性" : "Accuracy",
+                    rationale: language === "zh"
+                        ? "确保基础四则运算在各种输入下都返回可靠且一致的结果。"
+                        : "Ensure the core arithmetic operations always return reliable and consistent results."
+                },
+                {
+                    category: language === "zh" ? "体验" : "usability",
+                    requirement: language === "zh" ? "易用性" : "Usability",
+                    rationale: language === "zh"
+                        ? "让日常计算在最少步骤内完成，降低误触和理解成本。"
+                        : "Keep daily calculations easy to complete with minimal friction and low cognitive load."
+                }
+            ];
+            const nextRequirement = candidates.find((candidate) =>
+                !existing.has(`${candidate.category} ${candidate.requirement} ${candidate.rationale}`.toLowerCase()) &&
+                !existingText.some((item) => item.includes(candidate.requirement.toLowerCase()))
+            );
+            if (nextRequirement) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        nonFunctionalRequirements: [...architecturePack.nonFunctionalRequirements, nextRequirement]
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? `已按推荐补充非功能性需求“${nextRequirement.requirement}”。`
+                        : `Added the recommended non-functional requirement: ${nextRequirement.requirement}.`,
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "ui.key_screens") {
+            if (isSingleScreenScopeCandidate(architecturePack, baseMessages)) {
+                const nextOverrides = normalizeReadinessOverrides([
+                    ...readinessOverrides,
+                    {
+                        key: "single_screen_experience",
+                        requirementKey: "ui.key_screens",
+                        rationale: language === "zh"
+                            ? "该产品明确采用单屏工作流，主计算界面已覆盖核心使用场景，因此豁免 3 个 key screens 的默认门槛。"
+                            : "This product intentionally uses a single-screen workflow, so the default 3-screen threshold is waived."
+                    }
+                ]);
+                return {
+                    architecturePack,
+                    guardrailChecklist,
+                    readinessOverrides: nextOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐应用单屏例外，并豁免 key screens 的默认数量门槛。"
+                        : "Applied the recommended single-screen exception and waived the default key-screen threshold.",
+                    applied: true
+                };
+            }
+
+            const existingScreens = architecturePack.experienceConstraints.keyScreens.filter((item) => item.trim().length > 0);
+            const fallbackScreens = language === "zh"
+                ? ["主工作界面", "历史记录界面", "设置界面"]
+                : ["Main workspace", "History screen", "Settings screen"];
+            const mergedScreens = [...new Set([...existingScreens, ...fallbackScreens])].slice(0, 3);
+            return {
+                architecturePack: {
+                    ...architecturePack,
+                    experienceConstraints: {
+                        ...architecturePack.experienceConstraints,
+                        keyScreens: mergedScreens
+                    }
+                },
+                guardrailChecklist,
+                readinessOverrides,
+                summary: language === "zh"
+                    ? "已按推荐补齐关键界面定义。"
+                    : "Filled the key screen definitions using the recommended defaults.",
+                applied: true
+            };
+        }
+
+        return {
+            architecturePack,
+            guardrailChecklist,
+            readinessOverrides,
+            summary: "",
+            applied: false
+        };
+    };
+
+    const appendDeterministicAssistantResponse = (
+        baseMessages: Message[],
+        assistantMessage: Message
+    ) => {
+        setMessages([...baseMessages, assistantMessage]);
+    };
+
+    const handleRequirementAction = (
+        action: "focus_requirement" | "fill_requirement" | "show_blockers",
+        requirementKey: ReadinessRequirementKey | null,
+        baseMessages: Message[]
+    ) => {
+        if (!requirementKey) return false;
+        if (!findReadinessRequirement(scaffoldEligibility.readiness, requirementKey)) return false;
+
+        const language = detectResponseLanguage(
+            ...baseMessages.slice(-6).map((message) => message.content || ""),
+            architecturePack.businessContext.productGoal
+        );
+
+        if (action === "focus_requirement") {
+            const focused = buildFocusedRequirementQuestion(language, requirementKey, architecturePack, baseMessages);
+            appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
+            return true;
+        }
+
+        if (action === "show_blockers") {
+            appendDeterministicAssistantResponse(
+                baseMessages,
+                buildRequirementAlternativesMessage(language, requirementKey)
+            );
+            return true;
+        }
+
+        const resolution = applyDefaultRequirementResolution(requirementKey, language, baseMessages);
+        if (!resolution.applied) {
+            const focused = buildFocusedRequirementQuestion(language, requirementKey, architecturePack, baseMessages);
+            appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
+            return true;
+        }
+
+        setHasUserEdited(true);
+        setArchitecturePack(resolution.architecturePack);
+        setGuardrailChecklist(resolution.guardrailChecklist);
+        setReadinessOverrides(resolution.readinessOverrides);
+
+        const nextEligibility = computeScaffoldEligibility({
+            architecturePack: resolution.architecturePack,
+            decisionRecords,
+            guardrailChecklist: resolution.guardrailChecklist,
+            readinessOverrides: resolution.readinessOverrides,
+            reviewHistory
+        });
+        const nextStage = inferArchitectureStage(
+            resolution.architecturePack,
+            decisionRecords,
+            resolution.guardrailChecklist,
+            nextEligibility.reviewState === "approved_review",
+            resolution.readinessOverrides
+        );
+        setArchitectureReadiness(nextEligibility.readiness);
+        setArchitectureStage(nextStage);
+        setEvaluation((prev) => prev
+            ? {
+                ...prev,
+                architecturePackDraft: resolution.architecturePack,
+                guardrailDrafts: resolution.guardrailChecklist,
+                readiness: nextEligibility.readiness,
+                stage: nextStage,
+                density_score: nextEligibility.readiness.score,
+                is_ready: nextEligibility.readiness.functionalReady && nextEligibility.readiness.uiReady
+            }
+            : prev
+        );
+        setGenerateError(null);
+
+        const followUp = nextEligibility.canGenerate
+            ? buildReadyToGenerateMessage(language)
+            : buildBlockedGenerateQuestion(
+                language,
+                nextStage,
+                nextEligibility.readiness,
+                nextEligibility.reviewState,
+                resolution.architecturePack,
+                baseMessages
+            );
+        const combinedContent = `${resolution.summary}\n\n${followUp.content}`.trim();
+        appendDeterministicAssistantResponse(
+            baseMessages,
+            buildAssistantQuestionMessage({
+                ...followUp,
+                content: combinedContent
+            })
+        );
+        return true;
+    };
+
     const handleSend = async (overrideInput?: string, selectedOption?: MessageOption) => {
         const textToSend = overrideInput || input;
 
@@ -2551,6 +3134,9 @@ function WizardContent() {
             ? normalizeQuestionKey(selectedOption.questionKey)
             : latestPendingQuestion?.questionKey ?? null;
         const contextualAction = latestPendingQuestion?.questionAction ?? null;
+        const contextualRequirementKey = selectedOption?.requirementKey
+            ?? latestPendingQuestion?.questionRequirementKey
+            ?? null;
         const selectedOptionAction = selectedOption
             ? resolveOptionAction(selectedOption, contextualAction)
             : null;
@@ -2592,6 +3178,18 @@ function WizardContent() {
             return;
         }
 
+        if (
+            (triggeredAction === "focus_requirement" ||
+                triggeredAction === "fill_requirement" ||
+                triggeredAction === "show_blockers") &&
+            contextualRequirementKey
+        ) {
+            setMessages(newMessages);
+            if (handleRequirementAction(triggeredAction, contextualRequirementKey, newMessages)) {
+                return;
+            }
+        }
+
         const requestId = evalRequestIdRef.current + 1;
         evalRequestIdRef.current = requestId;
         const assistantPlaceholder: Message = { role: "assistant", content: "" };
@@ -2611,6 +3209,7 @@ function WizardContent() {
                 architecturePack,
                 decisionRecords,
                 guardrailChecklist,
+                readinessOverrides,
                 newMessages,
                 EVALUATE_DESIGN_MEMORY_CHARS
             );
@@ -2723,6 +3322,7 @@ function WizardContent() {
             );
             let currentQuestionKey: string | null = null;
             let currentQuestionAction: MessageAction | null = null;
+            let currentQuestionRequirementKey: ReadinessRequirementKey | null = null;
             const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
@@ -2788,6 +3388,7 @@ function WizardContent() {
                     if (q) {
                         currentQuestionKey = normalizeQuestionKey(q);
                         currentQuestionAction = inferQuestionAction(rawQuestion);
+                        currentQuestionRequirementKey = null;
                         currentEval.next_step.question = q;
                         const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis);
                         setMessages(prev => {
@@ -2800,7 +3401,8 @@ function WizardContent() {
                                 current.options ?? [],
                                 latestUserContext,
                                 currentQuestionAction,
-                                currentQuestionKey
+                                currentQuestionKey,
+                                currentQuestionRequirementKey
                             );
                             updated[assistantIndex] = {
                                 ...current,
@@ -2808,7 +3410,8 @@ function WizardContent() {
                                 options: ensuredOptions,
                                 questionKey: currentQuestionKey,
                                 questionStatus: "pending",
-                                questionAction: currentQuestionAction ?? undefined
+                                questionAction: currentQuestionAction ?? undefined,
+                                questionRequirementKey: currentQuestionRequirementKey ?? undefined
                             };
                             return updated;
                         });
@@ -2822,7 +3425,8 @@ function WizardContent() {
                         currentEval.architecturePackDraft ?? architecturePack,
                         currentEval.decisionDrafts ?? decisionRecords,
                         currentEval.guardrailDrafts ?? guardrailChecklist,
-                        reviewApproved
+                        reviewApproved,
+                        readinessOverrides
                     );
                     currentEval.stage = parsedStage;
                     setArchitectureStage(parsedStage);
@@ -2901,7 +3505,8 @@ function WizardContent() {
                         value,
                         currentEval.architecturePackDraft ?? architecturePack,
                         currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        readinessOverrides
                     ));
                     if (parsedReadiness) {
                         currentEval.readiness = parsedReadiness;
@@ -2913,7 +3518,8 @@ function WizardContent() {
                     currentEval.readiness = createReadinessChecklist(
                         currentEval.architecturePackDraft,
                         currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        readinessOverrides
                     );
                 }
                 currentEval.is_ready = currentEval.readiness.functionalReady && currentEval.readiness.uiReady;
@@ -2924,7 +3530,8 @@ function WizardContent() {
                         currentEval.architecturePackDraft,
                         currentEval.decisionDrafts ?? decisionRecords,
                         currentEval.guardrailDrafts ?? guardrailChecklist,
-                        reviewApproved
+                        reviewApproved,
+                        readinessOverrides
                     );
                 }
 
@@ -2936,7 +3543,8 @@ function WizardContent() {
                         parseOptionsBlock(optionsMatch[1]),
                         latestUserContext,
                         currentQuestionAction,
-                        currentQuestionKey
+                        currentQuestionKey,
+                        currentQuestionRequirementKey
                     );
                     setMessages(prev => {
                         if (evalRequestIdRef.current !== requestId) return prev;
@@ -2948,7 +3556,7 @@ function WizardContent() {
                     });
                 }
 
-                const normalizedEval = normalizeEvaluation({ ...currentEval });
+                const normalizedEval = normalizeEvaluation({ ...currentEval }, readinessOverrides);
                 if (normalizedEval?.architecturePackDraft) {
                     setArchitecturePack(normalizedEval.architecturePackDraft);
                 }
@@ -2972,6 +3580,7 @@ function WizardContent() {
                     architecturePack: currentEval.architecturePackDraft ?? architecturePack,
                     decisionRecords: currentEval.decisionDrafts ?? decisionRecords,
                     guardrailChecklist: currentEval.guardrailDrafts ?? guardrailChecklist,
+                    readinessOverrides,
                     reviewHistory
                 });
                 const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
@@ -2985,10 +3594,13 @@ function WizardContent() {
                             currentEval.architecturePackDraft ?? architecturePack,
                             currentEval.decisionDrafts ?? decisionRecords,
                             currentEval.guardrailDrafts ?? guardrailChecklist,
-                            resolvedEligibility.reviewState === "approved_review"
+                            resolvedEligibility.reviewState === "approved_review",
+                            readinessOverrides
                         ),
                         resolvedEligibility.readiness,
-                        resolvedEligibility.reviewState
+                        resolvedEligibility.reviewState,
+                        currentEval.architecturePackDraft ?? architecturePack,
+                        newMessages
                     )
                     : null;
                 const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
@@ -3002,7 +3614,8 @@ function WizardContent() {
                         current.options ?? [],
                         latestUserContext,
                         currentQuestionAction,
-                        currentQuestionKey
+                        currentQuestionKey,
+                        currentQuestionRequirementKey
                     );
                     const nextContent = coercedGenerateQuestion
                         ? coercedGenerateQuestion.content
@@ -3020,12 +3633,16 @@ function WizardContent() {
                     const nextQuestionAction = coercedGenerateQuestion
                         ? coercedGenerateQuestion.questionAction
                         : current.questionAction;
+                    const nextQuestionRequirementKey = coercedGenerateQuestion
+                        ? coercedGenerateQuestion.questionRequirementKey
+                        : current.questionRequirementKey;
                     const nextQuestionStatus = coercedGenerateQuestion ? "pending" as const : current.questionStatus;
                     if (
                         nextContent === current.content &&
                         nextOptions === current.options &&
                         nextQuestionKey === current.questionKey &&
                         nextQuestionAction === current.questionAction &&
+                        nextQuestionRequirementKey === current.questionRequirementKey &&
                         nextQuestionStatus === current.questionStatus
                     ) {
                         return prev;
@@ -3036,6 +3653,7 @@ function WizardContent() {
                         options: nextOptions,
                         questionKey: nextQuestionKey,
                         questionAction: nextQuestionAction,
+                        questionRequirementKey: nextQuestionRequirementKey,
                         questionStatus: nextQuestionStatus
                     };
                     return updated;
@@ -3220,6 +3838,7 @@ function WizardContent() {
                             architecturePack,
                             decisionRecords,
                             guardrailChecklist,
+                            readinessOverrides,
                             reviewHistory,
                             sourceArtifacts,
                             architectureStage,
@@ -3277,7 +3896,9 @@ function WizardContent() {
                     language,
                     architectureStage,
                     scaffoldEligibility.readiness,
-                    scaffoldEligibility.reviewState
+                    scaffoldEligibility.reviewState,
+                    architecturePack,
+                    baseMessages ?? messages
                 );
                 setMessages((prev) => {
                     const nextBase = baseMessages ?? prev;
@@ -3289,7 +3910,8 @@ function WizardContent() {
                             options: blockedResponse.options,
                             questionKey: blockedResponse.questionKey,
                             questionStatus: "pending",
-                            questionAction: blockedResponse.questionAction
+                            questionAction: blockedResponse.questionAction,
+                            questionRequirementKey: blockedResponse.questionRequirementKey
                         }
                     ];
                 });
@@ -3311,7 +3933,9 @@ function WizardContent() {
                     language,
                     architectureStage,
                     scaffoldEligibility.readiness,
-                    scaffoldEligibility.reviewState
+                    scaffoldEligibility.reviewState,
+                    architecturePack,
+                    baseMessages ?? messages
                 );
                 setMessages((prev) => {
                     const nextBase = baseMessages ?? prev;
@@ -3323,7 +3947,8 @@ function WizardContent() {
                             options: blockedResponse.options,
                             questionKey: blockedResponse.questionKey,
                             questionStatus: "pending",
-                            questionAction: blockedResponse.questionAction
+                            questionAction: blockedResponse.questionAction,
+                            questionRequirementKey: blockedResponse.questionRequirementKey
                         }
                     ];
                 });

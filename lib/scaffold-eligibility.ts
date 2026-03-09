@@ -7,14 +7,16 @@ import type {
     Project,
     ProjectVersion,
     ProjectVersionData,
-    ReadinessChecklist
+    ReadinessChecklist,
+    ReadinessOverride
 } from "@/types";
 import {
     createReadinessChecklist,
     normalizeArchitecturePack,
     normalizeArchitectureReviewHistory,
     normalizeDecisionRecords,
-    normalizeGuardrailChecklist
+    normalizeGuardrailChecklist,
+    normalizeReadinessOverrides
 } from "@/lib/architecture";
 
 export type ScaffoldReviewState =
@@ -56,6 +58,7 @@ type EligibilityInput = {
     architecturePack: unknown;
     decisionRecords: unknown;
     guardrailChecklist: unknown;
+    readinessOverrides?: unknown;
     reviewHistory?: unknown;
 };
 
@@ -101,12 +104,14 @@ function buildReviewBlockingReasons(latestReview: ArchitectureReviewResult | nul
 export function buildArchitectureFingerprint(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
-    guardrailChecklist: GuardrailChecklist
+    guardrailChecklist: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[] = []
 ) {
     const serialized = stableSerialize({
         architecturePack,
         decisionRecords,
-        guardrailChecklist
+        guardrailChecklist,
+        readinessOverrides
     });
     return `arch_${hashString(serialized)}`;
 }
@@ -115,17 +120,20 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
     const architecturePack = normalizeArchitecturePack(input.architecturePack);
     const decisionRecords = normalizeDecisionRecords(input.decisionRecords);
     const guardrailChecklist = normalizeGuardrailChecklist(input.guardrailChecklist);
+    const readinessOverrides = normalizeReadinessOverrides(input.readinessOverrides);
     const reviewHistory = normalizeArchitectureReviewHistory(input.reviewHistory);
     const latestReview = reviewHistory[reviewHistory.length - 1] || null;
     const readiness = createReadinessChecklist(
         architecturePack,
         decisionRecords,
-        guardrailChecklist
+        guardrailChecklist,
+        readinessOverrides
     );
     const architectureFingerprint = buildArchitectureFingerprint(
         architecturePack,
         decisionRecords,
-        guardrailChecklist
+        guardrailChecklist,
+        readinessOverrides
     );
 
     let reviewState: ScaffoldReviewState = "missing_review";
@@ -208,6 +216,7 @@ export function computeVersionScaffoldEligibility(
         architecturePack: data?.architecturePack,
         decisionRecords: data?.decisionRecords,
         guardrailChecklist: data?.guardrailChecklist,
+        readinessOverrides: data?.readinessOverrides,
         reviewHistory: data?.reviewHistory
     });
 }

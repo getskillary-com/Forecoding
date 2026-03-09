@@ -8,8 +8,13 @@ import type {
     Message,
     ReadinessCriterion,
     ReadinessCriterionKey,
+    ReadinessRequirement,
+    ReadinessRequirementKey,
+    ReadinessRequirementStatus,
     ReadinessCriterionStatus,
     ReadinessChecklist,
+    ReadinessOverride,
+    ReadinessOverrideKey,
     ReviewFinding,
     SourceArtifact,
     UiRequirements
@@ -300,18 +305,86 @@ function countMeaningfulNonFunctionalRequirements(pack: ArchitecturePack) {
     ).length;
 }
 
-function buildReadinessCriterion(input: {
-    key: ReadinessCriterionKey;
+function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementKey | null {
+    switch (value) {
+        case "business_context.product_goal":
+        case "business_context.target_users":
+        case "business_context.user_journeys":
+        case "business_context.constraints_or_risks":
+        case "boundaries.bounded_contexts":
+        case "boundaries.module_responsibilities":
+        case "boundaries.data_ownership":
+        case "decisions.decision_records":
+        case "decisions.integration_contracts":
+        case "decisions.non_functional_requirements":
+        case "guardrails.implementation_order":
+        case "guardrails.acceptance_criteria":
+        case "guardrails.test_strategy":
+        case "guardrails.review_checklist":
+        case "ui.key_screens":
+        case "ui.shared_components":
+        case "ui.responsive_strategy":
+            return value;
+        default:
+            return null;
+    }
+}
+
+function normalizeReadinessOverrideKey(value: unknown): ReadinessOverrideKey | null {
+    return value === "single_screen_experience" ? value : null;
+}
+
+export function normalizeReadinessOverrides(value: unknown): ReadinessOverride[] {
+    if (!Array.isArray(value)) return [];
+
+    const dedupe = new Set<string>();
+    return value
+        .filter(isRecord)
+        .map((item) => {
+            const key = normalizeReadinessOverrideKey(item.key);
+            const requirementKey = normalizeReadinessRequirementKey(item.requirementKey);
+            const rationale = normalizeString(item.rationale);
+            if (!key || !requirementKey || !rationale) return null;
+            const normalized: ReadinessOverride = {
+                key,
+                requirementKey,
+                rationale,
+                createdAt: typeof item.createdAt === "number" ? item.createdAt : undefined
+            };
+            return normalized;
+        })
+        .filter((item): item is ReadinessOverride => Boolean(item))
+        .filter((item) => {
+            const dedupeKey = `${item.key}::${item.requirementKey}`;
+            if (dedupe.has(dedupeKey)) return false;
+            dedupe.add(dedupeKey);
+            return true;
+        });
+}
+
+function buildReadinessOverrideIndex(overrides: ReadinessOverride[]) {
+    const index = new Map<ReadinessRequirementKey, ReadinessOverride>();
+    overrides.forEach((override) => {
+        index.set(override.requirementKey, override);
+    });
+    return index;
+}
+
+function buildReadinessRequirement(input: {
+    key: ReadinessRequirementKey;
     label: string;
     satisfiedCount: number;
     requiredCount: number;
     missing: string[];
-}): ReadinessCriterion {
+    override?: ReadinessOverride | null;
+}): ReadinessRequirement {
     const cappedSatisfiedCount = Math.max(0, Math.min(input.satisfiedCount, input.requiredCount));
-    let status: ReadinessCriterionStatus = "missing";
+    let status: ReadinessRequirementStatus = "missing";
 
     if (cappedSatisfiedCount >= input.requiredCount) {
         status = "confirmed";
+    } else if (input.override) {
+        status = "waived";
     } else if (cappedSatisfiedCount > 0) {
         status = "partial";
     }
@@ -322,7 +395,43 @@ function buildReadinessCriterion(input: {
         status,
         satisfiedCount: cappedSatisfiedCount,
         requiredCount: input.requiredCount,
-        missing: input.missing
+        missing: status === "waived" ? [] : input.missing,
+        overrideKey: status === "waived" ? input.override?.key : undefined,
+        overrideReason: status === "waived" ? input.override?.rationale : undefined
+    };
+}
+
+function buildReadinessCriterion(input: {
+    key: ReadinessCriterionKey;
+    label: string;
+    requirements: ReadinessRequirement[];
+}): ReadinessCriterion {
+    const satisfiedCount = input.requirements.filter((requirement) =>
+        requirement.status === "confirmed" || requirement.status === "waived"
+    ).length;
+    const requiredCount = input.requirements.length;
+    const hasPartial = input.requirements.some((requirement) => requirement.status === "partial");
+    const hasAnyProgress = input.requirements.some((requirement) => requirement.status !== "missing");
+    let status: ReadinessCriterionStatus = "missing";
+
+    if (satisfiedCount >= requiredCount) {
+        status = "confirmed";
+    } else if (hasPartial || hasAnyProgress) {
+        status = "partial";
+    }
+
+    return {
+        key: input.key,
+        label: input.label,
+        status,
+        satisfiedCount,
+        requiredCount,
+        missing: input.requirements
+            .filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
+            .map((requirement) => requirement.missing[0] || `Complete ${requirement.label}.`)
+            .filter(Boolean),
+        requirements: input.requirements,
+        overrideApplied: input.requirements.some((requirement) => requirement.status === "waived")
     };
 }
 
@@ -376,8 +485,10 @@ export function normalizeArchitectureReviewHistory(value: unknown): Architecture
 export function createReadinessChecklist(
     pack: ArchitecturePack,
     decisions: DecisionRecord[],
-    guardrails: GuardrailChecklist
+    guardrails: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[] = []
 ): ReadinessChecklist {
+    const overrideIndex = buildReadinessOverrideIndex(normalizeReadinessOverrides(readinessOverrides));
     const businessConstraintCount = countMeaningfulStrings([
         ...pack.businessContext.constraints,
         ...pack.businessContext.risks
@@ -385,33 +496,71 @@ export function createReadinessChecklist(
     const businessContext = buildReadinessCriterion({
         key: "business_context",
         label: "Business context",
-        satisfiedCount:
-            Number(isMeaningfulText(pack.businessContext.productGoal, 8)) +
-            Number(countMeaningfulStrings(pack.businessContext.targetUsers, 3) >= 1) +
-            Number(countMeaningfulStrings(pack.businessContext.userJourneys, 8) >= 2) +
-            Number(businessConstraintCount >= 2),
-        requiredCount: 4,
-        missing: [
-            !isMeaningfulText(pack.businessContext.productGoal, 8) ? "Define a concrete product goal." : "",
-            countMeaningfulStrings(pack.businessContext.targetUsers, 3) < 1 ? "Name at least 1 specific target user group." : "",
-            countMeaningfulStrings(pack.businessContext.userJourneys, 8) < 2 ? "Capture at least 2 concrete user journeys." : "",
-            businessConstraintCount < 2 ? "Capture at least 2 concrete constraints or risks." : ""
-        ].filter(Boolean)
+        requirements: [
+            buildReadinessRequirement({
+                key: "business_context.product_goal",
+                label: "Product goal",
+                satisfiedCount: Number(isMeaningfulText(pack.businessContext.productGoal, 8)),
+                requiredCount: 1,
+                missing: !isMeaningfulText(pack.businessContext.productGoal, 8) ? ["Define a concrete product goal."] : [],
+                override: overrideIndex.get("business_context.product_goal")
+            }),
+            buildReadinessRequirement({
+                key: "business_context.target_users",
+                label: "Target users",
+                satisfiedCount: countMeaningfulStrings(pack.businessContext.targetUsers, 3),
+                requiredCount: 1,
+                missing: countMeaningfulStrings(pack.businessContext.targetUsers, 3) < 1 ? ["Name at least 1 specific target user group."] : [],
+                override: overrideIndex.get("business_context.target_users")
+            }),
+            buildReadinessRequirement({
+                key: "business_context.user_journeys",
+                label: "User journeys",
+                satisfiedCount: countMeaningfulStrings(pack.businessContext.userJourneys, 8),
+                requiredCount: 2,
+                missing: countMeaningfulStrings(pack.businessContext.userJourneys, 8) < 2 ? ["Capture at least 2 concrete user journeys."] : [],
+                override: overrideIndex.get("business_context.user_journeys")
+            }),
+            buildReadinessRequirement({
+                key: "business_context.constraints_or_risks",
+                label: "Constraints and risks",
+                satisfiedCount: businessConstraintCount,
+                requiredCount: 2,
+                missing: businessConstraintCount < 2 ? ["Capture at least 2 concrete constraints or risks."] : [],
+                override: overrideIndex.get("business_context.constraints_or_risks")
+            })
+        ]
     });
 
     const boundaries = buildReadinessCriterion({
         key: "boundaries",
         label: "System boundaries",
-        satisfiedCount:
-            Number(pack.boundedContexts.length >= 1) +
-            Number(pack.moduleResponsibilities.length >= 2) +
-            Number(pack.dataOwnership.length >= 1),
-        requiredCount: 3,
-        missing: [
-            pack.boundedContexts.length < 1 ? "Define at least 1 bounded context." : "",
-            pack.moduleResponsibilities.length < 2 ? "Define at least 2 concrete module responsibilities." : "",
-            pack.dataOwnership.length < 1 ? "Define at least 1 explicit data ownership rule." : ""
-        ].filter(Boolean)
+        requirements: [
+            buildReadinessRequirement({
+                key: "boundaries.bounded_contexts",
+                label: "Bounded contexts",
+                satisfiedCount: pack.boundedContexts.length,
+                requiredCount: 1,
+                missing: pack.boundedContexts.length < 1 ? ["Define at least 1 bounded context."] : [],
+                override: overrideIndex.get("boundaries.bounded_contexts")
+            }),
+            buildReadinessRequirement({
+                key: "boundaries.module_responsibilities",
+                label: "Module responsibilities",
+                satisfiedCount: pack.moduleResponsibilities.length,
+                requiredCount: 2,
+                missing: pack.moduleResponsibilities.length < 2 ? ["Define at least 2 concrete module responsibilities."] : [],
+                override: overrideIndex.get("boundaries.module_responsibilities")
+            }),
+            buildReadinessRequirement({
+                key: "boundaries.data_ownership",
+                label: "Data ownership",
+                satisfiedCount: pack.dataOwnership.length,
+                requiredCount: 1,
+                missing: pack.dataOwnership.length < 1 ? ["Define at least 1 explicit data ownership rule."] : [],
+                override: overrideIndex.get("boundaries.data_ownership")
+            })
+        ]
     });
 
     const decisionDepthCount = countMeaningfulDecisionRecords(decisions);
@@ -420,48 +569,102 @@ export function createReadinessChecklist(
     const decisionCriteria = buildReadinessCriterion({
         key: "decisions",
         label: "Architecture decisions",
-        satisfiedCount:
-            Number(decisionDepthCount >= 2) +
-            Number(integrationContractCount >= 1) +
-            Number(nfrCount >= 2),
-        requiredCount: 3,
-        missing: [
-            decisionDepthCount < 2 ? "Record at least 2 concrete architecture decisions with rationale." : "",
-            integrationContractCount < 1 ? "Define at least 1 meaningful integration contract." : "",
-            nfrCount < 2 ? "Define at least 2 non-functional requirements." : ""
-        ].filter(Boolean)
+        requirements: [
+            buildReadinessRequirement({
+                key: "decisions.decision_records",
+                label: "Decision records",
+                satisfiedCount: decisionDepthCount,
+                requiredCount: 2,
+                missing: decisionDepthCount < 2 ? ["Record at least 2 concrete architecture decisions with rationale."] : [],
+                override: overrideIndex.get("decisions.decision_records")
+            }),
+            buildReadinessRequirement({
+                key: "decisions.integration_contracts",
+                label: "Integration contracts",
+                satisfiedCount: integrationContractCount,
+                requiredCount: 1,
+                missing: integrationContractCount < 1 ? ["Define at least 1 meaningful integration contract."] : [],
+                override: overrideIndex.get("decisions.integration_contracts")
+            }),
+            buildReadinessRequirement({
+                key: "decisions.non_functional_requirements",
+                label: "Non-functional requirements",
+                satisfiedCount: nfrCount,
+                requiredCount: 2,
+                missing: nfrCount < 2 ? ["Define at least 2 non-functional requirements."] : [],
+                override: overrideIndex.get("decisions.non_functional_requirements")
+            })
+        ]
     });
 
     const guardrailCriteria = buildReadinessCriterion({
         key: "guardrails",
         label: "Delivery guardrails",
-        satisfiedCount:
-            Number(countMeaningfulStrings(guardrails.implementationOrder, 4) >= 3) +
-            Number(countMeaningfulStrings(guardrails.acceptanceCriteria, 4) >= 4) +
-            Number(countMeaningfulStrings(guardrails.testStrategy, 4) >= 2) +
-            Number(countMeaningfulStrings(guardrails.reviewChecklist, 4) >= 4),
-        requiredCount: 4,
-        missing: [
-            countMeaningfulStrings(guardrails.implementationOrder, 4) < 3 ? "Define at least 3 implementation-order steps." : "",
-            countMeaningfulStrings(guardrails.acceptanceCriteria, 4) < 4 ? "Define at least 4 acceptance criteria." : "",
-            countMeaningfulStrings(guardrails.testStrategy, 4) < 2 ? "Define at least 2 concrete test strategy items." : "",
-            countMeaningfulStrings(guardrails.reviewChecklist, 4) < 4 ? "Define at least 4 review checklist items." : ""
-        ].filter(Boolean)
+        requirements: [
+            buildReadinessRequirement({
+                key: "guardrails.implementation_order",
+                label: "Implementation order",
+                satisfiedCount: countMeaningfulStrings(guardrails.implementationOrder, 4),
+                requiredCount: 3,
+                missing: countMeaningfulStrings(guardrails.implementationOrder, 4) < 3 ? ["Define at least 3 implementation-order steps."] : [],
+                override: overrideIndex.get("guardrails.implementation_order")
+            }),
+            buildReadinessRequirement({
+                key: "guardrails.acceptance_criteria",
+                label: "Acceptance criteria",
+                satisfiedCount: countMeaningfulStrings(guardrails.acceptanceCriteria, 4),
+                requiredCount: 4,
+                missing: countMeaningfulStrings(guardrails.acceptanceCriteria, 4) < 4 ? ["Define at least 4 acceptance criteria."] : [],
+                override: overrideIndex.get("guardrails.acceptance_criteria")
+            }),
+            buildReadinessRequirement({
+                key: "guardrails.test_strategy",
+                label: "Test strategy",
+                satisfiedCount: countMeaningfulStrings(guardrails.testStrategy, 4),
+                requiredCount: 2,
+                missing: countMeaningfulStrings(guardrails.testStrategy, 4) < 2 ? ["Define at least 2 concrete test strategy items."] : [],
+                override: overrideIndex.get("guardrails.test_strategy")
+            }),
+            buildReadinessRequirement({
+                key: "guardrails.review_checklist",
+                label: "Review checklist",
+                satisfiedCount: countMeaningfulStrings(guardrails.reviewChecklist, 4),
+                requiredCount: 4,
+                missing: countMeaningfulStrings(guardrails.reviewChecklist, 4) < 4 ? ["Define at least 4 review checklist items."] : [],
+                override: overrideIndex.get("guardrails.review_checklist")
+            })
+        ]
     });
 
     const uiCriteria = buildReadinessCriterion({
         key: "ui",
         label: "Experience constraints",
-        satisfiedCount:
-            Number(countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4) >= 3) +
-            Number(countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4) >= 3) +
-            Number(countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4) >= 1),
-        requiredCount: 3,
-        missing: [
-            countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4) < 3 ? "Define at least 3 key screens." : "",
-            countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4) < 3 ? "Define at least 3 shared UI components." : "",
-            countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4) < 1 ? "Define at least 1 responsive strategy rule." : ""
-        ].filter(Boolean)
+        requirements: [
+            buildReadinessRequirement({
+                key: "ui.key_screens",
+                label: "Key screens",
+                satisfiedCount: countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4),
+                requiredCount: 3,
+                missing: countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4) < 3 ? ["Define at least 3 key screens."] : [],
+                override: overrideIndex.get("ui.key_screens")
+            }),
+            buildReadinessRequirement({
+                key: "ui.shared_components",
+                label: "Shared UI components",
+                satisfiedCount: countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4),
+                requiredCount: 3,
+                missing: countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4) < 3 ? ["Define at least 3 shared UI components."] : [],
+                override: overrideIndex.get("ui.shared_components")
+            }),
+            buildReadinessRequirement({
+                key: "ui.responsive_strategy",
+                label: "Responsive strategy",
+                satisfiedCount: countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4),
+                requiredCount: 1,
+                missing: countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4) < 1 ? ["Define at least 1 responsive strategy rule."] : [],
+                override: overrideIndex.get("ui.responsive_strategy")
+            })
+        ]
     });
 
     const criteria = [
@@ -491,7 +694,8 @@ export function createReadinessChecklist(
         paymentReady: functionalReady && uiReady,
         blockingIssues,
         nextMilestone: blockingIssues[0] || "Run architecture review and proceed to scaffold when ready.",
-        criteria
+        criteria,
+        overrides: [...overrideIndex.values()]
     };
 }
 
@@ -499,9 +703,10 @@ export function inferArchitectureStage(
     pack: ArchitecturePack,
     decisions: DecisionRecord[],
     guardrails: GuardrailChecklist,
-    reviewApproved: boolean = false
+    reviewApproved: boolean = false,
+    readinessOverrides: ReadinessOverride[] = []
 ): ArchitectureStage {
-    const readiness = createReadinessChecklist(pack, decisions, guardrails);
+    const readiness = createReadinessChecklist(pack, decisions, guardrails, readinessOverrides);
     const criterionByKey = new Map(readiness.criteria.map((criterion) => [criterion.key, criterion]));
 
     if (criterionByKey.get("business_context")?.status !== "confirmed") {
@@ -533,10 +738,35 @@ export function inferArchitectureStage(
 export function isArchitecturePackReady(
     pack: ArchitecturePack,
     decisions: DecisionRecord[],
-    guardrails: GuardrailChecklist
+    guardrails: GuardrailChecklist,
+    readinessOverrides: ReadinessOverride[] = []
 ) {
-    const readiness = createReadinessChecklist(pack, decisions, guardrails);
+    const readiness = createReadinessChecklist(pack, decisions, guardrails, readinessOverrides);
     return readiness.functionalReady && readiness.uiReady;
+}
+
+export function findReadinessRequirement(
+    readiness: ReadinessChecklist,
+    requirementKey: ReadinessRequirementKey
+): ReadinessRequirement | null {
+    for (const criterion of readiness.criteria) {
+        const requirement = criterion.requirements.find((item) => item.key === requirementKey);
+        if (requirement) return requirement;
+    }
+    return null;
+}
+
+export function getPrimaryIncompleteReadinessRequirement(
+    readiness: ReadinessChecklist
+): ReadinessRequirement | null {
+    for (const criterion of readiness.criteria) {
+        for (const requirement of criterion.requirements) {
+            if (requirement.status === "missing" || requirement.status === "partial") {
+                return requirement;
+            }
+        }
+    }
+    return null;
 }
 
 export function extractSourceArtifacts(messages: Message[]): SourceArtifact[] {
