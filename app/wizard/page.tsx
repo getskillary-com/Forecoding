@@ -8,6 +8,9 @@ import {
     ArchitectureStage,
     DecisionRecord,
     Message,
+    MessageAction,
+    MessageOption,
+    MessageQuestionStatus,
     EvaluationResponse,
     GenerationResponse,
     DiagramGovernance,
@@ -112,6 +115,10 @@ const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
 const SOURCE_CONTEXT_ITEM_EXCERPT_CHARS = 700;
 const SOURCE_CONTEXT_MAX_ITEMS = 6;
 const SOURCE_SEARCH_TERM_MAX_COUNT = 24;
+const GENERATE_SCAFFOLD_PATTERN = /generate scaffold|scaffold generation|start scaffold generation|generate scaffold now|开始生成(?:代码)?脚手架|生成(?:代码)?脚手架|立即生成|start scaffold/i;
+const RUN_REVIEW_PATTERN = /run review|re-run review|architecture review|run architecture review|重新审核|运行审核|架构评审|架构审核|运行评审/i;
+const DEFER_RESPONSE_PATTERN = /more detail|common options|not sure|review again|add detail|补充|细节|选项|不确定|再审查|更多细节|常见选项/i;
+const AFFIRMATIVE_RESPONSE_PATTERN = /^(?:yes|y|agree|agreed|proceed|continue|go ahead|do it|recommended|default|confirm|confirmed|generate scaffold(?: now)?|start scaffold(?: generation)?|立即生成|开始生成(?:代码)?脚手架|生成(?:代码)?脚手架|按推荐方案继续|按你推荐的默认方案继续|按默认方案继续|同意|是的|继续)$/i;
 const SOURCE_SEARCH_STOP_WORDS = new Set([
     "the",
     "and",
@@ -174,6 +181,239 @@ function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
             return true;
         });
     return normalized.slice(0, maxItems);
+}
+
+function normalizeMessageAction(value: unknown): MessageAction | null {
+    return value === "generate_scaffold" || value === "run_review" || value === "send_message"
+        ? value
+        : null;
+}
+
+function normalizeMessageQuestionStatus(value: unknown): MessageQuestionStatus | null {
+    return value === "pending" || value === "answered" || value === "stale"
+        ? value
+        : null;
+}
+
+function normalizeQuestionKey(value: string) {
+    return value
+        .replace(/\(ref:[^)]+\)/gi, " ")
+        .replace(/^(当前判断：|current view:)/i, " ")
+        .replace(/^(需要确认：|please confirm:)/i, " ")
+        .replace(/[?？!！.,，。:："'`]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase()
+        .slice(0, 180);
+}
+
+function normalizeAttachments(value: unknown): Attachment[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+
+    const normalized = value
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+        .map((item) => {
+            const type =
+                item.type === "image" || item.type === "text" || item.type === "pdf"
+                    ? item.type
+                    : null;
+            const mimeType = typeof item.mimeType === "string" ? item.mimeType.trim() : "";
+            const content = typeof item.content === "string" ? item.content : "";
+            const name = typeof item.name === "string" ? item.name.trim() : "";
+            if (!type || !mimeType || !content || !name) return null;
+            return {
+                type,
+                mimeType,
+                content,
+                name
+            } satisfies Attachment;
+        })
+        .filter((item): item is Attachment => Boolean(item));
+
+    return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeMessageOptionValue(value: unknown): MessageOption | null {
+    if (!value || typeof value !== "object") return null;
+
+    const candidate = value as Partial<MessageOption>;
+    const label = typeof candidate.label === "string" ? candidate.label.trim() : "";
+    const rawValue = typeof candidate.value === "string" ? candidate.value.trim() : "";
+    const optionValue = rawValue || label;
+
+    if (!label && !optionValue) return null;
+
+    return {
+        label: label || optionValue,
+        value: optionValue,
+        action: normalizeMessageAction(candidate.action) ?? undefined,
+        questionKey: typeof candidate.questionKey === "string" && candidate.questionKey.trim()
+            ? normalizeQuestionKey(candidate.questionKey)
+            : undefined,
+        stale: candidate.stale === true ? true : undefined
+    };
+}
+
+function normalizeMessageValue(value: unknown): Message | null {
+    if (!value || typeof value !== "object") return null;
+
+    const candidate = value as Partial<Message>;
+    const role = candidate.role === "assistant" ? "assistant" : candidate.role === "user" ? "user" : null;
+    const content = typeof candidate.content === "string" ? candidate.content : "";
+    if (!role) return null;
+
+    const looksLikeTrackedQuestion =
+        role === "assistant" &&
+        (
+            /[?？]/.test(content) ||
+            /需要确认：|please confirm:/i.test(content) ||
+            Array.isArray(candidate.options)
+        );
+    const inferredQuestionKey =
+        typeof candidate.questionKey === "string" && candidate.questionKey.trim()
+            ? normalizeQuestionKey(candidate.questionKey)
+            : looksLikeTrackedQuestion && content.trim()
+                ? normalizeQuestionKey(normalizeSingleQuestion(content))
+                : undefined;
+    const inferredQuestionAction =
+        normalizeMessageAction(candidate.questionAction) ??
+        (looksLikeTrackedQuestion && content.trim() ? inferQuestionAction(content) ?? undefined : undefined);
+    const options = Array.isArray(candidate.options)
+        ? candidate.options.reduce<MessageOption[]>((acc, option) => {
+            const normalizedOption = normalizeMessageOptionValue(option);
+            if (!normalizedOption) return acc;
+
+            acc.push({
+                ...normalizedOption,
+                action: resolveOptionAction(normalizedOption, inferredQuestionAction ?? null) ?? undefined,
+                questionKey: inferredQuestionKey ?? normalizedOption.questionKey ?? undefined
+            });
+            return acc;
+        }, [])
+        : undefined;
+    const inferredQuestionStatus =
+        normalizeMessageQuestionStatus(candidate.questionStatus) ??
+        (looksLikeTrackedQuestion && inferredQuestionKey ? "pending" : undefined);
+
+    return {
+        role,
+        content,
+        options: options && options.length > 0 ? options : undefined,
+        attachments: normalizeAttachments(candidate.attachments),
+        questionKey: inferredQuestionKey,
+        questionStatus: inferredQuestionStatus,
+        questionAction: inferredQuestionAction,
+        answeredQuestionKey: typeof candidate.answeredQuestionKey === "string" && candidate.answeredQuestionKey.trim()
+            ? normalizeQuestionKey(candidate.answeredQuestionKey)
+            : undefined,
+        triggeredAction: normalizeMessageAction(candidate.triggeredAction) ?? undefined
+    };
+}
+
+function normalizeMessages(value: unknown): Message[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((item) => normalizeMessageValue(item))
+        .filter((item): item is Message => Boolean(item));
+}
+
+function inferQuestionAction(questionText: string): MessageAction | null {
+    if (GENERATE_SCAFFOLD_PATTERN.test(questionText)) return "generate_scaffold";
+    if (RUN_REVIEW_PATTERN.test(questionText)) return "run_review";
+    return null;
+}
+
+function isAffirmativeForAction(value: string, action: MessageAction | null) {
+    if (!action) return false;
+    if (DEFER_RESPONSE_PATTERN.test(value)) return false;
+
+    if (action === "generate_scaffold") {
+        return GENERATE_SCAFFOLD_PATTERN.test(value) || AFFIRMATIVE_RESPONSE_PATTERN.test(value);
+    }
+
+    if (action === "run_review") {
+        return RUN_REVIEW_PATTERN.test(value) || AFFIRMATIVE_RESPONSE_PATTERN.test(value);
+    }
+
+    return false;
+}
+
+function resolveOptionAction(
+    option: Pick<MessageOption, "label" | "value" | "action">,
+    questionAction: MessageAction | null
+): MessageAction | null {
+    if (option.action) return option.action;
+
+    const combined = `${option.label} ${option.value}`.trim();
+    if (questionAction && isAffirmativeForAction(combined, questionAction)) {
+        return questionAction;
+    }
+
+    return inferQuestionAction(combined);
+}
+
+function getLatestPendingQuestion(messages: Message[]) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message.role !== "assistant") continue;
+        if (!message.questionKey || message.questionStatus === "answered" || message.questionStatus === "stale") continue;
+        return message;
+    }
+    return null;
+}
+
+function closeOpenAssistantQuestions(messages: Message[], answeredQuestionKey?: string | null) {
+    return messages.map((message) => {
+        if (message.role !== "assistant" || !message.questionKey) return message;
+        if (message.questionStatus === "answered" || message.questionStatus === "stale") return message;
+
+        const nextStatus: MessageQuestionStatus =
+            answeredQuestionKey && message.questionKey === answeredQuestionKey
+                ? "answered"
+                : "stale";
+
+        return {
+            ...message,
+            questionStatus: nextStatus,
+            options: message.options?.map((option) => ({ ...option, stale: true }))
+        };
+    });
+}
+
+function buildResolvedConfirmationLog(messages: Message[], maxItems: number = 12) {
+    const assistantQuestions = new Map<string, string>();
+    const resolvedByQuestionKey = new Map<string, {
+        questionKey: string;
+        question: string;
+        answer: string;
+        action: MessageAction | null;
+    }>();
+
+    messages.forEach((message) => {
+        if (message.role !== "assistant" || !message.questionKey) return;
+        const normalizedQuestion = normalizeSingleQuestion(message.content || "");
+        assistantQuestions.set(message.questionKey, normalizedQuestion || message.questionKey);
+    });
+
+    messages
+        .filter((message): message is Message & { answeredQuestionKey: string } =>
+            message.role === "user" &&
+            typeof message.answeredQuestionKey === "string" &&
+            message.answeredQuestionKey.trim().length > 0
+        )
+        .forEach((message) => {
+            const answer = message.content.trim();
+            if (!answer) return;
+
+            resolvedByQuestionKey.set(message.answeredQuestionKey, {
+                questionKey: message.answeredQuestionKey,
+                question: assistantQuestions.get(message.answeredQuestionKey) || message.answeredQuestionKey,
+                answer,
+                action: message.triggeredAction ?? null
+            });
+        });
+
+    return [...resolvedByQuestionKey.values()].slice(-maxItems);
 }
 
 function createEmptyUiRequirements(): UiRequirements {
@@ -457,6 +697,7 @@ function normalizeSourceArtifacts(value: unknown): SourceArtifact[] {
 }
 
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
+    const messages = normalizeMessages(data?.messages);
     const evaluation = normalizeEvaluation(data?.evaluation ?? null);
     const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
     const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
@@ -500,6 +741,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
             : (designStage === "ready_to_generate" ? Date.now() : null);
 
     return {
+        messages,
         evaluation,
         designStage,
         uiDesignState,
@@ -893,7 +1135,46 @@ function buildAssistantDisplayContent(
     return parts.join("\n\n");
 }
 
-function buildCommonFallbackOptions(language: "zh" | "en") {
+function buildCommonFallbackOptions(
+    language: "zh" | "en",
+    questionAction: MessageAction | null = null
+): MessageOption[] {
+    if (questionAction === "generate_scaffold") {
+        if (language === "zh") {
+            return [
+                { label: "开始生成脚手架", value: "开始生成脚手架。", action: "generate_scaffold" },
+                { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
+                { label: "打开审核页", value: "请切换到审核页，我想先复核一下。", action: "run_review" },
+                { label: "暂时不生成", value: "我暂时不生成，请继续完善架构包。" }
+            ];
+        }
+
+        return [
+            { label: "Generate scaffold now", value: "Generate scaffold now.", action: "generate_scaffold" },
+            { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
+            { label: "Open review tab", value: "Open the review tab first so I can double-check the plan.", action: "run_review" },
+            { label: "Not yet", value: "Not yet. Please continue refining the architecture pack." }
+        ];
+    }
+
+    if (questionAction === "run_review") {
+        if (language === "zh") {
+            return [
+                { label: "打开审核页", value: "请切换到审核页。", action: "run_review" },
+                { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
+                { label: "给我常见选项", value: "请给我 2 到 3 个常见方案并说明取舍。" },
+                { label: "暂时不确定", value: "我暂时不确定，请按最稳妥的默认方案推进。" }
+            ];
+        }
+
+        return [
+            { label: "Open review tab", value: "Open the review tab.", action: "run_review" },
+            { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
+            { label: "Show me common options", value: "Please show me 2 or 3 common options and explain the tradeoffs." },
+            { label: "I'm not sure yet", value: "I'm not sure yet. Please continue with the safest default approach." }
+        ];
+    }
+
     if (language === "zh") {
         return [
             { label: "按推荐方案继续", value: "按你推荐的默认方案继续。" },
@@ -913,24 +1194,42 @@ function buildCommonFallbackOptions(language: "zh" | "en") {
 
 function ensureCommonQuestionOptions(
     questionText: string,
-    options: Array<{ label: string; value: string }>,
-    contextText: string
+    options: MessageOption[],
+    contextText: string,
+    questionAction: MessageAction | null = null,
+    questionKey?: string | null
 ) {
     const normalizedQuestion = questionText.trim();
-    if (!normalizedQuestion) return options;
+    const effectiveQuestionAction = questionAction ?? inferQuestionAction(normalizedQuestion);
+    const normalized = options.reduce<MessageOption[]>((acc, option) => {
+        acc.push({
+            ...option,
+            action: resolveOptionAction(option, effectiveQuestionAction) ?? undefined,
+            questionKey: questionKey ?? option.questionKey ?? undefined
+        });
+        return acc;
+    }, []);
+    if (!normalizedQuestion) return normalized;
 
-    const language = detectResponseLanguage(normalizedQuestion, contextText);
-    const normalized = [...options];
+    const languageSeed = normalized.length > 0
+        ? normalized.map((option) => `${option.label} ${option.value}`).join(" ")
+        : `${normalizedQuestion} ${contextText}`;
+    const language = detectResponseLanguage(languageSeed);
     const seen = new Set(
-        normalized.map((option) => `${option.label.trim().toLowerCase()}::${option.value.trim().toLowerCase()}`)
+        normalized.map((option) => `${option.label.trim().toLowerCase()}::${option.value.trim().toLowerCase()}::${option.action || ""}`)
     );
-    const common = buildCommonFallbackOptions(language);
+    if (normalized.length >= 2) return normalized.slice(0, 4);
+
+    const common = buildCommonFallbackOptions(language, effectiveQuestionAction);
 
     for (const option of common) {
         if (normalized.length >= 4) break;
-        const key = `${option.label.toLowerCase()}::${option.value.toLowerCase()}`;
+        const key = `${option.label.toLowerCase()}::${option.value.toLowerCase()}::${option.action || ""}`;
         if (seen.has(key)) continue;
-        normalized.push(option);
+        normalized.push({
+            ...option,
+            questionKey: questionKey ?? option.questionKey
+        });
         seen.add(key);
     }
 
@@ -970,7 +1269,7 @@ function extractFallbackAssistantText(raw: string) {
     return clipText(plainText, 600);
 }
 
-function parseOptionsBlock(raw: string) {
+function parseOptionsBlock(raw: string): MessageOption[] {
     const parsed = raw
         .split("\n")
         .map((line) => line.trim())
@@ -989,7 +1288,7 @@ function parseOptionsBlock(raw: string) {
                 value
             };
         })
-        .filter((item): item is { label: string; value: string } => Boolean(item));
+        .filter((item): item is MessageOption => Boolean(item));
 
     if (parsed.length === 0) return [];
 
@@ -1067,11 +1366,16 @@ function buildDesignMemory(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
+    messages: Message[],
     maxChars: number = EVALUATE_DESIGN_MEMORY_CHARS
 ) {
     const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
     const clarified = normalizedAnalysis.clarified;
-    const missing = normalizedAnalysis.missing;
+    const resolvedConfirmations = buildResolvedConfirmationLog(messages);
+    const resolvedQuestionKeys = new Set(
+        resolvedConfirmations.map((item) => normalizeQuestionKey(item.questionKey))
+    );
+    const missing = normalizedAnalysis.missing.filter((item) => !resolvedQuestionKeys.has(normalizeQuestionKey(item)));
     const ui = normalizeUiRequirements(normalizedAnalysis.ui);
     const lastDecisionAt = diagramGovernance.lastDecisionAt
         ? new Date(diagramGovernance.lastDecisionAt).toISOString()
@@ -1087,6 +1391,13 @@ function buildDesignMemory(
         "# Confirmed Requirements",
         clarified.length > 0
             ? clarified.slice(0, 30).map((item) => `- ${clipText(item, 300)}`).join("\n")
+            : "- None",
+        "",
+        "# Resolved Confirmations",
+        resolvedConfirmations.length > 0
+            ? resolvedConfirmations
+                .map((item) => `- Q: ${clipText(item.question, 220)} | A: ${clipText(item.answer, 220)}`)
+                .join("\n")
             : "- None",
         "",
         "# Outstanding Ambiguities",
@@ -1435,7 +1746,7 @@ function WizardContent() {
     const [loadedVersionId, setLoadedVersionId] = useState<string | null>(null);
     const [hasUserEdited, setHasUserEdited] = useState(false);
 
-    const [messages, setMessages] = useState<Message[]>(cachedSnapshot?.data.messages ?? []);
+    const [messages, setMessages] = useState<Message[]>(initialNormalizedState.messages);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [messageWindow, setMessageWindow] = useState(MESSAGE_WINDOW_SIZE);
@@ -1575,7 +1886,7 @@ function WizardContent() {
 
             const data = latestVersion.data;
             const normalizedDesignState = normalizeVersionDesignState(data);
-            setMessages(data.messages);
+            setMessages(normalizedDesignState.messages);
             setMessageWindow(MESSAGE_WINDOW_SIZE);
             setEvaluation(normalizedDesignState.evaluation);
             setGeneration(data.generation);
@@ -2133,7 +2444,7 @@ function WizardContent() {
         if (message) updateAssistantPlaceholder(message);
     };
 
-    const handleSend = async (overrideInput?: string) => {
+    const handleSend = async (overrideInput?: string, selectedOption?: MessageOption) => {
         const textToSend = overrideInput || input;
 
         if (isLoading && !textToSend.trim() && pendingAttachments.length === 0) {
@@ -2149,29 +2460,57 @@ function WizardContent() {
         }
 
         const attachmentsToSend = [...pendingAttachments];
-
-        const requestId = evalRequestIdRef.current + 1;
-        evalRequestIdRef.current = requestId;
+        const latestPendingQuestion = getLatestPendingQuestion(messages);
+        const answeredQuestionKey = selectedOption?.questionKey
+            ? normalizeQuestionKey(selectedOption.questionKey)
+            : latestPendingQuestion?.questionKey ?? null;
+        const contextualAction = latestPendingQuestion?.questionAction ?? null;
+        const selectedOptionAction = selectedOption
+            ? resolveOptionAction(selectedOption, contextualAction)
+            : null;
+        const typedAction = inferQuestionAction(textToSend);
+        const contextualTriggeredAction =
+            !selectedOptionAction && contextualAction && isAffirmativeForAction(textToSend, contextualAction)
+                ? contextualAction
+                : null;
+        const triggeredAction = selectedOptionAction ?? contextualTriggeredAction ?? typedAction;
+        const preparedMessages = closeOpenAssistantQuestions(messages, answeredQuestionKey);
 
         // Optimistic UI Update
         setHasUserEdited(true);
         const newUserMessage: Message = {
             role: "user",
             content: textToSend,
-            attachments: attachmentsToSend
+            attachments: attachmentsToSend,
+            answeredQuestionKey: answeredQuestionKey ?? undefined,
+            triggeredAction: triggeredAction ?? undefined
         };
-
-        const newMessages = [...messages, newUserMessage];
-        const assistantPlaceholder: Message = { role: "assistant", content: "" };
-        const assistantIndex = newMessages.length;
+        const newMessages = [...preparedMessages, newUserMessage];
         const latestUserContext = [...newMessages]
             .reverse()
             .find((message) => message.role === "user")
             ?.content ?? "";
-        setMessages([...newMessages, assistantPlaceholder]);
         setMessageWindow(MESSAGE_WINDOW_SIZE);
         setInput("");
         setPendingAttachments([]);
+
+        if (triggeredAction === "generate_scaffold") {
+            setMessages(newMessages);
+            await handleGenerate();
+            return;
+        }
+
+        if (triggeredAction === "run_review") {
+            setMessages(newMessages);
+            setActiveTab("review");
+            return;
+        }
+
+        const requestId = evalRequestIdRef.current + 1;
+        evalRequestIdRef.current = requestId;
+        const assistantPlaceholder: Message = { role: "assistant", content: "" };
+        const assistantIndex = newMessages.length;
+        setMessages([...newMessages, assistantPlaceholder]);
         setIsLoading(true);
 
         try {
@@ -2186,6 +2525,7 @@ function WizardContent() {
                 architecturePack,
                 decisionRecords,
                 guardrailChecklist,
+                newMessages,
                 EVALUATE_DESIGN_MEMORY_CHARS
             );
             const controller = new AbortController();
@@ -2282,6 +2622,11 @@ function WizardContent() {
             const baselineDiagramNormalized = normalizeMermaidForComparison(baselineDiagramForRequest);
             let latestAppliedDiagram = baselineDiagramForRequest;
             let latestAppliedDiagramNormalized = baselineDiagramNormalized;
+            const resolvedQuestionKeys = new Set(
+                buildResolvedConfirmationLog(newMessages).map((item) => normalizeQuestionKey(item.questionKey))
+            );
+            let currentQuestionKey: string | null = null;
+            let currentQuestionAction: MessageAction | null = null;
             const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
@@ -2345,6 +2690,8 @@ function WizardContent() {
                     const rawQuestion = questionMatch[1];
                     const q = normalizeSingleQuestion(rawQuestion);
                     if (q) {
+                        currentQuestionKey = normalizeQuestionKey(q);
+                        currentQuestionAction = inferQuestionAction(rawQuestion);
                         currentEval.next_step.question = q;
                         const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis);
                         setMessages(prev => {
@@ -2355,12 +2702,17 @@ function WizardContent() {
                             const ensuredOptions = ensureCommonQuestionOptions(
                                 q,
                                 current.options ?? [],
-                                latestUserContext
+                                latestUserContext,
+                                currentQuestionAction,
+                                currentQuestionKey
                             );
                             updated[assistantIndex] = {
                                 ...current,
                                 content: displayContent || q,
-                                options: ensuredOptions
+                                options: ensuredOptions,
+                                questionKey: currentQuestionKey,
+                                questionStatus: "pending",
+                                questionAction: currentQuestionAction ?? undefined
                             };
                             return updated;
                         });
@@ -2395,7 +2747,8 @@ function WizardContent() {
 
                 const missingMatch = buffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/);
                 if (missingMatch) {
-                    currentEval.analysis.missing = parseAnalysisList(missingMatch[1]);
+                    currentEval.analysis.missing = parseAnalysisList(missingMatch[1])
+                        .filter((item) => !resolvedQuestionKeys.has(normalizeQuestionKey(item)));
                     currentEval.openQuestions = currentEval.analysis.missing.slice(0, 8);
                 }
 
@@ -2485,7 +2838,9 @@ function WizardContent() {
                     const options = ensureCommonQuestionOptions(
                         currentEval.next_step.question || "",
                         parseOptionsBlock(optionsMatch[1]),
-                        latestUserContext
+                        latestUserContext,
+                        currentQuestionAction,
+                        currentQuestionKey
                     );
                     setMessages(prev => {
                         if (evalRequestIdRef.current !== requestId) return prev;
@@ -2526,7 +2881,9 @@ function WizardContent() {
                     const fallbackOptions = ensureCommonQuestionOptions(
                         currentEval.next_step.question || fallbackText,
                         current.options ?? [],
-                        latestUserContext
+                        latestUserContext,
+                        currentQuestionAction,
+                        currentQuestionKey
                     );
                     const nextContent = current.content.trim().length > 0 ? current.content : fallbackText;
                     const nextOptions = current.options && current.options.length > 0
@@ -2563,14 +2920,14 @@ function WizardContent() {
         }
     };
 
-    const handleOptionClick = (option: { label: string; value: string }) => {
+    const handleOptionClick = (option: MessageOption) => {
         const optionLabel = option.label.trim();
         const optionValue = option.value.trim();
         const textToSend = optionValue || optionLabel;
         if (!textToSend) return;
 
         setInput(textToSend);
-        void handleSend(textToSend);
+        void handleSend(textToSend, option);
     };
 
     const handleResizeStart = (e: React.PointerEvent) => {
@@ -2752,6 +3109,14 @@ function WizardContent() {
         if (!project?.id) return;
         if (isGenerating || isCheckingOut) return;
 
+        setMessages((prev) => {
+            const pending = getLatestPendingQuestion(prev);
+            return closeOpenAssistantQuestions(
+                prev,
+                pending?.questionAction === "generate_scaffold" ? pending.questionKey : null
+            );
+        });
+
         setGenerateError(null);
         if (!isArchitecturePackReady) {
             setGenerateError(
@@ -2785,6 +3150,14 @@ function WizardContent() {
             setReviewError("Paste implementation notes, planned file changes, or code snippets before running review.");
             return;
         }
+
+        setMessages((prev) => {
+            const pending = getLatestPendingQuestion(prev);
+            return closeOpenAssistantQuestions(
+                prev,
+                pending?.questionAction === "run_review" ? pending.questionKey : null
+            );
+        });
 
         setIsReviewing(true);
         setReviewError(null);

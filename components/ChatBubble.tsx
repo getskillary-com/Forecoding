@@ -1,11 +1,11 @@
 import { FileText } from "lucide-react";
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Message } from '@/types';
+import { Message, MessageOption } from '@/types';
 
 interface Props {
     message: Message;
-    onOptionClick?: (option: { label: string; value: string }) => void;
+    onOptionClick?: (option: MessageOption) => void;
 }
 
 export function ChatBubble({ message, onOptionClick }: Props) {
@@ -43,12 +43,19 @@ export function ChatBubble({ message, onOptionClick }: Props) {
 
             {message.options && message.options.length > 0 && (
                 <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 max-w-[80%] animate-in fade-in slide-in-from-top-2">
-                    {message.options.map((opt, idx) => (
+                    {message.options.map((opt, idx) => {
+                        const isDisabled = opt.stale === true || message.questionStatus === "answered" || message.questionStatus === "stale";
+                        return (
                         <button
                             key={idx}
                             type="button"
                             onClick={() => onOptionClick?.(opt)}
-                            className="text-left p-3 text-sm bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-900 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors shadow-sm text-blue-700 dark:text-blue-300 font-medium"
+                            disabled={isDisabled}
+                            className={`text-left p-3 text-sm border rounded-lg transition-colors shadow-sm font-medium ${
+                                isDisabled
+                                    ? 'bg-gray-100 dark:bg-gray-900 border-gray-200 dark:border-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+                                    : 'bg-white dark:bg-gray-800 border-blue-200 dark:border-blue-900 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                            }`}
                         >
                             {(() => {
                                 const normalizedLabel = (opt.label || opt.value || "").trim();
@@ -65,7 +72,8 @@ export function ChatBubble({ message, onOptionClick }: Props) {
                                 );
                             })()}
                         </button>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>

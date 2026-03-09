@@ -235,10 +235,28 @@ export interface Analysis {
     ui?: UiRequirements;
 }
 
+export type MessageAction =
+    | "send_message"
+    | "generate_scaffold"
+    | "run_review";
+
+export type MessageQuestionStatus =
+    | "pending"
+    | "answered"
+    | "stale";
+
+export interface MessageOption {
+    label: string;
+    value: string;
+    action?: MessageAction;
+    questionKey?: string | null;
+    stale?: boolean;
+}
+
 export interface NextStep {
     reasoning: string;
     question: string | null;
-    options?: { label: string; value: string }[];
+    options?: MessageOption[];
 }
 
 export interface DiagramGovernance {
@@ -349,8 +367,13 @@ export interface Attachment {
 export interface Message {
     role: 'user' | 'assistant';
     content: string;
-    options?: { label: string; value: string }[];
+    options?: MessageOption[];
     attachments?: Attachment[];
+    questionKey?: string | null;
+    questionStatus?: MessageQuestionStatus | null;
+    questionAction?: MessageAction | null;
+    answeredQuestionKey?: string | null;
+    triggeredAction?: MessageAction | null;
 }
 
 // v2: Expanded Project Data
