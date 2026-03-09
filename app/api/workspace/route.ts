@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getServerUser } from "@/lib/server-auth";
 import { getWorkspaceByUserId, saveWorkspaceByUserId } from "@/lib/data/workspaces";
+import { normalizeProjects } from "@/lib/project-language";
 import type { Project } from "@/types";
 
 function parseProjects(raw: unknown): Project[] {
-    if (!Array.isArray(raw)) return [];
-    return raw as Project[];
+    return normalizeProjects(raw);
 }
 
 async function requireUserId() {

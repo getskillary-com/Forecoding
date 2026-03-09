@@ -3,15 +3,17 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { WorkspaceLanguage } from "@/lib/project-language";
 
 interface Props {
     content: string;
+    language: WorkspaceLanguage;
 }
 
-export function ToolStackTable({ content }: Props) {
+export function ToolStackTable({ content, language }: Props) {
     return (
         <div className="w-full overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
-            <h3 className="text-lg font-semibold mb-4">Recommended Tool Stack</h3>
+            <h3 className="text-lg font-semibold mb-4">{language === "zh" ? "推荐技术栈" : "Recommended Tool Stack"}</h3>
             <div className="prose dark:prose-invert max-w-none">
                 <ReactMarkdown
                     remarkPlugins={[remarkGfm]}

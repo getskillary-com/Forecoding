@@ -1,6 +1,5 @@
 import type {
     ArchitecturePack,
-    ArchitectureReviewResult,
     DecisionRecord,
     DesignStage,
     GuardrailChecklist,
@@ -15,28 +14,17 @@ import {
     createMinimumViableLoopChecklist,
     createReadinessChecklist,
     normalizeArchitecturePack,
-    normalizeArchitectureReviewHistory,
     normalizeDecisionRecords,
     normalizeGuardrailChecklist,
     normalizeReadinessOverrides
 } from "@/lib/architecture";
 
-export type ScaffoldReviewState =
-    | "missing_review"
-    | "stale_review"
-    | "approved_review";
-
-export type ScaffoldEligibilityCode =
-    | "ARCHITECTURE_NOT_READY"
-    | "REVIEW_REQUIRED"
-    | "REVIEW_STALE";
+export type ScaffoldEligibilityCode = "ARCHITECTURE_NOT_READY";
 
 export type ScaffoldEligibility = {
     readiness: ReadinessChecklist;
     minimumViableLoop: MinimumViableLoopChecklist;
     architectureFingerprint: string;
-    latestReview: ArchitectureReviewResult | null;
-    reviewState: ScaffoldReviewState;
     canCheckout: boolean;
     canGenerate: boolean;
     blockingReasons: string[];
@@ -48,10 +36,6 @@ export function buildScaffoldEligibilityErrorMessage(eligibility: Pick<ScaffoldE
     switch (eligibility.code) {
         case "ARCHITECTURE_NOT_READY":
             return "Architecture pack is not ready for scaffold generation.";
-        case "REVIEW_STALE":
-            return "Architecture changed after the last approved review. Run review again before scaffold generation.";
-        case "REVIEW_REQUIRED":
-            return "Run an architecture review and resolve findings before scaffold generation.";
         default:
             return "Scaffold generation is not allowed.";
     }
@@ -62,7 +46,6 @@ type EligibilityInput = {
     decisionRecords: unknown;
     guardrailChecklist: unknown;
     readinessOverrides?: unknown;
-    reviewHistory?: unknown;
 };
 
 function stableSerialize(value: unknown): string {
@@ -97,13 +80,6 @@ function hashString(value: string): string {
     return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-function buildReviewBlockingReasons(latestReview: ArchitectureReviewResult | null): string[] {
-    if (latestReview?.verdict && latestReview.verdict !== "aligned") {
-        return ["Resolve the latest architecture review findings and rerun review before scaffold generation."];
-    }
-    return ["Run an architecture review and resolve findings before scaffold generation."];
-}
-
 export function buildArchitectureFingerprint(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
@@ -124,8 +100,6 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
     const decisionRecords = normalizeDecisionRecords(input.decisionRecords);
     const guardrailChecklist = normalizeGuardrailChecklist(input.guardrailChecklist);
     const readinessOverrides = normalizeReadinessOverrides(input.readinessOverrides);
-    const reviewHistory = normalizeArchitectureReviewHistory(input.reviewHistory);
-    const latestReview = reviewHistory[reviewHistory.length - 1] || null;
     const readiness = createReadinessChecklist(
         architecturePack,
         decisionRecords,
@@ -145,20 +119,11 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
         readinessOverrides
     );
 
-    let reviewState: ScaffoldReviewState = "missing_review";
-    if (latestReview?.verdict === "aligned") {
-        reviewState = latestReview.reviewedArchitectureFingerprint === architectureFingerprint
-            ? "approved_review"
-            : "stale_review";
-    }
-
     if (!minimumViableLoop.ready) {
         return {
             readiness,
             minimumViableLoop,
             architectureFingerprint,
-            latestReview,
-            reviewState,
             canCheckout: false,
             canGenerate: false,
             blockingReasons: minimumViableLoop.blockingIssues,
@@ -167,42 +132,10 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
         };
     }
 
-    if (reviewState === "missing_review") {
-        return {
-            readiness,
-            minimumViableLoop,
-            architectureFingerprint,
-            latestReview,
-            reviewState,
-            canCheckout: false,
-            canGenerate: false,
-            blockingReasons: buildReviewBlockingReasons(latestReview),
-            code: "REVIEW_REQUIRED",
-            designStage: "functional_architecture"
-        };
-    }
-
-    if (reviewState === "stale_review") {
-        return {
-            readiness,
-            minimumViableLoop,
-            architectureFingerprint,
-            latestReview,
-            reviewState,
-            canCheckout: false,
-            canGenerate: false,
-            blockingReasons: ["Architecture changed after the last approved review. Run review again before scaffold generation."],
-            code: "REVIEW_STALE",
-            designStage: "functional_architecture"
-        };
-    }
-
     return {
         readiness,
         minimumViableLoop,
         architectureFingerprint,
-        latestReview,
-        reviewState,
         canCheckout: true,
         canGenerate: true,
         blockingReasons: [],
@@ -229,7 +162,6 @@ export function computeVersionScaffoldEligibility(
         architecturePack: data?.architecturePack,
         decisionRecords: data?.decisionRecords,
         guardrailChecklist: data?.guardrailChecklist,
-        readinessOverrides: data?.readinessOverrides,
-        reviewHistory: data?.reviewHistory
+        readinessOverrides: data?.readinessOverrides
     });
 }

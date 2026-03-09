@@ -1,4 +1,5 @@
 import type { Project, ProjectVersion, ProjectVersionData } from "@/types";
+import { normalizeProjects } from "@/lib/project-language";
 
 type WorkspaceCache = {
     parsed: Project[];
@@ -56,7 +57,7 @@ export function readProjectsFromLocalStorage(): Project[] {
     if (!legacyRaw) return [];
 
     try {
-        const parsed = JSON.parse(legacyRaw) as Project[];
+        const parsed = normalizeProjects(JSON.parse(legacyRaw));
         if (!Array.isArray(parsed)) {
             localStorage.removeItem(LEGACY_LOCAL_KEY);
             return [];
@@ -72,7 +73,7 @@ export function readProjectsFromLocalStorage(): Project[] {
 
 export function writeProjectsToLocalStorage(projects: Project[]): void {
     if (typeof window === "undefined") return;
-    setCache(projects);
+    setCache(normalizeProjects(projects));
 }
 
 export function getCachedProject(projectId?: string | null): Project | null {

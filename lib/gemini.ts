@@ -687,6 +687,7 @@ type EvaluateRuntimeOptions = {
     sourceContext?: string;
     designMemory?: string;
     diagramPolicy?: string;
+    outputLanguage?: OutputLanguage;
 };
 
 export async function* streamEvaluateInput(
@@ -724,8 +725,11 @@ export async function* streamEvaluateInput(
     const coachModeBlock = options?.generationReady
         ? `\n\n# Runtime Mode\nScaffold already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`
         : "";
+    const responseLanguageBlock = options?.outputLanguage === "zh"
+        ? `\n\n# Strict Response Language\nAll human-readable output must be in Simplified Chinese. Keep XML tags in English, but every question, summary, option label, note, and explanation must remain in Chinese. Do not switch back to English unless quoting code, file paths, package names, or API identifiers.`
+        : `\n\n# Strict Response Language\nAll human-readable output must be in English. Keep XML tags in English, and do not switch to Chinese unless quoting user-provided content.`;
 
-    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
+    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}${responseLanguageBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
         const activeProvider = getActiveAiProvider();

@@ -31,7 +31,7 @@ const capabilityCards = [
     {
         icon: ShieldCheck,
         title: "Delivery Guardrails",
-        description: "Turn architecture into review checklists, test strategy, and scaffold-ready implementation order."
+        description: "Turn architecture into acceptance criteria, test strategy, and scaffold-ready implementation order."
     }
 ];
 
@@ -45,8 +45,8 @@ const flowSteps = [
         description: "Forecoding produces an architecture pack with ownership, contracts, and tradeoffs."
     },
     {
-        title: "Review before generating",
-        description: "Run architecture review on the implementation plan, then generate scaffold with guardrails."
+        title: "Lock PRD and generate",
+        description: "Keep PRD, architecture, and delivery guardrails synchronized before generating scaffold."
     }
 ];
 
@@ -146,7 +146,7 @@ export default function Home() {
                                 </li>
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Review implementation before scaffold handoff
+                                    Keep PRD and tasks synchronized before scaffold handoff
                                 </li>
                             </ul>
                         </div>

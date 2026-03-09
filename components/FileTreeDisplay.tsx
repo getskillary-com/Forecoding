@@ -1,12 +1,12 @@
-"use client";
-
 import React, { useEffect, useMemo, useState } from "react";
 import { Folder, FileCode, Download, ChevronRight, ChevronDown } from "lucide-react";
 import { FileNode } from "@/types";
+import type { WorkspaceLanguage } from "@/lib/project-language";
 
 interface Props {
     content: FileNode[] | string;
     projectName?: string;
+    language: WorkspaceLanguage;
 }
 
 type PreviewFile = {
@@ -58,13 +58,15 @@ function TreeNode({
     depth = 0,
     currentPath = "",
     selectedPath,
-    onSelectFile
+    onSelectFile,
+    language
 }: {
     node: FileNode;
     depth?: number;
     currentPath?: string;
     selectedPath: string | null;
     onSelectFile: (path: string) => void;
+    language: WorkspaceLanguage;
 }) {
     const [isOpen, setIsOpen] = useState(true);
     const isFolder = node.type === "folder";
@@ -82,7 +84,7 @@ function TreeNode({
     return (
         <div className="select-none">
             <div
-                className={`flex items-center gap-2 py-1 px-2 rounded transition-colors cursor-pointer text-sm ${
+                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm transition-colors ${
                     isSelected
                         ? "bg-blue-100 dark:bg-blue-900/30"
                         : "hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -91,31 +93,36 @@ function TreeNode({
                 onClick={handleClick}
             >
                 {isFolder ? (
-                    isOpen ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />
+                    isOpen ? <ChevronDown className="h-4 w-4 text-gray-500" /> : <ChevronRight className="h-4 w-4 text-gray-500" />
                 ) : (
                     <span className="w-4" />
                 )}
 
                 {isFolder ? (
-                    <Folder className="w-4 h-4 text-blue-500" />
+                    <Folder className="h-4 w-4 text-blue-500" />
                 ) : (
-                    <FileCode className="w-4 h-4 text-gray-500" />
+                    <FileCode className="h-4 w-4 text-gray-500" />
                 )}
 
                 <span className="font-mono text-gray-700 dark:text-gray-300">{node.name}</span>
-                {!isFolder && <span className="text-xs text-gray-400 ml-auto italic">Spec Included</span>}
+                {!isFolder && (
+                    <span className="ml-auto text-xs italic text-gray-400">
+                        {language === "zh" ? "含规范说明" : "Spec Included"}
+                    </span>
+                )}
             </div>
 
             {isFolder && isOpen && node.children && (
                 <div>
-                    {node.children.map((child, i) => (
+                    {node.children.map((child, index) => (
                         <TreeNode
-                            key={`${nodePath}-${child.name}-${i}`}
+                            key={`${nodePath}-${child.name}-${index}`}
                             node={child}
                             depth={depth + 1}
                             currentPath={nodePath}
                             selectedPath={selectedPath}
                             onSelectFile={onSelectFile}
+                            language={language}
                         />
                     ))}
                 </div>
@@ -124,7 +131,7 @@ function TreeNode({
     );
 }
 
-export function FileTreeDisplay({ content, projectName }: Props) {
+export function FileTreeDisplay({ content, projectName, language }: Props) {
     const [isZipping, setIsZipping] = useState(false);
     const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
     const ZIP_REAL_CONTENT_FILES = new Set([
@@ -154,7 +161,7 @@ export function FileTreeDisplay({ content, projectName }: Props) {
         .replace(/\s+/g, " ")
         .replace(/[. ]+$/g, "");
     const zipFileName = `${zipFileNameBase || "founder-scaffold"}-scaffold.zip`;
-    const SCAFFOLD_HINT_MAX_CHARS = 1200;
+    const scaffoldHintMaxChars = 1200;
     const filesForPreview = useMemo(
         () => (typeof content === "string" ? [] : collectFiles(content)),
         [content]
@@ -165,9 +172,9 @@ export function FileTreeDisplay({ content, projectName }: Props) {
     );
     const scaffoldLanguage = useMemo(() => {
         const readme = filesForPreview.find((file) => file.path === "README.md");
-        if (!readme?.content) return "en";
+        if (!readme?.content) return language;
         return detectScaffoldLanguage(readme.content);
-    }, [filesForPreview]);
+    }, [filesForPreview, language]);
 
     useEffect(() => {
         if (filesForPreview.length === 0) {
@@ -183,9 +190,9 @@ export function FileTreeDisplay({ content, projectName }: Props) {
     }, [filesForPreview]);
 
     const toScaffoldPlaceholder = (promptPath: string, fileContent?: string) => {
-        const hint = (fileContent || "").slice(0, SCAFFOLD_HINT_MAX_CHARS);
+        const hint = (fileContent || "").slice(0, scaffoldHintMaxChars);
         if (scaffoldLanguage === "zh") {
-            return `// GENERATION PENDING\n// 打开 ${promptPath} 并让 AI 生成该文件。\n\n// Content Hint:\n/*\n${hint}...\n*/`;
+            return `// 待生成\n// 打开 ${promptPath}，并让 AI 生成这个文件。\n\n// 内容提示：\n/*\n${hint}...\n*/`;
         }
         return `// GENERATION PENDING\n// Open ${promptPath} and ask AI to generate this file.\n\n// Content Hint:\n/*\n${hint}...\n*/`;
     };
@@ -232,14 +239,15 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                     const hasExplicitPromptFile = folderFiles.some((file) => file.name === "_AI_PROMPT.md");
                     const promptOutputPath = `${currentPath}_AI_PROMPT.md`;
                     let promptContent = "";
+
                     if (scaffoldLanguage === "zh") {
                         promptContent += "# AI 代码生成任务\n\n";
-                        promptContent += `本文件包含以下目录的生成说明：\`${currentPath || "root"}\`\n\n`;
-                        promptContent += "**使用方式：** 在 AI IDE 中打开本文件，并按下列约束执行。\n\n";
+                        promptContent += `这个文件包含以下目录的生成说明：\`${currentPath || "root"}\`\n\n`;
+                        promptContent += "**使用方式：** 在 AI IDE 中打开这个文件，并按下列约束执行。\n\n";
                         promptContent += "## 强制执行顺序\n";
                         promptContent += "1. 先阅读 `ONE_CLICK_PROMPT.md`。\n";
                         promptContent += "2. 再按 `GENERATION_MANIFEST.json` 的 Phase 顺序执行。\n";
-                        promptContent += "3. 本文件仅作索引与约束，不是执行顺序来源。\n\n";
+                        promptContent += "3. 这个文件只作为索引与约束，不作为执行顺序来源。\n\n";
                         promptContent += "---\n\n";
                     } else {
                         promptContent += "# AI Code Generation Tasks\n\n";
@@ -261,7 +269,7 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                         promptContent += scaffoldLanguage === "zh" ? "**说明与逻辑：**\n" : "**Description & Logic:**\n";
                         if (includeRawContent) {
                             promptContent += scaffoldLanguage === "zh"
-                                ? "该文件为 ZIP 内真实内容。\n\n"
+                                ? "该文件的真实内容已直接包含在 ZIP 中。\n\n"
                                 : "Generated content is included directly in the ZIP.\n\n";
                         } else {
                             promptContent += `${file.content || "No specific prompt provided."}\n\n`;
@@ -272,10 +280,7 @@ export function FileTreeDisplay({ content, projectName }: Props) {
                             zip.file(relativePath, file.content);
                             zipRealFileCount += 1;
                         } else {
-                            zip.file(
-                                relativePath,
-                                toScaffoldPlaceholder(promptPath, file.content)
-                            );
+                            zip.file(relativePath, toScaffoldPlaceholder(promptPath, file.content));
                             zipPlaceholderFileCount += 1;
                         }
                     });
@@ -309,67 +314,70 @@ export function FileTreeDisplay({ content, projectName }: Props) {
 
             const blob = await zip.generateAsync({ type: "blob" });
             const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = zipFileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = zipFileName;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
             URL.revokeObjectURL(url);
         } catch (error) {
             console.error("Failed to zip:", error);
-            alert("Failed to generate zip file.");
+            alert(language === "zh" ? "生成 ZIP 文件失败。" : "Failed to generate zip file.");
         } finally {
             setIsZipping(false);
         }
     };
 
     if (typeof content === "string") {
-        return <pre className="p-4 text-xs font-mono whitespace-pre-wrap">{content}</pre>;
+        return <pre className="whitespace-pre-wrap p-4 text-xs font-mono">{content}</pre>;
     }
 
     return (
-        <div className="flex flex-col h-full">
-            <div className="flex justify-between items-center mb-4 px-2">
-                <h3 className="text-lg font-semibold flex items-center gap-2">
-                    <Folder className="w-5 h-5 text-purple-500" />
-                    Scaffold Structure
+        <div className="flex h-full flex-col">
+            <div className="mb-4 flex items-center justify-between px-2">
+                <h3 className="flex items-center gap-2 text-lg font-semibold">
+                    <Folder className="h-5 w-5 text-purple-500" />
+                    {language === "zh" ? "脚手架结构" : "Scaffold Structure"}
                 </h3>
                 <div className="flex items-center gap-2">
                     <button
                         onClick={handleDownload}
                         disabled={isZipping}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                        className="flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
                     >
-                        <Download className="w-4 h-4" />
-                        {isZipping ? "Zipping..." : "Download Scaffold ZIP"}
+                        <Download className="h-4 w-4" />
+                        {isZipping
+                            ? (language === "zh" ? "正在打包..." : "Zipping...")
+                            : (language === "zh" ? "下载脚手架 ZIP" : "Download Scaffold ZIP")}
                     </button>
                 </div>
             </div>
 
-            <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="min-h-0 overflow-y-auto p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-inner">
-                    {content.map((node, i) => (
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-2">
+                <div className="min-h-0 overflow-y-auto rounded-xl border border-gray-200 bg-white p-4 shadow-inner dark:border-gray-800 dark:bg-gray-900">
+                    {content.map((node, index) => (
                         <TreeNode
-                            key={`${node.name}-${i}`}
+                            key={`${node.name}-${index}`}
                             node={node}
                             selectedPath={selectedFilePath}
                             onSelectFile={(path) => setSelectedFilePath(path)}
+                            language={language}
                         />
                     ))}
                 </div>
-                <div className="min-h-0 flex flex-col bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-inner overflow-hidden">
-                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 text-xs font-mono text-gray-600 dark:text-gray-300 truncate">
-                        {selectedPreviewFile?.path || "No file selected"}
+                <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-inner dark:border-gray-800 dark:bg-gray-900">
+                    <div className="truncate border-b border-gray-200 px-4 py-3 font-mono text-xs text-gray-600 dark:border-gray-800 dark:text-gray-300">
+                        {selectedPreviewFile?.path || (language === "zh" ? "未选择文件" : "No file selected")}
                     </div>
-                    <div className="flex-1 min-h-0 overflow-auto p-4">
+                    <div className="min-h-0 flex-1 overflow-auto p-4">
                         {selectedPreviewFile ? (
-                            <pre className="text-xs font-mono whitespace-pre-wrap text-gray-700 dark:text-gray-200">
-                                {selectedPreviewFile.content || "// Empty specification"}
+                            <pre className="whitespace-pre-wrap text-xs font-mono text-gray-700 dark:text-gray-200">
+                                {selectedPreviewFile.content || (language === "zh" ? "// 空规范" : "// Empty specification")}
                             </pre>
                         ) : (
                             <div className="text-sm text-gray-500 dark:text-gray-400">
-                                No previewable file in this scaffold.
+                                {language === "zh" ? "这个脚手架中没有可预览的文件。" : "No previewable file in this scaffold."}
                             </div>
                         )}
                     </div>

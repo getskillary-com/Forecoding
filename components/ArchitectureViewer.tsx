@@ -2,6 +2,7 @@
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Maximize2, Minimize2 } from "lucide-react";
+import type { WorkspaceLanguage } from "@/lib/project-language";
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
 const customStyles = `
@@ -209,9 +210,10 @@ function extractNodeId(node: Element, fallback: string) {
 type ArchitectureViewerProps = {
     code: string;
     onNodeSelect?: (node: { id: string; label: string }) => void;
+    language: WorkspaceLanguage;
 };
 
-export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureViewerProps) {
+export default function ArchitectureViewer({ code, onNodeSelect, language }: ArchitectureViewerProps) {
     const [svg, setSvg] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [warning, setWarning] = useState<string | null>(null);
@@ -472,8 +474,12 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
                     <button
                         onClick={toggleExpanded}
                         className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700/60 bg-slate-900/90 text-slate-200 shadow-lg backdrop-blur-sm transition-colors hover:bg-slate-800 hover:text-white"
-                        title={isExpanded ? "Restore view" : "Expand to fullscreen"}
-                        aria-label={isExpanded ? "Restore view" : "Expand to fullscreen"}
+                        title={isExpanded
+                            ? (language === "zh" ? "恢复视图" : "Restore view")
+                            : (language === "zh" ? "全屏展开" : "Expand to fullscreen")}
+                        aria-label={isExpanded
+                            ? (language === "zh" ? "恢复视图" : "Restore view")
+                            : (language === "zh" ? "全屏展开" : "Expand to fullscreen")}
                     >
                         {isExpanded ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
                     </button>
@@ -501,7 +507,7 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
                 ) : error ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 pointer-events-none">
                         <svg className="w-12 h-12 mb-2 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                        <p className="font-semibold mb-1">Rendering Error</p>
+                        <p className="font-semibold mb-1">{language === "zh" ? "渲染错误" : "Rendering Error"}</p>
                         <p className="text-xs opacity-80 max-w-xs text-center">{error}</p>
                     </div>
                 ) : (
@@ -512,8 +518,8 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
                                 <svg className="w-16 h-16 opacity-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"></path></svg>
                             </div>
                         </div>
-                        <p className="text-sm font-medium tracking-wide">Waiting for architecture...</p>
-                        <p className="text-xs text-slate-600 mt-1">Start describing your idea</p>
+                        <p className="text-sm font-medium tracking-wide">{language === "zh" ? "等待架构内容..." : "Waiting for architecture..."}</p>
+                        <p className="text-xs text-slate-600 mt-1">{language === "zh" ? "从你的想法开始描述" : "Start describing your idea"}</p>
                     </div>
                 )}
 
@@ -527,15 +533,15 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
             {svg && !error && (
                 <div className="absolute bottom-4 right-4 flex flex-col gap-2">
                     <div className="flex bg-slate-800/90 backdrop-blur-sm rounded-lg shadow-lg border border-slate-700/50 overflow-hidden">
-                        <button onClick={handleZoomIn} className="p-2.5 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-colors" title="Zoom In">
+                        <button onClick={handleZoomIn} className="p-2.5 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-colors" title={language === "zh" ? "放大" : "Zoom In"}>
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
                         </button>
                         <div className="w-px bg-slate-700/50" />
-                        <button onClick={handleZoomOut} className="p-2.5 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-colors" title="Zoom Out">
+                        <button onClick={handleZoomOut} className="p-2.5 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-colors" title={language === "zh" ? "缩小" : "Zoom Out"}>
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 12H4"></path></svg>
                         </button>
                         <div className="w-px bg-slate-700/50" />
-                        <button onClick={handleReset} className="p-2.5 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-colors" title="Reset View">
+                        <button onClick={handleReset} className="p-2.5 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-colors" title={language === "zh" ? "重置视图" : "Reset View"}>
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path></svg>
                         </button>
                     </div>
@@ -543,7 +549,7 @@ export default function ArchitectureViewer({ code, onNodeSelect }: ArchitectureV
                     <button
                         onClick={handleDownload}
                         className="p-2.5 bg-slate-800/90 backdrop-blur-sm text-slate-300 rounded-lg shadow-lg hover:bg-slate-700/50 hover:text-white transition-colors border border-slate-700/50 self-end"
-                        title="Download SVG"
+                        title={language === "zh" ? "下载 SVG" : "Download SVG"}
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>
                     </button>

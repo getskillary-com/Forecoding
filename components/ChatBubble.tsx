@@ -1,6 +1,6 @@
-import { FileText } from "lucide-react";
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import { FileText } from "lucide-react";
 import { Message, MessageOption } from '@/types';
 
 interface Props {

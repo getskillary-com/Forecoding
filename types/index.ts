@@ -34,7 +34,6 @@ export type ArchitectureStage =
     | "boundaries"
     | "decisions"
     | "guardrails"
-    | "review"
     | "ready_to_generate";
 
 export interface SourceArtifact {
@@ -137,7 +136,6 @@ export interface GuardrailChecklist {
     implementationOrder: string[];
     acceptanceCriteria: string[];
     testStrategy: string[];
-    reviewChecklist: string[];
 }
 
 export type ReadinessCriterionKey =
@@ -161,7 +159,6 @@ export type ReadinessRequirementKey =
     | "guardrails.implementation_order"
     | "guardrails.acceptance_criteria"
     | "guardrails.test_strategy"
-    | "guardrails.review_checklist"
     | "ui.key_screens"
     | "ui.shared_components"
     | "ui.responsive_strategy";
@@ -226,21 +223,6 @@ export interface MinimumViableLoopChecklist {
     blockingIssues: string[];
     nextMilestone: string;
     requirements: ReadinessRequirement[];
-}
-
-export interface ReviewFinding {
-    severity: "low" | "medium" | "high";
-    area: "boundaries" | "contracts" | "non_functional" | "delivery";
-    finding: string;
-    recommendedAction: string;
-}
-
-export interface ArchitectureReviewResult {
-    summary: string;
-    verdict: "aligned" | "needs_changes" | "blocked";
-    findings: ReviewFinding[];
-    reviewedAt: number;
-    reviewedArchitectureFingerprint: string;
 }
 
 export interface UiDesignTokens {
@@ -317,7 +299,7 @@ export interface Analysis {
 export type MessageAction =
     | "send_message"
     | "generate_scaffold"
-    | "run_review"
+    | "open_prd"
     | "focus_requirement"
     | "fill_requirement"
     | "show_blockers";
@@ -416,7 +398,7 @@ export interface EvaluationResponse {
     density_score: number;
     is_ready: boolean;
     current_diagram?: string; // Mermaid format code
-    analysis: Analysis; // This acts as our real-time PRD
+    analysis: Analysis; // This powers the real-time PRD workspace
     next_step: NextStep;
     stage?: ArchitectureStage;
     openQuestions?: string[];
@@ -487,7 +469,6 @@ export interface ProjectVersionData {
     architecturePack?: ArchitecturePack;
     decisionRecords?: DecisionRecord[];
     guardrailChecklist?: GuardrailChecklist;
-    reviewHistory?: ArchitectureReviewResult[];
     architectureStage?: ArchitectureStage;
     readinessOverrides?: ReadinessOverride[];
 }
@@ -512,6 +493,7 @@ export interface Project {
     name: string;
     createdAt: number;
     updatedAt: number;
+    workspaceLanguage: "zh" | "en";
     description?: string;
     versions: ProjectVersion[];
 }

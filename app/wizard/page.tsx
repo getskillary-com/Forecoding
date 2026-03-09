@@ -1,10 +1,9 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square, ShieldAlert, ListChecks } from "lucide-react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
 import {
     ArchitecturePack,
-    ArchitectureReviewResult,
     ArchitectureStage,
     DecisionRecord,
     Message,
@@ -19,7 +18,6 @@ import {
     ReadinessChecklist,
     ReadinessOverride,
     ReadinessRequirementKey,
-    ReviewFinding,
     SourceArtifact,
     UiDesignState,
     UiReadinessReport,
@@ -36,31 +34,26 @@ import { ChatBubble } from "@/components/ChatBubble";
 import dynamic from "next/dynamic";
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
-    loading: () => (
-        <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
-            Loading architecture diagram...
-        </div>
-    )
+    loading: () => <div className="h-full w-full" />
 });
 const FileTreeDisplay = dynamic(() => import("@/components/FileTreeDisplay").then((m) => m.FileTreeDisplay), {
     ssr: false,
-    loading: () => (
-        <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
-            Loading file tree...
-        </div>
-    )
+    loading: () => <div className="h-full w-full" />
 });
 const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then((m) => m.ToolStackTable), {
     ssr: false,
-    loading: () => (
-        <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
-            Loading tech stack...
-        </div>
-    )
+    loading: () => <div className="h-full w-full" />
 });
 import { VersionSidebar } from "@/components/VersionSidebar";
 import { UserCenter } from "@/components/UserCenter";
 import { useSearchParams, useRouter } from "next/navigation";
+import { getProjectWorkspaceLanguage, type WorkspaceLanguage } from "@/lib/project-language";
+import {
+    getArchitectureStageLabel,
+    getWorkspaceUiText,
+    translateComplexityTier,
+    translateReadinessText
+} from "@/lib/workspace-i18n";
 import {
     getCachedProjectSnapshot,
     readProjectsFromLocalStorage,
@@ -74,7 +67,6 @@ import {
     validateUiDesignSpec
 } from "@/lib/ui-spec";
 import {
-    ARCHITECTURE_STAGE_LABELS,
     buildArchitecturePackScaffoldInput,
     createMinimumViableLoopChecklist,
     createReadinessChecklist,
@@ -83,11 +75,9 @@ import {
     getPrimaryIncompleteReadinessRequirement,
     inferArchitectureStage,
     normalizeArchitecturePack,
-    normalizeArchitectureReviewHistory,
     normalizeDecisionRecords,
     normalizeGuardrailChecklist,
     normalizeReadinessOverrides,
-    normalizeReviewFindings,
     seedArchitecturePackFromAnalysis
 } from "@/lib/architecture";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
@@ -117,13 +107,12 @@ const GENERATE_MAX_SUMMARY_CHARS = 50_000;
 const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
-const SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD = 0.08;
 const SOURCE_CONTEXT_ITEM_EXCERPT_CHARS = 700;
 const SOURCE_CONTEXT_MAX_ITEMS = 6;
 const SOURCE_SEARCH_TERM_MAX_COUNT = 24;
 const GENERATE_SCAFFOLD_PATTERN = /generate scaffold|scaffold generation|start scaffold generation|generate scaffold now|开始生成(?:代码)?脚手架|生成(?:代码)?脚手架|立即生成|start scaffold/i;
-const RUN_REVIEW_PATTERN = /run review|re-run review|architecture review|run architecture review|重新审核|运行审核|架构评审|架构审核|运行评审/i;
-const DEFER_RESPONSE_PATTERN = /more detail|common options|not sure|review again|add detail|补充|细节|选项|不确定|再审查|更多细节|常见选项/i;
+const OPEN_PRD_PATTERN = /open prd|show prd|prd record|product requirements|打开prd|查看prd|需求记录|prd记录/i;
+const DEFER_RESPONSE_PATTERN = /more detail|common options|not sure|add detail|补充|细节|选项|不确定|更多细节|常见选项/i;
 const AFFIRMATIVE_RESPONSE_PATTERN = /^(?:yes|y|agree|agreed|proceed|continue|go ahead|do it|recommended|default|confirm|confirmed|generate scaffold(?: now)?|start scaffold(?: generation)?|立即生成|开始生成(?:代码)?脚手架|生成(?:代码)?脚手架|按推荐方案继续|按你推荐的默认方案继续|按默认方案继续|同意|是的|继续)$/i;
 const SOURCE_SEARCH_STOP_WORDS = new Set([
     "the",
@@ -182,7 +171,7 @@ function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
 
 function normalizeMessageAction(value: unknown): MessageAction | null {
     return value === "generate_scaffold" ||
-        value === "run_review" ||
+        value === "open_prd" ||
         value === "send_message" ||
         value === "focus_requirement" ||
         value === "fill_requirement" ||
@@ -206,7 +195,6 @@ function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementK
         case "guardrails.implementation_order":
         case "guardrails.acceptance_criteria":
         case "guardrails.test_strategy":
-        case "guardrails.review_checklist":
         case "ui.key_screens":
         case "ui.shared_components":
         case "ui.responsive_strategy":
@@ -352,7 +340,7 @@ function normalizeMessages(value: unknown): Message[] {
 
 function inferQuestionAction(questionText: string): MessageAction | null {
     if (GENERATE_SCAFFOLD_PATTERN.test(questionText)) return "generate_scaffold";
-    if (RUN_REVIEW_PATTERN.test(questionText)) return "run_review";
+    if (OPEN_PRD_PATTERN.test(questionText)) return "open_prd";
     return null;
 }
 
@@ -364,8 +352,8 @@ function isAffirmativeForAction(value: string, action: MessageAction | null) {
         return GENERATE_SCAFFOLD_PATTERN.test(value) || AFFIRMATIVE_RESPONSE_PATTERN.test(value);
     }
 
-    if (action === "run_review") {
-        return RUN_REVIEW_PATTERN.test(value) || AFFIRMATIVE_RESPONSE_PATTERN.test(value);
+    if (action === "open_prd") {
+        return OPEN_PRD_PATTERN.test(value) || AFFIRMATIVE_RESPONSE_PATTERN.test(value);
     }
 
     if (action === "fill_requirement" || action === "focus_requirement" || action === "show_blockers") {
@@ -505,7 +493,6 @@ function normalizeEvaluation(
         architecturePackDraft,
         decisionDrafts,
         guardrailDrafts,
-        false,
         readinessOverrides
     );
     const readiness = applyArchitectureStageScoreFloor(
@@ -563,14 +550,12 @@ function normalizeArchitectureStage(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
-    reviewApproved: boolean,
     readinessOverrides: ReadinessOverride[] = []
 ): ArchitectureStage {
     return inferArchitectureStage(
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        reviewApproved,
         readinessOverrides
     );
 }
@@ -742,21 +727,18 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
     );
     const decisionRecords = normalizeDecisionRecords(data?.decisionRecords ?? evaluation?.decisionDrafts);
     const guardrailChecklist = normalizeGuardrailChecklist(data?.guardrailChecklist ?? evaluation?.guardrailDrafts);
-    const reviewHistory = normalizeArchitectureReviewHistory(data?.reviewHistory);
     const sourceArtifacts = normalizeSourceArtifacts(data?.sourceArtifacts);
     const scaffoldEligibility = computeScaffoldEligibility({
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        readinessOverrides,
-        reviewHistory
+        readinessOverrides
     });
     const architectureStage = normalizeArchitectureStage(
         data?.architectureStage ?? evaluation?.stage,
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        scaffoldEligibility.reviewState === "approved_review",
         readinessOverrides
     );
     const readiness = applyArchitectureStageScoreFloor(scaffoldEligibility.readiness);
@@ -783,7 +765,6 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        reviewHistory,
         sourceArtifacts,
         architectureStage,
         readiness,
@@ -1009,43 +990,6 @@ function hasMeaningfulDiagramChange(current: string, candidate: string): boolean
     return normalizeMermaidForComparison(current) !== normalizeMermaidForComparison(candidate);
 }
 
-function countChineseChars(text: string) {
-    return (text.match(/[\u3400-\u9fff]/g) || []).length;
-}
-
-function countLatinChars(text: string) {
-    return (text.match(/[A-Za-z]/g) || []).length;
-}
-
-function detectOutputLanguageFromText(text: string): "zh" | "en" {
-    if (!text.trim()) return "en";
-
-    const chinese = countChineseChars(text);
-    const latin = countLatinChars(text);
-
-    if (chinese >= 6) return "zh";
-    if (chinese >= 2 && chinese / Math.max(1, chinese + latin) >= SCAFFOLD_OUTPUT_LANGUAGE_THRESHOLD) {
-        return "zh";
-    }
-
-    return "en";
-}
-
-function inferScaffoldOutputLanguage(messages: Message[]): "zh" | "en" {
-    const recentUserText = messages
-        .filter((m) => m.role === "user")
-        .slice(-8)
-        .map((m) => m.content || "")
-        .join("\n");
-
-    if (recentUserText.trim()) {
-        return detectOutputLanguageFromText(recentUserText);
-    }
-
-    const fullText = messages.map((m) => m.content || "").join("\n");
-    return detectOutputLanguageFromText(fullText);
-}
-
 function inferTemplateKindHintFromTree(tree?: FileNode[]): "next_root" | "next_src" | "monorepo_multiapp" | undefined {
     if (!tree || tree.length === 0) return undefined;
 
@@ -1143,7 +1087,8 @@ function normalizeSingleQuestion(raw: string) {
 
 function buildAssistantDisplayContent(
     rawQuestion: string,
-    analysis?: EvaluationResponse["analysis"] | null
+    analysis?: EvaluationResponse["analysis"] | null,
+    forcedLanguage?: WorkspaceLanguage
 ) {
     const parsed = parseQuestionBlock(rawQuestion);
     if (parsed.recommendation) return parsed.displayText;
@@ -1157,7 +1102,7 @@ function buildAssistantDisplayContent(
         return parsed.displayText || clipText(rawQuestion.replace(/\s+/g, " ").trim(), 360);
     }
 
-    const language = detectResponseLanguage(rawQuestion, clarified.join(" "));
+    const language = forcedLanguage ?? detectResponseLanguage(rawQuestion, clarified.join(" "));
     const summaryTitle = language === "zh" ? "当前判断：" : "Current view:";
     const parts = [
         `${summaryTitle}\n- ${clarified.join("\n- ")}`
@@ -1179,7 +1124,7 @@ function buildCommonFallbackOptions(
             return [
                 { label: "开始生成脚手架", value: "开始生成脚手架。", action: "generate_scaffold" },
                 { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
-                { label: "打开审核页", value: "请切换到审核页，我想先复核一下。", action: "run_review" },
+                { label: "打开 PRD", value: "请切换到 PRD 记录页，我想先确认需求沉淀。", action: "open_prd" },
                 { label: "暂时不生成", value: "我暂时不生成，请继续完善架构包。" }
             ];
         }
@@ -1187,26 +1132,8 @@ function buildCommonFallbackOptions(
         return [
             { label: "Generate scaffold now", value: "Generate scaffold now.", action: "generate_scaffold" },
             { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
-            { label: "Open review tab", value: "Open the review tab first so I can double-check the plan.", action: "run_review" },
+            { label: "Open PRD", value: "Open the PRD tab first so I can double-check the requirements.", action: "open_prd" },
             { label: "Not yet", value: "Not yet. Please continue refining the architecture pack." }
-        ];
-    }
-
-    if (questionAction === "run_review") {
-        if (language === "zh") {
-            return [
-                { label: "打开审核页", value: "请切换到审核页。", action: "run_review" },
-                { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
-                { label: "给我常见选项", value: "请给我 2 到 3 个常见方案并说明取舍。" },
-                { label: "暂时不确定", value: "我暂时不确定，请按最稳妥的默认方案推进。" }
-            ];
-        }
-
-        return [
-            { label: "Open review tab", value: "Open the review tab.", action: "run_review" },
-            { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
-            { label: "Show me common options", value: "Please show me 2 or 3 common options and explain the tradeoffs." },
-            { label: "I'm not sure yet", value: "I'm not sure yet. Please continue with the safest default approach." }
         ];
     }
 
@@ -1245,7 +1172,6 @@ function getReadinessRequirementLabel(
         "guardrails.implementation_order": { zh: "实现顺序", en: "implementation order" },
         "guardrails.acceptance_criteria": { zh: "验收标准", en: "acceptance criteria" },
         "guardrails.test_strategy": { zh: "测试策略", en: "test strategy" },
-        "guardrails.review_checklist": { zh: "审核清单", en: "review checklist" },
         "ui.key_screens": { zh: "关键界面", en: "key screens" },
         "ui.shared_components": { zh: "共享 UI 组件", en: "shared UI components" },
         "ui.responsive_strategy": { zh: "响应式策略", en: "responsive strategy" }
@@ -1409,16 +1335,115 @@ function buildBlockersSummary(
     ].join("\n");
 }
 
+function buildPrdSummaryLines(
+    language: "zh" | "en",
+    evaluation: EvaluationResponse | null,
+    architecturePack: ArchitecturePack,
+    readiness: ReadinessChecklist
+) {
+    const lines: string[] = [];
+
+    if (architecturePack.businessContext.productGoal.trim()) {
+        lines.push(architecturePack.businessContext.productGoal.trim());
+    }
+
+    if (evaluation?.analysis?.clarified?.length) {
+        lines.push(...evaluation.analysis.clarified.slice(0, 3).map((item) => clipText(item, 180)));
+    }
+
+    if (lines.length === 0) {
+        lines.push(
+            language === "zh"
+                ? `当前 Readiness ${Math.round(readiness.score)}%，请继续补充产品目标与关键流程。`
+                : `Current readiness is ${Math.round(readiness.score)}%. Continue clarifying the product goal and key flows.`
+        );
+    }
+
+    return lines.slice(0, 4);
+}
+
+function buildPrdConversationSignals(
+    language: "zh" | "en",
+    messages: Message[]
+) {
+    const confirmations = buildResolvedConfirmationLog(messages, 4).map((item) =>
+        language === "zh"
+            ? `已确认：${clipText(item.question, 72)} -> ${clipText(item.answer, 96)}`
+            : `Confirmed: ${clipText(item.question, 72)} -> ${clipText(item.answer, 96)}`
+    );
+
+    const recentUserNotes = messages
+        .filter((message) => message.role === "user" && message.content.trim().length > 0)
+        .slice(-4)
+        .map((message) =>
+            language === "zh"
+                ? `用户：${clipText(message.content.trim(), 140)}`
+                : `User: ${clipText(message.content.trim(), 140)}`
+        );
+
+    return [...confirmations, ...recentUserNotes].slice(0, 6);
+}
+
+function buildPrdArchitectureSnapshot(
+    language: "zh" | "en",
+    architecturePack: ArchitecturePack,
+    readiness: ReadinessChecklist
+) {
+    const items: string[] = [];
+
+    if (architecturePack.businessContext.targetUsers.length > 0) {
+        items.push(
+            language === "zh"
+                ? `目标用户：${architecturePack.businessContext.targetUsers.slice(0, 3).join("、")}`
+                : `Target users: ${architecturePack.businessContext.targetUsers.slice(0, 3).join(", ")}`
+        );
+    }
+
+    if (architecturePack.businessContext.userJourneys.length > 0) {
+        items.push(
+            language === "zh"
+                ? `关键流程：${architecturePack.businessContext.userJourneys.slice(0, 3).join("；")}`
+                : `Key journeys: ${architecturePack.businessContext.userJourneys.slice(0, 3).join("; ")}`
+        );
+    }
+
+    if (architecturePack.boundedContexts.length > 0) {
+        items.push(
+            language === "zh"
+                ? `限界上下文：${architecturePack.boundedContexts.slice(0, 3).map((item) => item.name).join("、")}`
+                : `Bounded contexts: ${architecturePack.boundedContexts.slice(0, 3).map((item) => item.name).join(", ")}`
+        );
+    }
+
+    if (architecturePack.experienceConstraints.keyScreens.length > 0) {
+        items.push(
+            language === "zh"
+                ? `关键界面：${architecturePack.experienceConstraints.keyScreens.slice(0, 3).join("、")}`
+                : `Key screens: ${architecturePack.experienceConstraints.keyScreens.slice(0, 3).join(", ")}`
+        );
+    }
+
+    items.push(
+        language === "zh"
+            ? `当前 Readiness：${Math.round(readiness.score)}%`
+            : `Current readiness: ${Math.round(readiness.score)}%`
+    );
+
+    return items;
+}
+
 function buildBlockedGenerateQuestion(
     language: "zh" | "en",
     architectureStage: ArchitectureStage,
     readiness: ReadinessChecklist,
-    reviewState: "missing_review" | "stale_review" | "approved_review",
     architecturePack: ArchitecturePack,
     messages: Message[]
 ) {
-    const stageLabel = ARCHITECTURE_STAGE_LABELS[architectureStage];
-    const primaryBlocker = readiness.blockingIssues[0] || "Add the missing architecture detail before generation.";
+    const stageLabel = getArchitectureStageLabel(language, architectureStage);
+    const primaryBlocker = translateReadinessText(
+        language,
+        readiness.blockingIssues[0] || "Add the missing architecture detail before generation."
+    );
     const primaryRequirement = getPrimaryIncompleteReadinessRequirement(readiness);
 
     if (!readiness.functionalReady || !readiness.uiReady) {
@@ -1494,43 +1519,26 @@ Should we fill this gap first, or should I continue refining the architecture pa
             questionRequirementKey: primaryRequirement?.key
         };
     }
-
-    const reviewBlocked = reviewState === "stale_review";
     const content = language === "zh"
         ? `当前判断：
-- 架构包已经达到生成前门槛，但还不能直接生成。
-- ${reviewBlocked ? "上次审核已经过期，架构在审核后发生了变化。" : "还缺少一条当前有效的架构审核结论。"}
+- 当前阻塞项已经解除，可以进入脚手架生成阶段。
 
 需要确认：
-是否现在打开审核页并运行 review？`
+是否现在开始生成代码脚手架？`
         : `Current view:
-- The architecture pack meets the structural threshold, but generation is still blocked.
-- ${reviewBlocked ? "The last approved review is stale because the architecture changed afterward." : "A current approved architecture review is still required."}
+- The current blockers are cleared and scaffold generation can proceed.
 
 Please confirm:
-Do you want to open the review tab and run review now?`;
-
-    const options = language === "zh"
-        ? [
-            { label: "打开审核页", value: "请切换到审核页。", action: "run_review" as const },
-            { label: "我来补充细节", value: "我来补充更多细节，请继续完善架构。" },
-            { label: "暂时不生成", value: "我暂时不生成，请继续完善架构包。" }
-        ]
-        : [
-            { label: "Open review tab", value: "Open the review tab.", action: "run_review" as const },
-            { label: "I will add more detail", value: "I will add more detail. Please continue refining the architecture." },
-            { label: "Not yet", value: "Not yet. Please continue refining the architecture pack." }
-        ];
-
+Do you want to start scaffold generation now?`;
     const questionText = language === "zh"
-        ? "是否现在打开审核页并运行 review？"
-        : "Do you want to open the review tab and run review now?";
+        ? "是否现在开始生成代码脚手架？"
+        : "Do you want to start scaffold generation now?";
 
     return {
         content,
-        options,
+        options: buildCommonFallbackOptions(language, "generate_scaffold"),
         questionKey: normalizeQuestionKey(questionText),
-        questionAction: "run_review" as const,
+        questionAction: "generate_scaffold" as const,
         questionRequirementKey: undefined
     };
 }
@@ -1541,7 +1549,8 @@ function ensureCommonQuestionOptions(
     contextText: string,
     questionAction: MessageAction | null = null,
     questionKey?: string | null,
-    requirementKey?: ReadinessRequirementKey | null
+    requirementKey?: ReadinessRequirementKey | null,
+    forcedLanguage?: WorkspaceLanguage
 ) {
     const normalizedQuestion = questionText.trim();
     const effectiveQuestionAction = questionAction ?? inferQuestionAction(normalizedQuestion);
@@ -1559,7 +1568,7 @@ function ensureCommonQuestionOptions(
     const languageSeed = normalized.length > 0
         ? normalized.map((option) => `${option.label} ${option.value}`).join(" ")
         : `${normalizedQuestion} ${contextText}`;
-    const language = detectResponseLanguage(languageSeed);
+    const language = forcedLanguage ?? detectResponseLanguage(languageSeed);
     const seen = new Set(
         normalized.map((option) => `${option.label.trim().toLowerCase()}::${option.value.trim().toLowerCase()}::${option.action || ""}`)
     );
@@ -1970,7 +1979,8 @@ function buildEvaluateRequestBody(
     generationReady: boolean,
     compactMode: boolean,
     designMemory: string | null,
-    diagramPolicy: string
+    diagramPolicy: string,
+    outputLanguage: WorkspaceLanguage
 ) {
     const compactOptions: EvaluateMessageBuildOptions = compactMode
         ? {
@@ -2006,7 +2016,8 @@ function buildEvaluateRequestBody(
         sourceContext: sourceContextText,
         generationReady,
         designMemory: designMemoryText,
-        diagramPolicy
+        diagramPolicy,
+        outputLanguage
     });
 }
 
@@ -2056,7 +2067,6 @@ function buildPricingProjectSnapshot(
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
     readinessOverrides: ReadinessOverride[],
-    reviewHistory: ArchitectureReviewResult[],
     sourceArtifacts: SourceArtifact[],
     architectureStage: ArchitectureStage,
     functionalLockedAt: number | null,
@@ -2106,7 +2116,6 @@ function buildPricingProjectSnapshot(
             decisionRecords,
             guardrailChecklist,
             readinessOverrides,
-            reviewHistory,
             sourceArtifacts: compactSourceArtifactsForPricing(sourceArtifacts),
             architectureStage,
             functionalLockedAt,
@@ -2170,7 +2179,6 @@ function WizardContent() {
     const [decisionRecords, setDecisionRecords] = useState<DecisionRecord[]>(initialNormalizedState.decisionRecords);
     const [guardrailChecklist, setGuardrailChecklist] = useState<GuardrailChecklist>(initialNormalizedState.guardrailChecklist);
     const [readinessOverrides, setReadinessOverrides] = useState<ReadinessOverride[]>(initialNormalizedState.readinessOverrides);
-    const [reviewHistory, setReviewHistory] = useState<ArchitectureReviewResult[]>(initialNormalizedState.reviewHistory);
     const [sourceArtifacts, setSourceArtifacts] = useState<SourceArtifact[]>(initialNormalizedState.sourceArtifacts);
     const [architectureStage, setArchitectureStage] = useState<ArchitectureStage>(initialNormalizedState.architectureStage);
     const [architectureReadiness, setArchitectureReadiness] = useState<ReadinessChecklist>(initialNormalizedState.readiness);
@@ -2183,9 +2191,6 @@ function WizardContent() {
     const [isQuoteLoading, setIsQuoteLoading] = useState(false);
     const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
     const [generateError, setGenerateError] = useState<string | null>(null);
-    const [reviewDraft, setReviewDraft] = useState("");
-    const [isReviewing, setIsReviewing] = useState(false);
-    const [reviewError, setReviewError] = useState<string | null>(null);
     const [isAdmin, setIsAdmin] = useState(false);
     const [isAdminStatusLoaded, setIsAdminStatusLoaded] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(420);
@@ -2205,11 +2210,13 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'architecture' | 'review' | 'files' | 'stack'>(
+    const [activeTab, setActiveTab] = useState<'architecture' | 'prd' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const workspaceLanguage = getProjectWorkspaceLanguage(project);
+    const uiText = getWorkspaceUiText(workspaceLanguage);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
     const visibleMessages = messages.slice(baseMessageIndex);
     const hiddenMessageCount = baseMessageIndex;
@@ -2219,8 +2226,7 @@ function WizardContent() {
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        readinessOverrides,
-        reviewHistory
+        readinessOverrides
     });
     const minimumViableLoop = scaffoldEligibility.minimumViableLoop;
     const minimumViableLoopReady = minimumViableLoop.ready;
@@ -2228,8 +2234,6 @@ function WizardContent() {
     const minimumLoopBlockers = scaffoldEligibility.blockingReasons.length > 0
         ? scaffoldEligibility.blockingReasons
         : minimumViableLoop.blockingIssues;
-    const latestReview = scaffoldEligibility.latestReview;
-    const reviewApproved = scaffoldEligibility.reviewState === "approved_review";
     const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
     const architectureViewerCode = currentDiagram;
 
@@ -2311,7 +2315,6 @@ function WizardContent() {
             setDecisionRecords(normalizedDesignState.decisionRecords);
             setGuardrailChecklist(normalizedDesignState.guardrailChecklist);
             setReadinessOverrides(normalizedDesignState.readinessOverrides);
-            setReviewHistory(normalizedDesignState.reviewHistory);
             setSourceArtifacts(normalizedDesignState.sourceArtifacts);
             setArchitectureStage(normalizedDesignState.architectureStage);
             setArchitectureReadiness(normalizedDesignState.readiness);
@@ -2397,14 +2400,14 @@ function WizardContent() {
                 });
             }
         } else if (payment === "cancelled" && !isAdmin) {
-            setGenerateError("Payment cancelled.");
+            setGenerateError(uiText.paymentCancelled);
         }
 
         const params = new URLSearchParams();
         params.set("projectId", projectId);
         params.set("versionId", currentVersion.id);
         router.replace(`/wizard?${params.toString()}`);
-    }, [searchParams, currentVersion, projectId, router, isAdmin]);
+    }, [searchParams, currentVersion, projectId, router, isAdmin, uiText.paymentCancelled]);
 
     // 1f. Refresh derived state from architecture pack + experience constraints.
     useEffect(() => {
@@ -2425,15 +2428,13 @@ function WizardContent() {
             architecturePack: normalizedArchitecturePack,
             decisionRecords,
             guardrailChecklist,
-            readinessOverrides,
-            reviewHistory
+            readinessOverrides
         });
         const nextArchitectureStage = normalizeArchitectureStage(
             evaluation?.stage ?? architectureStage,
             normalizedArchitecturePack,
             decisionRecords,
             guardrailChecklist,
-            nextScaffoldEligibility.reviewState === "approved_review",
             readinessOverrides
         );
         const nextArchitectureReadiness = applyArchitectureStageScoreFloor(nextScaffoldEligibility.readiness);
@@ -2491,7 +2492,6 @@ function WizardContent() {
         readinessOverrides,
         architectureReadiness,
         architectureStage,
-        reviewHistory,
         sourceArtifacts,
         messages,
         designStage,
@@ -2533,7 +2533,6 @@ function WizardContent() {
                             decisionRecords,
                             guardrailChecklist,
                             readinessOverrides,
-                            reviewHistory,
                             sourceArtifacts,
                             architectureStage,
                             functionalLockedAt,
@@ -2598,7 +2597,6 @@ function WizardContent() {
         decisionRecords,
         guardrailChecklist,
         readinessOverrides,
-        reviewHistory,
         sourceArtifacts,
         architectureStage,
         functionalLockedAt,
@@ -2691,7 +2689,6 @@ function WizardContent() {
                 decisionRecords,
                 guardrailChecklist,
                 readinessOverrides,
-                reviewHistory,
                 sourceArtifacts,
                 architectureStage,
                 functionalLockedAt,
@@ -2743,7 +2740,6 @@ function WizardContent() {
         decisionRecords,
         guardrailChecklist,
         readinessOverrides,
-        reviewHistory,
         sourceArtifacts,
         architectureStage,
         functionalLockedAt,
@@ -3046,10 +3042,7 @@ Do you want to start scaffold generation now?`;
         if (!requirementKey) return false;
         if (!findReadinessRequirement(scaffoldEligibility.readiness, requirementKey)) return false;
 
-        const language = detectResponseLanguage(
-            ...baseMessages.slice(-6).map((message) => message.content || ""),
-            architecturePack.businessContext.productGoal
-        );
+        const language = workspaceLanguage;
 
         if (action === "focus_requirement") {
             const focused = buildFocusedRequirementQuestion(language, requirementKey, architecturePack, baseMessages);
@@ -3081,14 +3074,12 @@ Do you want to start scaffold generation now?`;
             architecturePack: resolution.architecturePack,
             decisionRecords,
             guardrailChecklist: resolution.guardrailChecklist,
-            readinessOverrides: resolution.readinessOverrides,
-            reviewHistory
+            readinessOverrides: resolution.readinessOverrides
         });
         const nextStage = inferArchitectureStage(
             resolution.architecturePack,
             decisionRecords,
             resolution.guardrailChecklist,
-            nextEligibility.reviewState === "approved_review",
             resolution.readinessOverrides
         );
         setArchitectureReadiness(nextEligibility.readiness);
@@ -3113,7 +3104,6 @@ Do you want to start scaffold generation now?`;
                 language,
                 nextStage,
                 nextEligibility.readiness,
-                nextEligibility.reviewState,
                 resolution.architecturePack,
                 baseMessages
             );
@@ -3187,9 +3177,9 @@ Do you want to start scaffold generation now?`;
             return;
         }
 
-        if (triggeredAction === "run_review") {
+        if (triggeredAction === "open_prd") {
             setMessages(newMessages);
-            setActiveTab("review");
+            setActiveTab("prd");
             return;
         }
 
@@ -3238,7 +3228,8 @@ Do you want to start scaffold generation now?`;
                 Boolean(generation),
                 false,
                 designMemory,
-                DIAGRAM_POLICY
+                DIAGRAM_POLICY,
+                workspaceLanguage
             );
 
             if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
@@ -3276,7 +3267,8 @@ Do you want to start scaffold generation now?`;
                     Boolean(generation),
                     true,
                     designMemory,
-                    DIAGRAM_POLICY
+                    DIAGRAM_POLICY,
+                    workspaceLanguage
                 );
 
                 if (compactRequestBody.length <= EVALUATE_MAX_REQUEST_CHARS) {
@@ -3405,7 +3397,7 @@ Do you want to start scaffold generation now?`;
                         currentQuestionAction = inferQuestionAction(rawQuestion);
                         currentQuestionRequirementKey = null;
                         currentEval.next_step.question = q;
-                        const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis);
+                        const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis, workspaceLanguage);
                         setMessages(prev => {
                             if (evalRequestIdRef.current !== requestId) return prev;
                             const updated = [...prev];
@@ -3417,7 +3409,8 @@ Do you want to start scaffold generation now?`;
                                 latestUserContext,
                                 currentQuestionAction,
                                 currentQuestionKey,
-                                currentQuestionRequirementKey
+                                currentQuestionRequirementKey,
+                                workspaceLanguage
                             );
                             updated[assistantIndex] = {
                                 ...current,
@@ -3440,7 +3433,6 @@ Do you want to start scaffold generation now?`;
                         currentEval.architecturePackDraft ?? architecturePack,
                         currentEval.decisionDrafts ?? decisionRecords,
                         currentEval.guardrailDrafts ?? guardrailChecklist,
-                        reviewApproved,
                         readinessOverrides
                     );
                     currentEval.stage = parsedStage;
@@ -3545,7 +3537,6 @@ Do you want to start scaffold generation now?`;
                         currentEval.architecturePackDraft,
                         currentEval.decisionDrafts ?? decisionRecords,
                         currentEval.guardrailDrafts ?? guardrailChecklist,
-                        reviewApproved,
                         readinessOverrides
                     );
                 }
@@ -3559,7 +3550,8 @@ Do you want to start scaffold generation now?`;
                         latestUserContext,
                         currentQuestionAction,
                         currentQuestionKey,
-                        currentQuestionRequirementKey
+                        currentQuestionRequirementKey,
+                        workspaceLanguage
                     );
                     setMessages(prev => {
                         if (evalRequestIdRef.current !== requestId) return prev;
@@ -3595,25 +3587,18 @@ Do you want to start scaffold generation now?`;
                     architecturePack: currentEval.architecturePackDraft ?? architecturePack,
                     decisionRecords: currentEval.decisionDrafts ?? decisionRecords,
                     guardrailChecklist: currentEval.guardrailDrafts ?? guardrailChecklist,
-                    readinessOverrides,
-                    reviewHistory
+                    readinessOverrides
                 });
                 const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
                     ? buildBlockedGenerateQuestion(
-                        detectResponseLanguage(
-                            latestUserContext,
-                            currentEval.next_step.question || "",
-                            ...(currentEval.analysis.clarified ?? []).slice(0, 2)
-                        ),
+                        workspaceLanguage,
                         inferArchitectureStage(
                             currentEval.architecturePackDraft ?? architecturePack,
                             currentEval.decisionDrafts ?? decisionRecords,
                             currentEval.guardrailDrafts ?? guardrailChecklist,
-                            resolvedEligibility.reviewState === "approved_review",
                             readinessOverrides
                         ),
                         resolvedEligibility.readiness,
-                        resolvedEligibility.reviewState,
                         currentEval.architecturePackDraft ?? architecturePack,
                         newMessages
                     )
@@ -3630,7 +3615,8 @@ Do you want to start scaffold generation now?`;
                         latestUserContext,
                         currentQuestionAction,
                         currentQuestionKey,
-                        currentQuestionRequirementKey
+                        currentQuestionRequirementKey,
+                        workspaceLanguage
                     );
                     const nextContent = coercedGenerateQuestion
                         ? coercedGenerateQuestion.content
@@ -3687,7 +3673,11 @@ Do you want to start scaffold generation now?`;
                 const updated = [...prev];
                 const current = updated[assistantIndex];
                 if (!current || current.role !== "assistant") return prev;
-                updated[assistantIndex] = { ...current, content: `Error: ${errorMessage}`, options: [] };
+                updated[assistantIndex] = {
+                    ...current,
+                    content: workspaceLanguage === "zh" ? `错误：${errorMessage}` : `Error: ${errorMessage}`,
+                    options: []
+                };
                 return updated;
             });
         } finally {
@@ -3721,7 +3711,7 @@ Do you want to start scaffold generation now?`;
     const generateScaffold = async () => {
         if (generateInFlightRef.current) return;
         if (!projectId || !currentVersion) {
-            setGenerateError("Missing project context for scaffold generation.");
+            setGenerateError(uiText.missingGenerateContext);
             return;
         }
         generateInFlightRef.current = true;
@@ -3736,7 +3726,7 @@ Do you want to start scaffold generation now?`;
                 guardrailChecklist,
                 messages
             );
-            const outputLanguage = inferScaffoldOutputLanguage(messages);
+            const outputLanguage = workspaceLanguage;
             const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
             const res = await fetch("/api/generate", {
                 method: "POST",
@@ -3759,7 +3749,7 @@ Do you want to start scaffold generation now?`;
             });
 
             if (!res.ok) {
-                let errorMessage = "Failed to generate";
+                let errorMessage = uiText.failedToGenerate;
                 try {
                     const payload = await res.json() as {
                         error?: string;
@@ -3773,23 +3763,20 @@ Do you want to start scaffold generation now?`;
                     if (Array.isArray(payload.blockingReasons) && payload.blockingReasons.length > 0) {
                         errorMessage = payload.blockingReasons[0];
                     }
-                    if (payload.code === "REVIEW_REQUIRED" || payload.code === "REVIEW_STALE") {
-                        setActiveTab("review");
-                    }
                 } catch {
                     // ignore parse error and keep fallback message
                 }
                 if (res.status === 504 && !/timeout/i.test(errorMessage)) {
-                    errorMessage = `${errorMessage}. Generation timed out on server. Please retry.`;
+                    errorMessage = `${errorMessage}. ${uiText.generateTimedOut}`;
                 } else if (res.status === 524 && !/524/i.test(errorMessage)) {
-                    errorMessage = `${errorMessage}. Gateway timeout from CDN/origin (524). Please retry.`;
+                    errorMessage = `${errorMessage}. ${uiText.gatewayTimedOut}`;
                 }
                 throw new Error(errorMessage);
             }
             const data: GenerationResponse = await res.json();
             if (data.preflightReport && !data.preflightReport.pass) {
                 const codes = data.preflightReport.issues.map((issue) => issue.code).join(", ");
-                throw new Error(`Scaffold preflight failed: ${codes || "unknown"}`);
+                throw new Error(uiText.scaffoldPreflightFailed(codes || "unknown"));
             }
             setGeneration(data);
 
@@ -3798,13 +3785,13 @@ Do you want to start scaffold generation now?`;
 
             // Mock Task Generation
             setTasks([
-                { id: '1', title: 'Setup Project Structure', status: 'pending', description: 'Initialize scaffold.', source: 'scaffold' },
-                { id: '2', title: 'Implement Core Features', status: 'pending', description: 'Based on Scaffold.', source: 'scaffold' },
+                { id: '1', title: uiText.setupProjectStructure, status: 'pending', description: uiText.setupProjectStructureDesc, source: 'scaffold' },
+                { id: '2', title: uiText.implementCoreFeatures, status: 'pending', description: uiText.implementCoreFeaturesDesc, source: 'scaffold' },
             ]);
 
         } catch (error) {
             console.error(error);
-            setGenerateError(error instanceof Error ? error.message : "Scaffold generation failed.");
+            setGenerateError(error instanceof Error ? error.message : uiText.scaffoldGenerationFailed);
         } finally {
             setIsGenerating(false);
             generateInFlightRef.current = false;
@@ -3813,11 +3800,11 @@ Do you want to start scaffold generation now?`;
 
     const startCheckout = async () => {
         if (!projectId || !currentVersion) {
-            setGenerateError("Missing project context for checkout.");
+            setGenerateError(uiText.missingCheckoutContext);
             return;
         }
         if (isAdmin) {
-            setGenerateError("Admin mode bypasses payment. Please generate directly.");
+            setGenerateError(uiText.adminBypassesPayment);
             return;
         }
         if (isCheckingOut) return;
@@ -3835,7 +3822,7 @@ Do you want to start scaffold generation now?`;
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     projectId,
-                    projectName: project?.name || "Project Credit",
+                    projectName: project?.name || uiText.projectCredit,
                     successPath,
                     cancelPath,
                         projectSnapshot: buildPricingProjectSnapshot(
@@ -3854,7 +3841,6 @@ Do you want to start scaffold generation now?`;
                             decisionRecords,
                             guardrailChecklist,
                             readinessOverrides,
-                            reviewHistory,
                             sourceArtifacts,
                             architectureStage,
                             functionalLockedAt,
@@ -3870,16 +3856,12 @@ Do you want to start scaffold generation now?`;
 
             const data = (await res.json()) as { checkoutUrl?: string; error?: string };
             if (!res.ok || !data.checkoutUrl) {
-                const blockingCode = (data as { code?: string }).code;
-                if (blockingCode === "REVIEW_REQUIRED" || blockingCode === "REVIEW_STALE") {
-                    setActiveTab("review");
-                }
-                throw new Error(data.error || "Unable to start Stripe checkout.");
+                throw new Error(data.error || uiText.unableToStartStripeCheckout);
             }
 
             window.location.assign(data.checkoutUrl);
         } catch (error) {
-            const message = error instanceof Error ? error.message : "Failed to start checkout.";
+            const message = error instanceof Error ? error.message : uiText.failedToStartCheckout;
             setGenerateError(message);
         } finally {
             setIsCheckingOut(false);
@@ -3900,55 +3882,16 @@ Do you want to start scaffold generation now?`;
 
         setGenerateError(null);
         if (!minimumViableLoopReady) {
-            const message = minimumLoopBlockers[0] || "Complete the minimum viable architecture loop before generating scaffold.";
+            const message = translateReadinessText(
+                workspaceLanguage,
+                minimumLoopBlockers[0] || uiText.completeMvlBeforeGenerate
+            );
             setGenerateError(message);
             if (source === "chat") {
-                const language = detectResponseLanguage(
-                    ...(baseMessages ?? messages).slice(-6).map((item) => item.content || ""),
-                    message
-                );
                 const blockedResponse = buildBlockedGenerateQuestion(
-                    language,
+                    workspaceLanguage,
                     architectureStage,
                     scaffoldEligibility.readiness,
-                    scaffoldEligibility.reviewState,
-                    architecturePack,
-                    baseMessages ?? messages
-                );
-                setMessages((prev) => {
-                    const nextBase = baseMessages ?? prev;
-                    return [
-                        ...nextBase,
-                        {
-                            role: "assistant",
-                            content: blockedResponse.content,
-                            options: blockedResponse.options,
-                            questionKey: blockedResponse.questionKey,
-                            questionStatus: "pending",
-                            questionAction: blockedResponse.questionAction,
-                            questionRequirementKey: blockedResponse.questionRequirementKey
-                        }
-                    ];
-                });
-            }
-            return;
-        }
-        if (!reviewApproved) {
-            const message = scaffoldEligibility.reviewState === "stale_review"
-                ? "Architecture changed after the last approved review. Run review again before scaffold generation."
-                : "Run an architecture review and resolve findings before scaffold generation.";
-            setGenerateError(message);
-            setActiveTab("review");
-            if (source === "chat") {
-                const language = detectResponseLanguage(
-                    ...(baseMessages ?? messages).slice(-6).map((item) => item.content || ""),
-                    message
-                );
-                const blockedResponse = buildBlockedGenerateQuestion(
-                    language,
-                    architectureStage,
-                    scaffoldEligibility.readiness,
-                    scaffoldEligibility.reviewState,
                     architecturePack,
                     baseMessages ?? messages
                 );
@@ -3981,68 +3924,25 @@ Do you want to start scaffold generation now?`;
         setGenerateError(null);
     };
 
-    const handleRunReview = async () => {
-        const materials = reviewDraft.trim();
-        if (!materials) {
-            setReviewError("Paste implementation notes, planned file changes, or code snippets before running review.");
-            return;
-        }
-
-        setMessages((prev) => {
-            const pending = getLatestPendingQuestion(prev);
-            return closeOpenAssistantQuestions(
-                prev,
-                pending?.questionAction === "run_review" ? pending.questionKey : null
-            );
-        });
-
-        setIsReviewing(true);
-        setReviewError(null);
-        setHasUserEdited(true);
-
-        try {
-            const res = await fetch("/api/review", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    architecturePack,
-                    guardrailChecklist,
-                    materials
-                })
-            });
-            const payload = (await res.json()) as {
-                error?: string;
-                summary?: string;
-                verdict?: ArchitectureReviewResult["verdict"];
-                findings?: ReviewFinding[];
-                reviewedAt?: number;
-            };
-
-            if (!res.ok || !payload.summary || !payload.verdict) {
-                throw new Error(payload.error || "Failed to run architecture review.");
-            }
-
-            const nextReview: ArchitectureReviewResult = {
-                summary: payload.summary,
-                verdict: payload.verdict,
-                findings: normalizeReviewFindings(payload.findings),
-                reviewedAt: typeof payload.reviewedAt === "number" ? payload.reviewedAt : Date.now(),
-                reviewedArchitectureFingerprint: scaffoldEligibility.architectureFingerprint
-            };
-
-            setReviewHistory((prev) => [...prev, nextReview].slice(-20));
-            if (nextReview.verdict === "aligned" && minimumViableLoopReady) {
-                setArchitectureStage("ready_to_generate");
-            } else {
-                setArchitectureStage("review");
-            }
-            setActiveTab("review");
-        } catch (error) {
-            setReviewError(error instanceof Error ? error.message : "Failed to run architecture review.");
-        } finally {
-            setIsReviewing(false);
-        }
-    };
+    const prdSummaryLines = buildPrdSummaryLines(
+        workspaceLanguage,
+        evaluation,
+        architecturePack,
+        architectureReadiness
+    );
+    const prdConversationSignals = buildPrdConversationSignals(workspaceLanguage, messages);
+    const prdArchitectureSnapshot = buildPrdArchitectureSnapshot(
+        workspaceLanguage,
+        architecturePack,
+        architectureReadiness
+    );
+    const prdClarifiedItems = normalizeAnalysis(evaluation?.analysis).clarified;
+    const prdOpenQuestions = normalizeAnalysis(evaluation?.analysis).missing;
+    const prdGuardrailItems = [
+        ...guardrailChecklist.implementationOrder,
+        ...guardrailChecklist.acceptanceCriteria,
+        ...guardrailChecklist.testStrategy
+    ].slice(0, 8);
 
     if (!project || !currentVersion) return <WizardSkeleton />;
 
@@ -4051,7 +3951,7 @@ Do you want to start scaffold generation now?`;
             <div className="relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.16),transparent_70%)]" />
                 {/* Project Sidebar + Chat (Left) */}
-                <VersionSidebar project={project} width={sidebarWidth}>
+                <VersionSidebar project={project} width={sidebarWidth} language={workspaceLanguage}>
                 <div className="relative z-10 flex h-full min-h-0 flex-col">
                     <div className="flex-1 min-h-0">
                         <div
@@ -4061,7 +3961,7 @@ Do you want to start scaffold generation now?`;
                             {/* Header */}
                             <div className="flex items-center justify-between border-b border-[color:var(--border)] bg-white/70 px-4 py-3 backdrop-blur-sm dark:bg-slate-900/75">
                                 <div className="space-y-1">
-                                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-400">Project</p>
+                                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-400">{uiText.projectLabel}</p>
                                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</p>
                                 </div>
                                 <UserCenter signOutCallbackUrl="/" />
@@ -4077,7 +3977,7 @@ Do you want to start scaffold generation now?`;
                                             }}
                                             className="rounded-full border border-[color:var(--border)] bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-white dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                                         >
-                                            Show {Math.min(MESSAGE_WINDOW_STEP, hiddenMessageCount)} earlier messages ({hiddenMessageCount} hidden)
+                                            {uiText.showEarlierMessages(Math.min(MESSAGE_WINDOW_STEP, hiddenMessageCount), hiddenMessageCount)}
                                         </button>
                                     </div>
                                 )}
@@ -4092,7 +3992,7 @@ Do you want to start scaffold generation now?`;
                                 {isLoading && (
                                     <div className="flex justify-start animate-pulse">
                                         <div className="rounded-xl rounded-tl-none bg-slate-100 px-4 py-2 text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                                            Thinking...
+                                            {uiText.thinking}
                                         </div>
                                     </div>
                                 )}
@@ -4104,11 +4004,8 @@ Do you want to start scaffold generation now?`;
                             <div className="border-t border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/75">
                                 <div className="mb-3 space-y-2">
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-slate-300">
-                                        Architect Stage: {ARCHITECTURE_STAGE_LABELS[architectureStage]} | Readiness {Math.round(architectureCompletion)}%
-                                        {` | MVL ${minimumViableLoopReady ? "Ready" : `${Math.round(minimumViableLoop.score)}%`}`}
-                                        {latestReview
-                                            ? ` | Last review: ${latestReview.verdict.replace("_", " ")}${scaffoldEligibility.reviewState === "stale_review" ? " (stale)" : ""}`
-                                            : ""}
+                                        {uiText.architectStage}: {getArchitectureStageLabel(workspaceLanguage, architectureStage)} | {uiText.readiness} {Math.round(architectureCompletion)}%
+                                        {` | MVL ${minimumViableLoopReady ? uiText.mvlReady : `${Math.round(minimumViableLoop.score)}%`}`}
                                     </div>
                                 </div>
                                 <div className="mb-4 flex flex-col gap-2">
@@ -4116,10 +4013,10 @@ Do you want to start scaffold generation now?`;
                                         <>
                                             <div className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-6 py-4 font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
                                                 <Check className="w-5 h-5" />
-                                                Scaffold Generated
+                                                {uiText.scaffoldGenerated}
                                             </div>
                                             <p className="text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                                                Scaffold generated successfully. You can still continue refining the architecture or review direction below.
+                                                {uiText.scaffoldGeneratedDesc}
                                             </p>
                                         </>
                                     ) : (
@@ -4135,46 +4032,41 @@ Do you want to start scaffold generation now?`;
                                                     ? <Loader2 className="animate-spin" />
                                                     : <Sparkles className="w-5 h-5" />}
                                                 {!isAdminStatusLoaded
-                                                    ? "Checking access..."
+                                                    ? uiText.checkingAccess
                                                     : !minimumViableLoopReady
-                                                    ? "Generate Locked Until MVL Ready"
+                                                    ? uiText.generateLockedUntilMvlReady
                                                     : isCheckingOut
-                                                    ? "Redirecting to Payment..."
+                                                    ? uiText.redirectingToPayment
                                                     : isGenerating
-                                                    ? "Architecting Solution..."
-                                                    : !reviewApproved
-                                                    ? (scaffoldEligibility.reviewState === "stale_review"
-                                                        ? "Re-run Review Before Generate"
-                                                        : "Run Review Before Generate")
+                                                    ? uiText.architectingSolution
                                                     : !requiresPayment
-                                                    ? "Generate Scaffold"
+                                                    ? uiText.generateScaffold
                                                     : checkoutQuote?.displayAmount
-                                                    ? `Proceed to Payment (${checkoutQuote.displayAmount})`
+                                                    ? uiText.proceedToPaymentWithAmount(checkoutQuote.displayAmount)
                                                     : isQuoteLoading
-                                                    ? "Proceed to Payment (Calculating...)"
-                                                    : "Proceed to Payment"}
+                                                    ? uiText.proceedToPaymentCalculating
+                                                    : uiText.proceedToPayment}
                                             </button>
                                             {generateError && (
                                                 <div className="text-xs text-red-500 text-center">{generateError}</div>
                                             )}
                                             <p className="text-center text-xs text-slate-500 dark:text-slate-300">
                                                 {!isAdminStatusLoaded
-                                                    ? "Checking permissions..."
+                                                    ? uiText.checkingPermissions
                                                     : !minimumViableLoopReady
-                                                    ? `Minimum viable loop is not ready yet. ${minimumLoopBlockers[0] || "Continue editing below to close the remaining gap."}`
+                                                    ? uiText.minimumViableLoopNotReady(translateReadinessText(workspaceLanguage, minimumLoopBlockers[0] || ""))
                                                     : isAdmin
-                                                    ? "Admin mode: payment bypass enabled"
-                                                    : !reviewApproved
-                                                    ? (scaffoldEligibility.reviewState === "stale_review"
-                                                        ? "Architecture changed after the last approved review. Re-run review before generating. You can keep editing below."
-                                                        : "Minimum viable loop is ready, but a current approved review is still required before generation.")
+                                                    ? uiText.adminModeBypassEnabled
                                                     : hasPaid
-                                                    ? "Minimum viable loop and review are approved. Ready to build or update scaffold."
+                                                    ? uiText.readyToBuild
                                                     : checkoutQuote
-                                                    ? `Estimated ${checkoutQuote.displayAmount} (${checkoutQuote.complexityTier} complexity).`
+                                                    ? uiText.estimatedQuote(
+                                                        checkoutQuote.displayAmount,
+                                                        translateComplexityTier(workspaceLanguage, checkoutQuote.complexityTier)
+                                                    )
                                                     : isQuoteLoading
-                                                    ? "Calculating complexity-based price..."
-                                                    : "Payment required before generation"}
+                                                    ? uiText.calculatingPrice
+                                                    : uiText.paymentRequired}
                                             </p>
                                         </>
                                     )}
@@ -4183,7 +4075,7 @@ Do you want to start scaffold generation now?`;
                                 <div className="flex flex-col gap-2">
                                     {!minimumViableLoopReady && (
                                         <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                            Continue editing below. Next MVL blocker: {minimumLoopBlockers[0] || "Close the remaining architecture gap."}
+                                            {uiText.nextMvlBlocker(translateReadinessText(workspaceLanguage, minimumLoopBlockers[0] || ""))}
                                         </p>
                                     )}
                                     {pendingAttachments.length > 0 && (
@@ -4231,7 +4123,7 @@ Do you want to start scaffold generation now?`;
                                         <button
                                             onClick={() => fileInputRef.current?.click()}
                                             className="mb-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 dark:text-slate-300 dark:hover:bg-blue-900/20"
-                                            title="Attach files"
+                                            title={uiText.attachFiles}
                                         >
                                             <Paperclip className="w-5 h-5" />
                                         </button>
@@ -4248,8 +4140,8 @@ Do you want to start scaffold generation now?`;
                                             }}
                                             onPaste={handlePaste}
                                             placeholder={generation
-                                                ? `Describe changes, review concerns, or implementation direction updates for ${project.name}...`
-                                                : `Describe architecture goals, module boundaries, contracts, risks, or attach documents for ${project.name}...`}
+                                                ? uiText.generatedPlaceholder(project.name)
+                                                : uiText.architecturePlaceholder(project.name)}
                                             disabled={isGenerating}
                                             rows={1}
                                             className="min-h-[40px] max-h-[150px] flex-1 resize-none overflow-hidden border-none bg-transparent p-2 text-slate-900 focus:outline-none focus:ring-0 dark:text-slate-100"
@@ -4265,7 +4157,7 @@ Do you want to start scaffold generation now?`;
                                     </div>
                                     {isLoading && (
                                         <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
-                                            AI is responding. Press the square button to stop and ask a new question.
+                                            {uiText.aiRespondingHint}
                                         </p>
                                     )}
                                 </div>
@@ -4280,7 +4172,7 @@ Do you want to start scaffold generation now?`;
                 className="z-20 w-1.5 flex-shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-blue-200/60 dark:hover:bg-blue-800/50"
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize chat panel"
+                aria-label={uiText.resizeChatPanel}
                 style={{ touchAction: "none" }}
             />
 
@@ -4292,26 +4184,26 @@ Do you want to start scaffold generation now?`;
                         active={activeTab === 'architecture'}
                         onClick={() => setActiveTab('architecture')}
                         icon={<BrainCircuit className="w-4 h-4" />}
-                        label="Architecture"
+                        label={uiText.architectureTab}
                     />
                     <TabButton
-                        active={activeTab === 'review'}
-                        onClick={() => setActiveTab('review')}
-                        icon={<ShieldAlert className="w-4 h-4" />}
-                        label="Review"
+                        active={activeTab === 'prd'}
+                        onClick={() => setActiveTab('prd')}
+                        icon={<FileText className="w-4 h-4" />}
+                        label={uiText.prdTab}
                     />
                     <TabButton
                         active={activeTab === 'files'}
                         onClick={() => setActiveTab('files')}
                         icon={<FileCode className="w-4 h-4" />}
-                        label="Scaffold"
+                        label={uiText.scaffoldTab}
                         disabled={!generation}
                     />
                     <TabButton
                         active={activeTab === 'stack'}
                         onClick={() => setActiveTab('stack')}
                         icon={<Layers className="w-4 h-4" />}
-                        label="Tech Stack"
+                        label={uiText.techStackTab}
                         disabled={!generation}
                     />
                 </div>
@@ -4324,71 +4216,117 @@ Do you want to start scaffold generation now?`;
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
                             <section className="h-full rounded-2xl border border-[color:var(--border)] bg-slate-50/70 p-4 dark:bg-black/25">
                                 <div className="relative h-full min-h-[520px] overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} />
+                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} language={workspaceLanguage} />
                                 </div>
                             </section>
                         </div>
                     )}
 
-                    {/* Review Tab */}
-                    {activeTab === 'review' && (
+                    {/* PRD Tab */}
+                    {activeTab === 'prd' && (
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
-                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
                                 <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
                                     <div className="flex items-center justify-between gap-3">
                                         <div>
-                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Architecture Review</h3>
-                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">Paste implementation notes, file plans, or code snippets. The Architect will flag boundary drift and missing contracts.</p>
+                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{uiText.prdTitle}</h3>
+                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{uiText.prdDesc}</p>
                                         </div>
-                                        <button
-                                            onClick={handleRunReview}
-                                            disabled={isReviewing}
-                                            className="fc-button-primary inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            {isReviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldAlert className="h-4 w-4" />}
-                                            Run Review
-                                        </button>
+                                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
+                                            {uiText.prdLastUpdated}
+                                        </span>
                                     </div>
 
-                                    <textarea
-                                        value={reviewDraft}
-                                        onChange={(event) => setReviewDraft(event.target.value)}
-                                        placeholder="Example: Billing service writes directly to auth tables, frontend will call internal admin endpoint, tests planned: none..."
-                                        className="mt-4 h-72 w-full rounded-2xl border border-[color:var(--border)] bg-white/90 p-4 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-950/70 dark:text-slate-100"
-                                    />
-                                    {reviewError && (
-                                        <p className="mt-3 text-sm text-red-500">{reviewError}</p>
-                                    )}
+                                    <div className="mt-4 space-y-5">
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdSummary}</h4>
+                                            <div className="mt-2 space-y-2">
+                                                {prdSummaryLines.map((item, index) => (
+                                                    <div key={`prd-summary-${index}`} className="rounded-xl border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-800/40 dark:bg-emerald-900/15 dark:text-emerald-100">
+                                                        {item}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdClarified}</h4>
+                                            <div className="mt-2 space-y-2">
+                                                {prdClarifiedItems.length > 0 ? prdClarifiedItems.map((item, index) => (
+                                                    <div key={`prd-clarified-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
+                                                        {item}
+                                                    </div>
+                                                )) : (
+                                                    <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoClarified}</p>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdOpenQuestions}</h4>
+                                            <div className="mt-2 space-y-2">
+                                                {prdOpenQuestions.length > 0 ? prdOpenQuestions.map((item, index) => (
+                                                    <div key={`prd-open-${index}`} className="rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-amber-100">
+                                                        {item}
+                                                    </div>
+                                                )) : (
+                                                    <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoOpenQuestions}</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
                                 </section>
 
-                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                    <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                        <ListChecks className="h-5 w-5 text-blue-500" />
-                                        Review Findings
-                                    </h3>
-                                    <div className="mt-4 space-y-3">
-                                        {reviewHistory.length > 0 ? reviewHistory.slice().reverse().map((review) => (
-                                            <article key={review.reviewedAt} className="rounded-2xl border border-[color:var(--border)] bg-slate-50/80 p-4 dark:bg-slate-800/50">
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{review.verdict.replace("_", " ")}</p>
-                                                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{new Date(review.reviewedAt).toLocaleString()}</p>
+                                <section className="space-y-4">
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdConversationSignals}</h4>
+                                        <div className="mt-3 space-y-2">
+                                            {prdConversationSignals.length > 0 ? prdConversationSignals.map((item, index) => (
+                                                <div key={`prd-signal-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
+                                                    {item}
                                                 </div>
-                                                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{review.summary}</p>
-                                                <div className="mt-3 space-y-2">
-                                                    {review.findings.length > 0 ? review.findings.map((finding, index) => (
-                                                        <div key={`${review.reviewedAt}-${index}`} className="rounded-xl border border-[color:var(--border)] bg-white/90 px-3 py-2 text-xs dark:bg-slate-900/70">
-                                                            <p className="font-semibold text-slate-800 dark:text-slate-100">{finding.area} · {finding.severity}</p>
-                                                            <p className="mt-1 text-slate-600 dark:text-slate-300">{finding.finding}</p>
-                                                            <p className="mt-1 text-slate-500 dark:text-slate-400">Action: {finding.recommendedAction}</p>
-                                                        </div>
-                                                    )) : (
-                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400">No findings. Implementation direction is aligned.</p>
-                                                    )}
+                                            )) : (
+                                                <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoConversationSignals}</p>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdArchitectureSnapshot}</h4>
+                                        <div className="mt-3 space-y-2">
+                                            {prdArchitectureSnapshot.map((item, index) => (
+                                                <div key={`prd-arch-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
+                                                    {item}
                                                 </div>
-                                            </article>
-                                        )) : (
-                                            <p className="text-sm text-slate-500 dark:text-slate-300">No reviews yet.</p>
-                                        )}
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdDecisionLog}</h4>
+                                        <div className="mt-3 space-y-2">
+                                            {decisionRecords.length > 0 ? decisionRecords.slice(0, 5).map((record, index) => (
+                                                <div key={`prd-decision-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
+                                                    <p className="font-semibold text-slate-900 dark:text-slate-100">{record.title || record.decision}</p>
+                                                    <p className="mt-1">{record.decision}</p>
+                                                </div>
+                                            )) : (
+                                                <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoDecisionLog}</p>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdGuardrails}</h4>
+                                        <div className="mt-3 space-y-2">
+                                            {prdGuardrailItems.length > 0 ? prdGuardrailItems.map((item, index) => (
+                                                    <div key={`prd-guardrail-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
+                                                        {item}
+                                                    </div>
+                                                )) : (
+                                                <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoGuardrails}</p>
+                                            )}
+                                        </div>
                                     </div>
                                 </section>
                             </div>
@@ -4398,7 +4336,7 @@ Do you want to start scaffold generation now?`;
                     {/* Scaffold Tab */}
                     {activeTab === 'files' && generation && (
                         <div className="absolute inset-0 p-4 overflow-hidden">
-                            <FileTreeDisplay content={generation.projectTree} projectName={project?.name} />
+                            <FileTreeDisplay content={generation.projectTree} projectName={project?.name} language={workspaceLanguage} />
                         </div>
                     )}
 
@@ -4407,9 +4345,9 @@ Do you want to start scaffold generation now?`;
                         <div className="absolute inset-0 p-6 overflow-y-auto">
                             <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
                                 <Layers className="h-5 w-5 text-orange-500" />
-                                Technology Stack
+                                {uiText.technologyStack}
                             </h3>
-                            <ToolStackTable content={generation.toolStack} />
+                            <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
                         </div>
                     )}
 
@@ -4483,7 +4421,7 @@ function WizardSkeleton() {
 
 export default function WizardPage() {
     return (
-        <Suspense fallback={<div className="flex h-screen items-center justify-center">Loading...</div>}>
+        <Suspense fallback={<div className="flex h-screen items-center justify-center" />}>
             <WizardContent />
         </Suspense>
     );

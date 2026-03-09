@@ -5,14 +5,16 @@ import { Project } from "@/types";
 import { ArrowLeft, Copy, Check } from "lucide-react";
 import Link from "next/link";
 import { BrandLogo } from "@/components/BrandLogo";
+import type { WorkspaceLanguage } from "@/lib/project-language";
 
 interface VersionSidebarProps {
     project: Project;
     children?: ReactNode;
     width?: number;
+    language: WorkspaceLanguage;
 }
 
-export function VersionSidebar({ project, children, width }: VersionSidebarProps) {
+export function VersionSidebar({ project, children, width, language }: VersionSidebarProps) {
     const [isCopied, setIsCopied] = useState(false);
 
     const handleCopyProjectId = async () => {
@@ -45,7 +47,7 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                 />
                 <div className="flex-1 min-w-0">
                     <h2 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</h2>
-                    <p className="truncate text-xs text-slate-500 dark:text-slate-300">Project Workspace</p>
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-300">{language === "zh" ? "项目工作区" : "Project Workspace"}</p>
                     <div className="mt-1 flex items-center gap-1.5">
                         <code className="min-w-0 truncate text-[11px] text-slate-600 dark:text-slate-300" title={project.id}>
                             {project.id}
@@ -54,8 +56,8 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                             type="button"
                             onClick={handleCopyProjectId}
                             className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
-                            title="Copy project ID"
-                            aria-label="Copy project ID"
+                            title={language === "zh" ? "复制项目 ID" : "Copy project ID"}
+                            aria-label={language === "zh" ? "复制项目 ID" : "Copy project ID"}
                         >
                             {isCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
                         </button>
@@ -68,7 +70,9 @@ export function VersionSidebar({ project, children, width }: VersionSidebarProps
                     children
                 ) : (
                     <div className="p-4 text-xs text-slate-500 dark:text-slate-300">
-                        Versioning is disabled. This workspace uses a single live scaffold.
+                        {language === "zh"
+                            ? "当前未启用版本管理。这个工作区使用单一实时脚手架。"
+                            : "Versioning is disabled. This workspace uses a single live scaffold."}
                     </div>
                 )}
             </div>

@@ -27,6 +27,7 @@ type EvaluateRequestBody = {
     generationReady?: unknown;
     designMemory?: unknown;
     diagramPolicy?: unknown;
+    outputLanguage?: unknown;
 };
 
 class RequestPayloadError extends Error {
@@ -106,15 +107,52 @@ function parseMissingItems(raw: string) {
         .filter(Boolean);
 }
 
-function buildFallbackQuestion(output: string) {
+function buildFallbackQuestion(output: string, language: "zh" | "en") {
     const missingRaw = extractTaggedSection(output, "analysis_missing");
     const missingItems = parseMissingItems(missingRaw);
     if (missingItems.length > 0) {
         const summary = missingItems.slice(0, 3).join("; ");
-        const question = `Could you clarify the following so I can proceed: ${summary}?`;
+        const question = language === "zh"
+            ? `请先确认以下几点，我才能继续推进：${summary}？`
+            : `Could you clarify the following so I can proceed: ${summary}?`;
         return clipText(question, EVALUATE_FALLBACK_QUESTION_MAX_CHARS);
     }
-    return "Could you confirm this direction so I can proceed?";
+    return language === "zh"
+        ? "请确认这个方向，我再继续推进。"
+        : "Could you confirm this direction so I can proceed?";
+}
+
+function getEvaluateFallbackMessage(
+    language: "zh" | "en",
+    key: "high_demand" | "empty_before_content" | "service_unavailable" | "no_output"
+) {
+    if (language === "zh") {
+        switch (key) {
+            case "high_demand":
+                return "AI \u670d\u52a1\u5f53\u524d\u8d1f\u8f7d\u8f83\u9ad8\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002";
+            case "empty_before_content":
+                return "AI \u5728\u8fd4\u56de\u4efb\u4f55\u5185\u5bb9\u524d\u5c31\u5931\u8d25\u4e86\uff0c\u8bf7\u91cd\u8bd5\u3002";
+            case "service_unavailable":
+                return "\u62b1\u6b49\uff0cAI \u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002";
+            case "no_output":
+                return "\u6a21\u578b\u6ca1\u6709\u8fd4\u56de\u5185\u5bb9\uff0c\u8bf7\u91cd\u8bd5\u3002";
+            default:
+                return "\u8bf7\u91cd\u8bd5\u3002";
+        }
+    }
+
+    switch (key) {
+        case "high_demand":
+            return "AI service is experiencing high demand. Please try again in a moment.";
+        case "empty_before_content":
+            return "AI response failed before any content was returned. Please retry.";
+        case "service_unavailable":
+            return "Sorry, the AI service is temporarily unavailable. Please try again in a moment.";
+        case "no_output":
+            return "No model output received. Please retry.";
+        default:
+            return "Please retry.";
+    }
 }
 
 function compactAttachment(attachment: Attachment): Attachment {
@@ -210,6 +248,7 @@ async function* streamWithTimeGuards(
         sourceContext?: string;
         designMemory?: string;
         diagramPolicy?: string;
+        outputLanguage?: "zh" | "en";
     }
 ) {
     const iterator = streamEvaluateInput(messages, contextText, {
@@ -217,7 +256,8 @@ async function* streamWithTimeGuards(
         preferBackupModel: options?.preferBackupModel === true,
         sourceContext: options?.sourceContext,
         designMemory: options?.designMemory,
-        diagramPolicy: options?.diagramPolicy
+        diagramPolicy: options?.diagramPolicy,
+        outputLanguage: options?.outputLanguage
     })[Symbol.asyncIterator]();
     try {
         while (true) {
@@ -265,7 +305,8 @@ export async function POST(req: Request) {
     const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).slice(0, 12);
     const requestStartedAt = Date.now();
     try {
-        const { messages, context, sourceContext, generationReady, designMemory, diagramPolicy } = await parseEvaluateRequest(req);
+        const { messages, context, sourceContext, generationReady, designMemory, diagramPolicy, outputLanguage } = await parseEvaluateRequest(req);
+        const responseLanguage = outputLanguage === "zh" ? "zh" : "en";
         const contextText = typeof context === "string" ? context : undefined;
         const sourceContextText =
             typeof sourceContext === "string" && sourceContext.trim()
@@ -333,7 +374,8 @@ export async function POST(req: Request) {
                         {
                             sourceContext: sourceContextText,
                             designMemory: designMemoryText,
-                            diagramPolicy: normalizedDiagramPolicy
+                            diagramPolicy: normalizedDiagramPolicy,
+                            outputLanguage: responseLanguage
                         }
                     )) {
                         if (chunk) {
@@ -387,7 +429,8 @@ export async function POST(req: Request) {
                                     preferBackupModel: true,
                                     sourceContext: retrySourceContext,
                                     designMemory: retryDesignMemory,
-                                    diagramPolicy: normalizedDiagramPolicy
+                                    diagramPolicy: normalizedDiagramPolicy,
+                                    outputLanguage: responseLanguage
                                 }
                             )) {
                                 if (retryChunk.trim().length > 0) {
@@ -410,8 +453,8 @@ export async function POST(req: Request) {
                             );
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(retryError)
-                                    ? "AI service is experiencing high demand. Please try again in a moment."
-                                    : "AI response failed before any content was returned. Please retry."
+                                    ? getEvaluateFallbackMessage(responseLanguage, "high_demand")
+                                    : getEvaluateFallbackMessage(responseLanguage, "empty_before_content")
                             );
                             emittedMeaningfulChunk = true;
                         }
@@ -420,8 +463,8 @@ export async function POST(req: Request) {
                         if (!emittedMeaningfulChunk) {
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(e)
-                                    ? "AI service is experiencing high demand. Please try again in a moment."
-                                    : "Sorry, the AI service is temporarily unavailable. Please try again in a moment."
+                                    ? getEvaluateFallbackMessage(responseLanguage, "high_demand")
+                                    : getEvaluateFallbackMessage(responseLanguage, "service_unavailable")
                             );
                             emittedMeaningfulChunk = true;
                         } else {
@@ -436,12 +479,12 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] noMeaningfulOutput streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        enqueueQuestionFallback("No model output received. Please retry.");
+                        enqueueQuestionFallback(getEvaluateFallbackMessage(responseLanguage, "no_output"));
                     } else if (emittedMeaningfulChunk && !sawQuestionTag && !fallbackQuestionInjected) {
                         console.warn(
                             `[evaluate][${requestId}] missingQuestionTag streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        enqueueQuestionFallback(buildFallbackQuestion(fullOutput));
+                        enqueueQuestionFallback(buildFallbackQuestion(fullOutput, responseLanguage));
                     }
                     if (!closed) {
                         closed = true;

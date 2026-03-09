@@ -1,6 +1,7 @@
-import type { Project } from "@/types";
 import { adminDb } from "@/lib/firebase-admin";
 import { toDateOrNull } from "./firestore-utils";
+import { normalizeProjects } from "@/lib/project-language";
+import type { Project } from "@/types";
 
 type WorkspaceDoc = {
     userId: string;
@@ -14,8 +15,7 @@ function workspacesCollection() {
 }
 
 function parseProjects(raw: unknown): Project[] {
-    if (!Array.isArray(raw)) return [];
-    return raw as Project[];
+    return normalizeProjects(raw);
 }
 
 export async function getWorkspaceByUserId(userId: string): Promise<WorkspaceDoc | null> {
@@ -85,4 +85,3 @@ export async function markProjectPaidInWorkspace(userId: string, projectId: stri
 
     return true;
 }
-

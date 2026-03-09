@@ -13,6 +13,11 @@ import {
     readProjectsFromLocalStorage,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
+import {
+    getProjectWorkspaceLanguage,
+    getWorkspaceLanguageLabel,
+    type WorkspaceLanguage
+} from "@/lib/project-language";
 
 function yieldToBrowser(): Promise<void> {
     return new Promise((resolve) => {
@@ -66,6 +71,34 @@ function buildDefaultUiDesignState(): UiDesignState {
     };
 }
 
+type ProjectFormData = {
+    name: string;
+    description: string;
+    workspaceLanguage: WorkspaceLanguage;
+};
+
+function createEmptyFormData(): ProjectFormData {
+    return {
+        name: "",
+        description: "",
+        workspaceLanguage: "zh"
+    };
+}
+
+function buildInitialAssistantMessage(formData: ProjectFormData) {
+    if (formData.workspaceLanguage === "zh") {
+        return `你好，我是你的 AI 联合创始人。我们先一起梳理 **${formData.name}**。${formData.description ? `\n\n我看到你想做的是：“${formData.description}”。` : ""}\n\n先告诉我你的产品目标、核心用户和最关键的使用流程。`;
+    }
+
+    return `Hello! I'm your AI Co-Founder. Let's shape **${formData.name}** together.${formData.description ? `\n\nI see you want to build: "${formData.description}".` : ""}\n\nStart with the product goal, core users, and the most important workflow.`;
+}
+
+function buildInitialDiagram(language: WorkspaceLanguage) {
+    return language === "zh"
+        ? "graph TD\nStart[从这里开始]"
+        : "graph TD\nStart[Start Here]";
+}
+
 export default function DashboardPage() {
     const router = useRouter();
     const [projects, setProjects] = useState<Project[]>([]);
@@ -75,7 +108,7 @@ export default function DashboardPage() {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
     const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-    const [formData, setFormData] = useState({ name: "", description: "" });
+    const [formData, setFormData] = useState<ProjectFormData>(createEmptyFormData());
     const [copiedProjectId, setCopiedProjectId] = useState<string | null>(null);
 
     const syncWorkspaceRemote = async (nextProjects: Project[]) => {
@@ -158,7 +191,7 @@ export default function DashboardPage() {
 
     const openCreateModal = () => {
         setModalMode('create');
-        setFormData({ name: "", description: "" });
+        setFormData(createEmptyFormData());
         setCurrentProjectId(null);
         setIsModalOpen(true);
     };
@@ -167,14 +200,18 @@ export default function DashboardPage() {
         e.preventDefault();
         e.stopPropagation();
         setModalMode('edit');
-        setFormData({ name: project.name, description: project.description || "" });
+        setFormData({
+            name: project.name,
+            description: project.description || "",
+            workspaceLanguage: getProjectWorkspaceLanguage(project)
+        });
         setCurrentProjectId(project.id);
         setIsModalOpen(true);
     };
 
     const handleCloseModal = () => {
         setIsModalOpen(false);
-        setFormData({ name: "", description: "" });
+        setFormData(createEmptyFormData());
         setCurrentProjectId(null);
     };
 
@@ -197,11 +234,11 @@ export default function DashboardPage() {
                 data: {
                     messages: [{
                         role: "assistant",
-                        content: `Hello! I'm your AI Co-Founder. Let's work on **${formData.name}**. \n\n${formData.description ? `I see you want to build: "${formData.description}".` : ""} \n\nTell me more about your vision!`
+                        content: buildInitialAssistantMessage(formData)
                     }],
                     evaluation: null,
                     generation: null,
-                    currentDiagram: "graph TD\nStart[Start Here]",
+                    currentDiagram: buildInitialDiagram(formData.workspaceLanguage),
                     tasks: [],
                     diagramGovernance: buildDefaultDiagramGovernance(),
                     designStage: "functional_architecture",
@@ -215,6 +252,7 @@ export default function DashboardPage() {
                 id: projectId,
                 name: formData.name,
                 description: formData.description,
+                workspaceLanguage: formData.workspaceLanguage,
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
                 versions: [newVersion]
@@ -236,6 +274,7 @@ export default function DashboardPage() {
                         ...p,
                         name: formData.name,
                         description: formData.description,
+                        workspaceLanguage: formData.workspaceLanguage,
                         updatedAt: Date.now()
                     }
                     : p
@@ -380,6 +419,12 @@ export default function DashboardPage() {
                                             </p>
                                         )}
 
+                                        <div className="mb-4 flex">
+                                            <span className="rounded-full border border-[color:var(--border)] bg-slate-50/90 px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:bg-slate-800/60 dark:text-slate-200">
+                                                {getWorkspaceLanguageLabel(getProjectWorkspaceLanguage(project))}
+                                            </span>
+                                        </div>
+
                                         <div className="mb-4">
                                             <div className="flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-slate-50/90 px-2 py-1.5 dark:bg-slate-800/60">
                                                 <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-300">ID</span>
@@ -451,6 +496,33 @@ export default function DashboardPage() {
                                     placeholder="Briefly describe your idea..."
                                     className="h-24 w-full resize-none rounded-xl border border-[color:var(--border)] bg-white/85 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30 dark:bg-slate-900/70 dark:text-slate-100"
                                 />
+                            </div>
+
+                            <div>
+                                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">
+                                    Workspace Language
+                                </label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {([
+                                        { value: "zh", label: "中文", description: "Workspace UI and AI replies stay in Chinese." },
+                                        { value: "en", label: "English", description: "Workspace UI and AI replies stay in English." }
+                                    ] as const).map((option) => {
+                                        const active = formData.workspaceLanguage === option.value;
+                                        return (
+                                            <button
+                                                key={option.value}
+                                                type="button"
+                                                onClick={() => setFormData({ ...formData, workspaceLanguage: option.value })}
+                                                className={`rounded-xl border px-4 py-3 text-left transition ${active
+                                                    ? "border-blue-500 bg-blue-50 text-blue-700 shadow-sm dark:bg-blue-900/20 dark:text-blue-200"
+                                                    : "border-[color:var(--border)] bg-white/85 text-slate-700 hover:border-blue-300 dark:bg-slate-900/70 dark:text-slate-200"}`}
+                                            >
+                                                <div className="text-sm font-semibold">{option.label}</div>
+                                                <div className="mt-1 text-xs text-slate-500 dark:text-slate-300">{option.description}</div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
                             </div>
 
                             <div className="flex gap-3 pt-4">

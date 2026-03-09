@@ -14,6 +14,7 @@ import {
     buildScaffoldEligibilityErrorMessage,
     computeVersionScaffoldEligibility
 } from "@/lib/scaffold-eligibility";
+import { getProjectWorkspaceLanguage, normalizeProjects } from "@/lib/project-language";
 import type { Project } from "@/types";
 
 type OutputLanguage = "zh" | "en";
@@ -79,13 +80,7 @@ function sanitizeText(value: unknown) {
 }
 
 function parseProjects(raw: unknown): Project[] {
-    if (!Array.isArray(raw)) return [];
-
-    return raw.filter((item): item is Project => {
-        if (!item || typeof item !== "object") return false;
-        const id = (item as { id?: unknown }).id;
-        return typeof id === "string" && id.length > 0;
-    });
+    return normalizeProjects(raw);
 }
 
 function resolveProjectVersion(projects: Project[], projectId: string, versionId: string) {
@@ -174,7 +169,7 @@ export async function POST(req: Request) {
         const parsedOneClickMode = parseOneClickMode(body.oneClickMode);
         const parsedIdeProfile = parseIdeProfile(body.ideProfile);
         const parsedTemplateKindHint = parseTemplateKindHint(body.templateKindHint);
-        const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage);
+        const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
         console.info(
             `[generate] request outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
         );

@@ -1,6 +1,6 @@
 # Forecoding
 
-Forecoding is an architecture-first AI product for engineering teams. Its job is not to jump directly to code generation. It acts as a single AI Architect that discovers business context, defines system boundaries, records tradeoffs, sets implementation guardrails, reviews implementation direction, and only then hands off to scaffold generation.
+Forecoding is an architecture-first AI product for engineering teams. Its job is not to jump directly to code generation. It acts as a single AI Architect that discovers business context, defines system boundaries, records tradeoffs, sets implementation guardrails, maintains a live PRD, and only then hands off to scaffold generation.
 
 ## Product model
 
@@ -9,9 +9,8 @@ Forecoding works through six architecture stages:
 1. `context`: define product goal, target users, journeys, constraints, and risks
 2. `boundaries`: define bounded contexts, ownership, modules, and data ownership
 3. `decisions`: lock contracts, ADR-style decisions, and non-functional requirements
-4. `guardrails`: define implementation order, acceptance criteria, test strategy, and review checklist
-5. `review`: inspect implementation notes or code direction for drift
-6. `ready_to_generate`: allow scaffold generation and payment flow
+4. `guardrails`: define implementation order, acceptance criteria, and test strategy
+5. `ready_to_generate`: allow scaffold generation and payment flow
 
 The primary durable artifact is the `ArchitecturePack`, not the chat transcript.
 
@@ -19,15 +18,14 @@ The primary durable artifact is the `ArchitecturePack`, not the chat transcript.
 
 - `ArchitecturePack`: business context, domain model, bounded contexts, module responsibilities, data ownership, contracts, non-functional requirements, delivery plan, and experience constraints
 - `DecisionRecord[]`: explicit architecture decisions with rationale, rejected alternatives, and consequences
-- `GuardrailChecklist`: implementation order, acceptance criteria, test strategy, and review checklist
-- `ArchitectureReviewResult[]`: review findings against the approved architecture pack
+- `GuardrailChecklist`: implementation order, acceptance criteria, and test strategy
+- `EvaluationResponse.analysis`: live PRD facts and open questions synced from chat
 - `GenerationResponse`: optional downstream scaffold output once the architecture pack is ready
 
 ## Runtime surfaces
 
 - `/wizard`: main Architect workspace
 - `/api/evaluate`: streaming architecture conversation endpoint
-- `/api/review`: implementation review endpoint
 - `/api/generate`: scaffold generation endpoint, only available for a ready architecture pack
 - `/api/payments/stripe/*`: checkout and pricing for scaffold generation
 
@@ -88,7 +86,7 @@ FORECODING_ADMIN_EMAILS=admin@example.com,ops@example.com
 
 - Do not treat `density_score` as the only source of truth. Readiness is derived from the architecture pack and guardrails.
 - Scaffold generation must not run without a ready architecture pack.
-- Architecture review is expected before generation, even if scaffold generation remains technically optional.
+- PRD, architecture pack, and delivery guardrails stay synchronized before scaffold generation.
 - UI design is a subsection of architecture, not a separate product center.
 - Local chat history is not enough. Uploaded artifacts and structured architecture objects are persisted at version level.
 

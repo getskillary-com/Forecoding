@@ -15,6 +15,7 @@ import {
 import type { Project, ProjectVersion } from "@/types";
 import { BrandLogo } from "@/components/BrandLogo";
 import { ChatBubble } from "@/components/ChatBubble";
+import { getProjectWorkspaceLanguage } from "@/lib/project-language";
 
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
@@ -178,6 +179,7 @@ export default function DemoPage() {
     const messages = projectData.messages || [];
     const tasks = projectData.tasks || [];
     const architectureCode = projectData.currentDiagram || "graph TD\nStart[No Architecture]";
+    const workspaceLanguage = getProjectWorkspaceLanguage(project);
 
     return (
         <div className="relative min-h-screen overflow-hidden px-4 py-6 md:px-6">
@@ -264,7 +266,7 @@ export default function DemoPage() {
                             {activeTab === "architecture" && (
                                 <div className="h-full p-4">
                                     <div className="h-full overflow-hidden rounded-xl border border-[color:var(--border)] bg-slate-50 dark:bg-black/30">
-                                        <ArchitectureViewer code={architectureCode} />
+                                        <ArchitectureViewer code={architectureCode} language={workspaceLanguage} />
                                     </div>
                                 </div>
                             )}
@@ -341,6 +343,7 @@ export default function DemoPage() {
                                         <FileTreeDisplay
                                             content={generation.projectTree}
                                             projectName={project.name}
+                                            language={workspaceLanguage}
                                         />
                                     ) : (
                                         <p className="p-4 text-sm text-slate-500 dark:text-slate-300">No generated project tree.</p>
@@ -351,7 +354,7 @@ export default function DemoPage() {
                             {activeTab === "stack" && (
                                 <div className="h-full p-4 overflow-y-auto">
                                     {generation?.toolStack ? (
-                                        <ToolStackTable content={generation.toolStack} />
+                                        <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
                                     ) : (
                                         <p className="p-4 text-sm text-slate-500 dark:text-slate-300">No tool stack content.</p>
                                     )}

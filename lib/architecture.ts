@@ -1,7 +1,6 @@
 import type {
     Analysis,
     ArchitecturePack,
-    ArchitectureReviewResult,
     ArchitectureStage,
     DecisionRecord,
     GuardrailChecklist,
@@ -16,7 +15,6 @@ import type {
     MinimumViableLoopChecklist,
     ReadinessOverride,
     ReadinessOverrideKey,
-    ReviewFinding,
     SourceArtifact,
     UiRequirements
 } from "@/types";
@@ -26,7 +24,6 @@ export const ARCHITECTURE_STAGE_LABELS: Record<ArchitectureStage, string> = {
     boundaries: "Boundaries",
     decisions: "Decisions",
     guardrails: "Guardrails",
-    review: "Review",
     ready_to_generate: "Scaffold"
 };
 
@@ -263,8 +260,7 @@ export function normalizeGuardrailChecklist(value: unknown): GuardrailChecklist 
     return {
         implementationOrder: normalizeStringList(candidate.implementationOrder, 16),
         acceptanceCriteria: normalizeStringList(candidate.acceptanceCriteria, 24),
-        testStrategy: normalizeStringList(candidate.testStrategy, 20),
-        reviewChecklist: normalizeStringList(candidate.reviewChecklist, 20)
+        testStrategy: normalizeStringList(candidate.testStrategy, 20)
     };
 }
 
@@ -321,7 +317,6 @@ function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementK
         case "guardrails.implementation_order":
         case "guardrails.acceptance_criteria":
         case "guardrails.test_strategy":
-        case "guardrails.review_checklist":
         case "ui.key_screens":
         case "ui.shared_components":
         case "ui.responsive_strategy":
@@ -434,53 +429,6 @@ function buildReadinessCriterion(input: {
         requirements: input.requirements,
         overrideApplied: input.requirements.some((requirement) => requirement.status === "waived")
     };
-}
-
-export function normalizeReviewFindings(value: unknown): ReviewFinding[] {
-    return normalizeObjectList(value, (item) => {
-        const severity = item.severity;
-        const area = item.area;
-        const normalizedSeverity =
-            severity === "low" || severity === "medium" || severity === "high"
-                ? severity
-                : "medium";
-        const normalizedArea =
-            area === "boundaries" || area === "contracts" || area === "non_functional" || area === "delivery"
-                ? area
-                : "delivery";
-        const finding = normalizeString(item.finding);
-        const recommendedAction = normalizeString(item.recommendedAction);
-        if (!finding && !recommendedAction) return null;
-        return {
-            severity: normalizedSeverity,
-            area: normalizedArea,
-            finding: finding || recommendedAction,
-            recommendedAction: recommendedAction || finding
-        };
-    }, 16);
-}
-
-export function normalizeArchitectureReviewHistory(value: unknown): ArchitectureReviewResult[] {
-    if (!Array.isArray(value)) return [];
-    return value
-        .filter((item): item is ArchitectureReviewResult => Boolean(item && typeof item === "object"))
-        .map((item) => {
-            const verdict =
-                item.verdict === "aligned" || item.verdict === "needs_changes" || item.verdict === "blocked"
-                    ? item.verdict
-                    : "needs_changes";
-            return {
-                summary: typeof item.summary === "string" ? item.summary.trim() : "",
-                verdict,
-                findings: normalizeReviewFindings(item.findings),
-                reviewedAt: typeof item.reviewedAt === "number" ? item.reviewedAt : Date.now(),
-                reviewedArchitectureFingerprint:
-                    typeof item.reviewedArchitectureFingerprint === "string"
-                        ? item.reviewedArchitectureFingerprint.trim()
-                        : ""
-            };
-        })
-        .slice(-20);
 }
 
 export function createReadinessChecklist(
@@ -625,14 +573,6 @@ export function createReadinessChecklist(
                 requiredCount: 2,
                 missing: countMeaningfulStrings(guardrails.testStrategy, 4) < 2 ? ["Define at least 2 concrete test strategy items."] : [],
                 override: overrideIndex.get("guardrails.test_strategy")
-            }),
-            buildReadinessRequirement({
-                key: "guardrails.review_checklist",
-                label: "Review checklist",
-                satisfiedCount: countMeaningfulStrings(guardrails.reviewChecklist, 4),
-                requiredCount: 4,
-                missing: countMeaningfulStrings(guardrails.reviewChecklist, 4) < 4 ? ["Define at least 4 review checklist items."] : [],
-                override: overrideIndex.get("guardrails.review_checklist")
             })
         ]
     });
@@ -694,7 +634,7 @@ export function createReadinessChecklist(
         uiReady,
         paymentReady: functionalReady && uiReady,
         blockingIssues,
-        nextMilestone: blockingIssues[0] || "Run architecture review and proceed to scaffold when ready.",
+        nextMilestone: blockingIssues[0] || "Proceed to scaffold generation when ready.",
         criteria,
         overrides: [...overrideIndex.values()]
     };
@@ -802,7 +742,7 @@ export function createMinimumViableLoopChecklist(
         ready: blockingIssues.length === 0,
         score,
         blockingIssues,
-        nextMilestone: blockingIssues[0] || "Run review and proceed to scaffold generation.",
+        nextMilestone: blockingIssues[0] || "Proceed to scaffold generation.",
         requirements
     };
 }
@@ -811,7 +751,6 @@ export function inferArchitectureStage(
     pack: ArchitecturePack,
     decisions: DecisionRecord[],
     guardrails: GuardrailChecklist,
-    reviewApproved: boolean = false,
     readinessOverrides: ReadinessOverride[] = []
 ): ArchitectureStage {
     const readiness = createReadinessChecklist(pack, decisions, guardrails, readinessOverrides);
@@ -834,10 +773,6 @@ export function inferArchitectureStage(
         criterionByKey.get("ui")?.status !== "confirmed"
     ) {
         return "guardrails";
-    }
-
-    if (!reviewApproved) {
-        return "review";
     }
 
     return "ready_to_generate";
@@ -1032,100 +967,10 @@ export function buildArchitecturePackScaffoldInput(
         "## Guardrails",
         `- Implementation order: ${guardrails.implementationOrder.join(" -> ") || "n/a"}`,
         `- Acceptance criteria: ${guardrails.acceptanceCriteria.join(" | ") || "n/a"}`,
-        `- Test strategy: ${guardrails.testStrategy.join(" | ") || "n/a"}`,
-        `- Review checklist: ${guardrails.reviewChecklist.join(" | ") || "n/a"}`
+        `- Test strategy: ${guardrails.testStrategy.join(" | ") || "n/a"}`
     ];
 
     return sections.join("\n").trim();
 }
 
-function includesAny(text: string, values: string[]) {
-    return values.some((value) => {
-        const normalized = normalizeString(value).toLowerCase();
-        return normalized.length > 2 && text.includes(normalized);
-    });
-}
 
-export function buildArchitectureReview(
-    architecturePack: ArchitecturePack,
-    guardrails: GuardrailChecklist,
-    materials: string
-): ArchitectureReviewResult {
-    const normalizedMaterials = normalizeString(materials).toLowerCase();
-    const findings: ReviewFinding[] = [];
-
-    const suspiciousBoundaryPattern = /\bshared db|direct db access|cross[- ]module|bypass api|bypass service|query another module|read another context\b/i.test(materials);
-    if (suspiciousBoundaryPattern) {
-        findings.push({
-            severity: "high",
-            area: "boundaries",
-            finding: "Implementation notes suggest direct cross-boundary access instead of explicit module ownership.",
-            recommendedAction: "Route cross-context communication through an explicit contract or owning module API."
-        });
-    } else if (architecturePack.boundedContexts.length > 0 && !includesAny(normalizedMaterials, architecturePack.boundedContexts.map((item) => item.name))) {
-        findings.push({
-            severity: "medium",
-            area: "boundaries",
-            finding: "Implementation notes do not reference any bounded context or module ownership.",
-            recommendedAction: "Annotate which bounded context owns each change before implementation."
-        });
-    }
-
-    const suspiciousContractPattern = /\bno api|direct table|skip contract|adhoc payload|temporary endpoint\b/i.test(materials);
-    if (suspiciousContractPattern) {
-        findings.push({
-            severity: "high",
-            area: "contracts",
-            finding: "Implementation notes imply bypassing an explicit API or event contract.",
-            recommendedAction: "Define or reuse a stable integration contract and payload shape before coding."
-        });
-    } else if (architecturePack.integrationContracts.length > 0 && !includesAny(normalizedMaterials, architecturePack.integrationContracts.map((item) => item.name))) {
-        findings.push({
-            severity: "medium",
-            area: "contracts",
-            finding: "Implementation notes do not show how existing integration contracts are honored.",
-            recommendedAction: "Reference the relevant API or event contract and describe payload ownership."
-        });
-    }
-
-    const nfrKeywords = architecturePack.nonFunctionalRequirements.map((item) => `${item.category} ${item.requirement}`);
-    if (nfrKeywords.length > 0 && !includesAny(normalizedMaterials, nfrKeywords)) {
-        findings.push({
-            severity: "medium",
-            area: "non_functional",
-            finding: "Implementation notes do not address the non-functional requirements in the architecture pack.",
-            recommendedAction: "Call out how the change satisfies the required performance, security, observability, or cost constraints."
-        });
-    }
-
-    if (guardrails.testStrategy.length > 0 && !includesAny(normalizedMaterials, guardrails.testStrategy)) {
-        findings.push({
-            severity: "low",
-            area: "delivery",
-            finding: "Implementation notes are missing the expected verification strategy.",
-            recommendedAction: "Add the planned tests and checks before starting implementation."
-        });
-    }
-
-    const highestSeverity = findings.some((item) => item.severity === "high")
-        ? "high"
-        : findings.some((item) => item.severity === "medium")
-            ? "medium"
-            : "low";
-
-    return {
-        summary:
-            findings.length === 0
-                ? "Implementation notes are aligned with the current architecture pack."
-                : `Architecture review found ${findings.length} issue(s). Highest severity: ${highestSeverity}.`,
-        verdict:
-            highestSeverity === "high"
-                ? "blocked"
-                : findings.length > 0
-                    ? "needs_changes"
-                    : "aligned",
-        findings,
-        reviewedAt: Date.now(),
-        reviewedArchitectureFingerprint: ""
-    };
-}
