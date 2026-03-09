@@ -1159,6 +1159,93 @@ function buildCommonFallbackOptions(
     ];
 }
 
+function buildBlockedGenerateQuestion(
+    language: "zh" | "en",
+    architectureStage: ArchitectureStage,
+    readiness: ReadinessChecklist,
+    reviewState: "missing_review" | "stale_review" | "approved_review"
+) {
+    const stageLabel = ARCHITECTURE_STAGE_LABELS[architectureStage];
+    const primaryBlocker = readiness.blockingIssues[0] || "Add the missing architecture detail before generation.";
+
+    if (!readiness.functionalReady || !readiness.uiReady) {
+        const content = language === "zh"
+            ? `当前判断：
+- 现在还不能开始生成代码脚手架。
+- 当前阶段仍是 ${stageLabel}，Readiness ${Math.round(readiness.score)}%。主要阻塞项：${primaryBlocker}
+
+需要确认：
+请先补齐这个缺口，或者继续让我完善架构包。`
+            : `Current view:
+- Scaffold generation is still blocked.
+- The architect stage is still ${stageLabel} and readiness is ${Math.round(readiness.score)}%. Primary blocker: ${primaryBlocker}
+
+Please confirm:
+Should we fill this gap first, or should I continue refining the architecture pack?`;
+
+        const options = language === "zh"
+            ? [
+                { label: "我来补充这个缺口", value: "我来补充这个缺口，请继续问我最关键的问题。" },
+                { label: "列出当前阻塞项", value: "请明确列出当前阻塞生成的缺口，并告诉我先补哪一个。" },
+                { label: "按默认方案继续完善", value: "按你推荐的默认方案继续完善架构包。" }
+            ]
+            : [
+                { label: "I will fill the gap", value: "I will fill this gap. Please ask me the most important missing question." },
+                { label: "List blockers", value: "Please list the current generation blockers and tell me which one to fix first." },
+                { label: "Keep refining", value: "Continue refining the architecture pack using your recommended default approach." }
+            ];
+
+        const questionText = language === "zh"
+            ? "请先补齐这个缺口，或者继续让我完善架构包。"
+            : "Should we fill this gap first, or should I continue refining the architecture pack?";
+
+        return {
+            content,
+            options,
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: undefined
+        };
+    }
+
+    const reviewBlocked = reviewState === "stale_review";
+    const content = language === "zh"
+        ? `当前判断：
+- 架构包已经达到生成前门槛，但还不能直接生成。
+- ${reviewBlocked ? "上次审核已经过期，架构在审核后发生了变化。" : "还缺少一条当前有效的架构审核结论。"}
+
+需要确认：
+是否现在打开审核页并运行 review？`
+        : `Current view:
+- The architecture pack meets the structural threshold, but generation is still blocked.
+- ${reviewBlocked ? "The last approved review is stale because the architecture changed afterward." : "A current approved architecture review is still required."}
+
+Please confirm:
+Do you want to open the review tab and run review now?`;
+
+    const options = language === "zh"
+        ? [
+            { label: "打开审核页", value: "请切换到审核页。", action: "run_review" as const },
+            { label: "我来补充细节", value: "我来补充更多细节，请继续完善架构。" },
+            { label: "暂时不生成", value: "我暂时不生成，请继续完善架构包。" }
+        ]
+        : [
+            { label: "Open review tab", value: "Open the review tab.", action: "run_review" as const },
+            { label: "I will add more detail", value: "I will add more detail. Please continue refining the architecture." },
+            { label: "Not yet", value: "Not yet. Please continue refining the architecture pack." }
+        ];
+
+    const questionText = language === "zh"
+        ? "是否现在打开审核页并运行 review？"
+        : "Do you want to open the review tab and run review now?";
+
+    return {
+        content,
+        options,
+        questionKey: normalizeQuestionKey(questionText),
+        questionAction: "run_review" as const
+    };
+}
+
 function ensureCommonQuestionOptions(
     questionText: string,
     options: MessageOption[],
@@ -2495,7 +2582,7 @@ function WizardContent() {
 
         if (triggeredAction === "generate_scaffold") {
             setMessages(newMessages);
-            await handleGenerate();
+            await handleGenerate("chat", newMessages);
             return;
         }
 
@@ -2881,6 +2968,29 @@ function WizardContent() {
             }
 
             if (evalRequestIdRef.current === requestId) {
+                const resolvedEligibility = computeScaffoldEligibility({
+                    architecturePack: currentEval.architecturePackDraft ?? architecturePack,
+                    decisionRecords: currentEval.decisionDrafts ?? decisionRecords,
+                    guardrailChecklist: currentEval.guardrailDrafts ?? guardrailChecklist,
+                    reviewHistory
+                });
+                const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
+                    ? buildBlockedGenerateQuestion(
+                        detectResponseLanguage(
+                            latestUserContext,
+                            currentEval.next_step.question || "",
+                            ...(currentEval.analysis.clarified ?? []).slice(0, 2)
+                        ),
+                        inferArchitectureStage(
+                            currentEval.architecturePackDraft ?? architecturePack,
+                            currentEval.decisionDrafts ?? decisionRecords,
+                            currentEval.guardrailDrafts ?? guardrailChecklist,
+                            resolvedEligibility.reviewState === "approved_review"
+                        ),
+                        resolvedEligibility.readiness,
+                        resolvedEligibility.reviewState
+                    )
+                    : null;
                 const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
                 setMessages(prev => {
                     if (evalRequestIdRef.current !== requestId) return prev;
@@ -2894,12 +3004,40 @@ function WizardContent() {
                         currentQuestionAction,
                         currentQuestionKey
                     );
-                    const nextContent = current.content.trim().length > 0 ? current.content : fallbackText;
-                    const nextOptions = current.options && current.options.length > 0
-                        ? current.options
-                        : fallbackOptions;
-                    if (nextContent === current.content && nextOptions === current.options) return prev;
-                    updated[assistantIndex] = { ...current, content: nextContent, options: nextOptions };
+                    const nextContent = coercedGenerateQuestion
+                        ? coercedGenerateQuestion.content
+                        : current.content.trim().length > 0
+                            ? current.content
+                            : fallbackText;
+                    const nextOptions = coercedGenerateQuestion
+                        ? coercedGenerateQuestion.options
+                        : current.options && current.options.length > 0
+                            ? current.options
+                            : fallbackOptions;
+                    const nextQuestionKey = coercedGenerateQuestion
+                        ? coercedGenerateQuestion.questionKey
+                        : current.questionKey;
+                    const nextQuestionAction = coercedGenerateQuestion
+                        ? coercedGenerateQuestion.questionAction
+                        : current.questionAction;
+                    const nextQuestionStatus = coercedGenerateQuestion ? "pending" as const : current.questionStatus;
+                    if (
+                        nextContent === current.content &&
+                        nextOptions === current.options &&
+                        nextQuestionKey === current.questionKey &&
+                        nextQuestionAction === current.questionAction &&
+                        nextQuestionStatus === current.questionStatus
+                    ) {
+                        return prev;
+                    }
+                    updated[assistantIndex] = {
+                        ...current,
+                        content: nextContent,
+                        options: nextOptions,
+                        questionKey: nextQuestionKey,
+                        questionAction: nextQuestionAction,
+                        questionStatus: nextQuestionStatus
+                    };
                     return updated;
                 });
             }
@@ -3114,7 +3252,7 @@ function WizardContent() {
         }
     };
 
-    const handleGenerate = async () => {
+    const handleGenerate = async (source: "button" | "chat" = "button", baseMessages?: Message[]) => {
         if (!project?.id) return;
         if (isGenerating || isCheckingOut) return;
 
@@ -3128,18 +3266,68 @@ function WizardContent() {
 
         setGenerateError(null);
         if (!isArchitecturePackReady) {
-            setGenerateError(
-                architectureBlockers[0] || "Complete the architecture pack before generating scaffold."
-            );
+            const message = architectureBlockers[0] || "Complete the architecture pack before generating scaffold.";
+            setGenerateError(message);
+            if (source === "chat") {
+                const language = detectResponseLanguage(
+                    ...(baseMessages ?? messages).slice(-6).map((item) => item.content || ""),
+                    message
+                );
+                const blockedResponse = buildBlockedGenerateQuestion(
+                    language,
+                    architectureStage,
+                    scaffoldEligibility.readiness,
+                    scaffoldEligibility.reviewState
+                );
+                setMessages((prev) => {
+                    const nextBase = baseMessages ?? prev;
+                    return [
+                        ...nextBase,
+                        {
+                            role: "assistant",
+                            content: blockedResponse.content,
+                            options: blockedResponse.options,
+                            questionKey: blockedResponse.questionKey,
+                            questionStatus: "pending",
+                            questionAction: blockedResponse.questionAction
+                        }
+                    ];
+                });
+            }
             return;
         }
         if (!reviewApproved) {
-            setGenerateError(
-                scaffoldEligibility.reviewState === "stale_review"
-                    ? "Architecture changed after the last approved review. Run review again before scaffold generation."
-                    : "Run an architecture review and resolve findings before scaffold generation."
-            );
+            const message = scaffoldEligibility.reviewState === "stale_review"
+                ? "Architecture changed after the last approved review. Run review again before scaffold generation."
+                : "Run an architecture review and resolve findings before scaffold generation.";
+            setGenerateError(message);
             setActiveTab("review");
+            if (source === "chat") {
+                const language = detectResponseLanguage(
+                    ...(baseMessages ?? messages).slice(-6).map((item) => item.content || ""),
+                    message
+                );
+                const blockedResponse = buildBlockedGenerateQuestion(
+                    language,
+                    architectureStage,
+                    scaffoldEligibility.readiness,
+                    scaffoldEligibility.reviewState
+                );
+                setMessages((prev) => {
+                    const nextBase = baseMessages ?? prev;
+                    return [
+                        ...nextBase,
+                        {
+                            role: "assistant",
+                            content: blockedResponse.content,
+                            options: blockedResponse.options,
+                            questionKey: blockedResponse.questionKey,
+                            questionStatus: "pending",
+                            questionAction: blockedResponse.questionAction
+                        }
+                    ];
+                });
+            }
             return;
         }
         if (requiresPayment) {
@@ -3295,7 +3483,9 @@ function WizardContent() {
                                         ) : (
                                             <>
                                             <button
-                                                onClick={handleGenerate}
+                                                onClick={() => {
+                                                    void handleGenerate();
+                                                }}
                                                 disabled={isGenerating || isCheckingOut || !isAdminStatusLoaded}
                                                 className="fc-button-primary flex w-full items-center justify-center gap-2 px-6 py-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                                             >
@@ -3348,6 +3538,9 @@ function WizardContent() {
                                         <p className="px-1 text-[11px] text-slate-500 dark:text-slate-300">
                                             Use the Architect chat to complete context, boundaries, decisions, and guardrails. Run a review before scaffold generation.
                                         </p>
+                                        {generateError && (
+                                            <div className="px-1 text-xs text-red-500">{generateError}</div>
+                                        )}
                                         {/* Pending Attachments Preview */}
                                         {pendingAttachments.length > 0 && (
                                             <div className="flex gap-2 overflow-x-auto px-1 pb-2">
