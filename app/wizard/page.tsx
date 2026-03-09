@@ -1466,6 +1466,35 @@ function normalizeEvaluateErrorDetail(raw: string) {
     return clipText(plain, 220);
 }
 
+function normalizeEvaluateNetworkError(error: unknown, endpoint: string) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+        return null;
+    }
+
+    const message = error instanceof Error ? error.message : String(error || "");
+    const normalized = message.trim();
+    const lowered = normalized.toLowerCase();
+    const isFetchNetworkError =
+        error instanceof TypeError &&
+        (
+            lowered.includes("failed to fetch") ||
+            lowered.includes("networkerror") ||
+            lowered.includes("load failed") ||
+            lowered.includes("fetch failed")
+        );
+    const mentionsClosedConnection =
+        lowered.includes("err_connection_closed") ||
+        lowered.includes("connection closed") ||
+        lowered.includes("connection reset") ||
+        lowered.includes("socket hang up");
+
+    if (!isFetchNetworkError && !mentionsClosedConnection) {
+        return null;
+    }
+
+    return `Network error calling ${endpoint}: the connection closed before a response arrived. This usually means the dev server, hosting proxy, or upstream AI stream dropped the request. Retry once; if it keeps happening, inspect the ${endpoint} server logs.`;
+}
+
 function buildAttachmentPlaceholder(attachment: Attachment, reason: string): Attachment {
     return {
         type: "text",
@@ -2515,16 +2544,26 @@ function WizardContent() {
                 throw new Error("Evaluate request is too large. Please shorten the conversation or remove large attachments.");
             }
 
-            const runEvaluateRequest = async (body: string) => fetch("/api/evaluate", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream"
-                },
-                body,
-                cache: "no-store",
-                signal: controller.signal
-            });
+            const runEvaluateRequest = async (body: string) => {
+                try {
+                    return await fetch("/api/evaluate", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Accept": "text/event-stream"
+                        },
+                        body,
+                        cache: "no-store",
+                        signal: controller.signal
+                    });
+                } catch (fetchError) {
+                    const normalizedNetworkError = normalizeEvaluateNetworkError(fetchError, "/api/evaluate");
+                    if (normalizedNetworkError) {
+                        throw new Error(normalizedNetworkError);
+                    }
+                    throw fetchError;
+                }
+            };
 
             let res = await runEvaluateRequest(requestBody);
 
