@@ -16,6 +16,7 @@ import type {
     ReadinessOverride,
     ReadinessOverrideKey,
     SourceArtifact,
+    StructuredGenerationContext,
     UiRequirements
 } from "@/types";
 
@@ -971,6 +972,19 @@ export function buildArchitecturePackScaffoldInput(
     ];
 
     return sections.join("\n").trim();
+}
+
+export function buildStructuredGenerationContext(
+    pack: ArchitecturePack,
+    decisions: DecisionRecord[],
+    guardrails: GuardrailChecklist
+): StructuredGenerationContext {
+    return {
+        version: "structured_generation_context_v1",
+        architecturePack: pack,
+        decisionRecords: decisions,
+        guardrailChecklist: guardrails
+    };
 }
 
 

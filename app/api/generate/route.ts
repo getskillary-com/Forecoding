@@ -1,6 +1,7 @@
 
 import { NextResponse } from "next/server";
 import {
+    buildStructuredGenerationContext,
     buildArchitecturePackScaffoldInput,
     normalizeArchitecturePack,
     normalizeDecisionRecords,
@@ -15,7 +16,7 @@ import {
     computeVersionScaffoldEligibility
 } from "@/lib/scaffold-eligibility";
 import { getProjectWorkspaceLanguage, normalizeProjects } from "@/lib/project-language";
-import type { Project } from "@/types";
+import type { OutputMode, Project } from "@/types";
 
 type OutputLanguage = "zh" | "en";
 type OneClickMode = "strict_build_v1";
@@ -28,6 +29,7 @@ type GenerateRequestBody = {
     currentProjectTree?: unknown;
     projectName?: unknown;
     outputLanguage?: unknown;
+    outputMode?: unknown;
     oneClickMode?: unknown;
     ideProfile?: unknown;
     templateKindHint?: unknown;
@@ -52,6 +54,11 @@ const MAX_GENERATE_DIAGRAM_CHARS = Math.min(
 
 function parseOutputLanguage(value: unknown): OutputLanguage | undefined {
     if (value === "zh" || value === "en") return value;
+    return undefined;
+}
+
+function parseOutputMode(value: unknown): OutputMode | undefined {
+    if (value === "virtual_spec" || value === "runnable_scaffold") return value;
     return undefined;
 }
 
@@ -122,7 +129,8 @@ export async function POST(req: Request) {
         }
 
         const { project, version } = resolved;
-        const eligibility = computeVersionScaffoldEligibility(version.data);
+        const parsedOutputMode = parseOutputMode(body.outputMode) || "runnable_scaffold";
+        const eligibility = computeVersionScaffoldEligibility(version.data, parsedOutputMode);
         if (!eligibility.canGenerate) {
             return NextResponse.json(
                 {
@@ -153,6 +161,11 @@ export async function POST(req: Request) {
         const normalizedArchitecturePack = normalizeArchitecturePack(architecturePack);
         const normalizedDecisionRecords = normalizeDecisionRecords(decisionRecords);
         const normalizedGuardrailChecklist = normalizeGuardrailChecklist(guardrailChecklist);
+        const generationContext = buildStructuredGenerationContext(
+            normalizedArchitecturePack,
+            normalizedDecisionRecords,
+            normalizedGuardrailChecklist
+        );
         const renderedSummary = buildArchitecturePackScaffoldInput(
             normalizedArchitecturePack,
             normalizedDecisionRecords,
@@ -171,14 +184,16 @@ export async function POST(req: Request) {
         const parsedTemplateKindHint = parseTemplateKindHint(body.templateKindHint);
         const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
         console.info(
-            `[generate] request outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
+            `[generate] request outputMode=${parsedOutputMode} outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
         );
         const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, version.data.generation?.projectTree, {
             projectName: project.name || sanitizeText(body.projectName) || undefined,
             outputLanguage: parsedOutputLanguage,
+            outputMode: parsedOutputMode,
             oneClickMode: parsedOneClickMode,
             ideProfile: parsedIdeProfile,
-            templateKindHint: parsedTemplateKindHint
+            templateKindHint: parsedTemplateKindHint,
+            generationContext
         });
         const preflight = resources.preflightReport;
         if (preflight) {

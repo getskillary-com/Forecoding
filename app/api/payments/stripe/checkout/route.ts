@@ -110,11 +110,13 @@ export async function POST(req: Request) {
                 { status: 404 }
             );
         }
-        const eligibility = computeProjectScaffoldEligibility(project);
+        const eligibility = computeProjectScaffoldEligibility(project, "runnable_scaffold");
         if (!eligibility?.canCheckout) {
             return NextResponse.json(
                 {
-                    error: buildScaffoldEligibilityErrorMessage(eligibility || { code: "ARCHITECTURE_NOT_READY" }),
+                    error: buildScaffoldEligibilityErrorMessage(
+                        eligibility || { code: "ARCHITECTURE_NOT_READY", targetOutputMode: "runnable_scaffold" }
+                    ),
                     code: eligibility?.code || "ARCHITECTURE_NOT_READY",
                     blockingReasons: eligibility?.blockingReasons || ["Architecture pack is not ready for scaffold generation."],
                     designStage: eligibility?.designStage || "functional_architecture"

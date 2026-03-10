@@ -334,12 +334,29 @@ export interface DiagramGovernance {
 }
 
 export type TemplateKind = "next_root" | "next_src" | "monorepo_multiapp";
+export type OutputMode = "virtual_spec" | "runnable_scaffold";
+
+export interface StructuredGenerationContext {
+    version: "structured_generation_context_v1";
+    architecturePack: ArchitecturePack;
+    decisionRecords: DecisionRecord[];
+    guardrailChecklist: GuardrailChecklist;
+}
+
+export type GenerationTaskType =
+    | "baseline"
+    | "implementation";
 
 export interface GenerationTask {
     id: string;
     phase: number;
     phaseTitle: string;
     filePath: string;
+    taskType?: GenerationTaskType;
+    mustWriteCode?: boolean;
+    doneCriteria?: string[];
+    validationCommands?: string[];
+    promptContent?: string;
     promptPath: string;
     dependencies?: string[];
 }
@@ -357,6 +374,7 @@ export interface PhasePlan {
 export interface GenerationManifest {
     version: "one_click_manifest_v1";
     templateKind: TemplateKind;
+    outputMode: OutputMode;
     outputLanguage: "zh" | "en";
     oneClickMode: "strict_build_v1";
     ideProfile: "generic";
@@ -369,14 +387,18 @@ export interface PreflightIssue {
     code:
         | "NEXT_CONFIG_CONTAMINATED"
         | "MISSING_ENV_EXAMPLE"
+        | "MISSING_PROMPT_FILE"
+        | "MISSING_TASK_PROMPT"
         | "INVALID_PROMPT_REFERENCE"
         | "PLAN_COVERAGE_INCOMPLETE"
         | "EMPTY_GENERATION_TASKS"
         | "DUPLICATE_PATH_SEGMENT"
         | "LANGUAGE_MISMATCH"
         | "MISSING_STACK_DEPENDENCIES"
+        | "MISSING_REQUIRED_DEPENDENCIES"
         | "MISSING_CSS_BASELINE"
-        | "MISSING_PAGE_UI_REQUIREMENTS";
+        | "MISSING_PAGE_UI_REQUIREMENTS"
+        | "RUNTIME_BASELINE_INCOMPLETE";
     severity: "warning" | "error";
     message: string;
     details?: string;
@@ -392,6 +414,40 @@ export interface PreflightReport {
     missingDepsCount: number;
     manifestTaskCount: number;
     issues: PreflightIssue[];
+}
+
+export interface RuntimeReadiness {
+    outputMode: OutputMode;
+    promptRefsValid: boolean;
+    dependenciesResolved: boolean;
+    installable: boolean;
+    typecheckable: boolean;
+    lintable: boolean;
+    buildable: boolean;
+    issues: PreflightIssue[];
+}
+
+export interface HandoffValidationIssue {
+    code: string;
+    message: string;
+    details?: string;
+}
+
+export interface HandoffValidationSummary {
+    placeholdersRemaining: boolean;
+    lintPassed: boolean;
+    typecheckPassed: boolean;
+    buildPassed: boolean;
+}
+
+export interface HandoffValidation {
+    status: "pending" | "passed" | "failed";
+    command: string;
+    reportPath: string;
+    scriptPath: string;
+    updatedAt?: string;
+    summary: HandoffValidationSummary;
+    issues: HandoffValidationIssue[];
 }
 
 export interface EvaluationResponse {
@@ -418,8 +474,11 @@ export interface FileNode {
 export interface GenerationResponse {
     projectTree: FileNode[]; // Structured tree
     toolStack: string; // Markdown table
+    outputMode?: OutputMode;
     generationManifest?: GenerationManifest;
     preflightReport?: PreflightReport;
+    runtimeReadiness?: RuntimeReadiness;
+    handoffValidation?: HandoffValidation;
 }
 
 export interface Attachment {

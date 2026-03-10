@@ -3,6 +3,7 @@ import type {
     DecisionRecord,
     DesignStage,
     GuardrailChecklist,
+    OutputMode,
     Project,
     ProjectVersion,
     ProjectVersionData,
@@ -22,20 +23,29 @@ import {
 export type ScaffoldEligibilityCode = "ARCHITECTURE_NOT_READY";
 
 export type ScaffoldEligibility = {
+    targetOutputMode: OutputMode;
     readiness: ReadinessChecklist;
     minimumViableLoop: MinimumViableLoopChecklist;
     architectureFingerprint: string;
     canCheckout: boolean;
     canGenerate: boolean;
+    canGenerateSpec: boolean;
+    canGenerateRunnable: boolean;
     blockingReasons: string[];
     code: ScaffoldEligibilityCode | null;
     designStage: DesignStage;
 };
 
-export function buildScaffoldEligibilityErrorMessage(eligibility: Pick<ScaffoldEligibility, "code">) {
+const DEFAULT_OUTPUT_MODE: OutputMode = "virtual_spec";
+
+export function buildScaffoldEligibilityErrorMessage(
+    eligibility: Pick<ScaffoldEligibility, "code" | "targetOutputMode"> | { code: ScaffoldEligibilityCode | null; targetOutputMode?: OutputMode }
+) {
     switch (eligibility.code) {
         case "ARCHITECTURE_NOT_READY":
-            return "Architecture pack is not ready for scaffold generation.";
+            return eligibility.targetOutputMode === "runnable_scaffold"
+                ? "Architecture pack is not ready for runnable scaffold generation."
+                : "Architecture pack is not ready for scaffold generation.";
         default:
             return "Scaffold generation is not allowed.";
     }
@@ -96,6 +106,13 @@ export function buildArchitectureFingerprint(
 }
 
 export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEligibility {
+    return computeScaffoldEligibilityForMode(input, DEFAULT_OUTPUT_MODE);
+}
+
+export function computeScaffoldEligibilityForMode(
+    input: EligibilityInput,
+    outputMode: OutputMode = DEFAULT_OUTPUT_MODE
+): ScaffoldEligibility {
     const architecturePack = normalizeArchitecturePack(input.architecturePack);
     const decisionRecords = normalizeDecisionRecords(input.decisionRecords);
     const guardrailChecklist = normalizeGuardrailChecklist(input.guardrailChecklist);
@@ -118,29 +135,51 @@ export function computeScaffoldEligibility(input: EligibilityInput): ScaffoldEli
         guardrailChecklist,
         readinessOverrides
     );
+    const canGenerateSpec = minimumViableLoop.ready;
+    const canGenerateRunnable =
+        minimumViableLoop.ready &&
+        readiness.functionalReady &&
+        readiness.uiReady;
+    const canGenerate =
+        outputMode === "runnable_scaffold"
+            ? canGenerateRunnable
+            : canGenerateSpec;
+    const blockingReasons =
+        outputMode === "runnable_scaffold"
+            ? readiness.blockingIssues
+            : minimumViableLoop.blockingIssues;
+    const designStage: DesignStage = canGenerateRunnable
+        ? "ready_to_generate"
+        : "functional_architecture";
 
-    if (!minimumViableLoop.ready) {
+    if (!canGenerate) {
         return {
+            targetOutputMode: outputMode,
             readiness,
             minimumViableLoop,
             architectureFingerprint,
             canCheckout: false,
             canGenerate: false,
-            blockingReasons: minimumViableLoop.blockingIssues,
+            canGenerateSpec,
+            canGenerateRunnable,
+            blockingReasons,
             code: "ARCHITECTURE_NOT_READY",
-            designStage: "functional_architecture"
+            designStage
         };
     }
 
     return {
+        targetOutputMode: outputMode,
         readiness,
         minimumViableLoop,
         architectureFingerprint,
         canCheckout: true,
         canGenerate: true,
+        canGenerateSpec,
+        canGenerateRunnable,
         blockingReasons: [],
         code: null,
-        designStage: "ready_to_generate"
+        designStage
     };
 }
 
@@ -149,19 +188,23 @@ export function resolveLatestProjectVersion(project: Project | null): ProjectVer
     return project.versions[project.versions.length - 1] || null;
 }
 
-export function computeProjectScaffoldEligibility(project: Project | null): ScaffoldEligibility | null {
+export function computeProjectScaffoldEligibility(
+    project: Project | null,
+    outputMode: OutputMode = DEFAULT_OUTPUT_MODE
+): ScaffoldEligibility | null {
     const latestVersion = resolveLatestProjectVersion(project);
     if (!latestVersion) return null;
-    return computeVersionScaffoldEligibility(latestVersion.data);
+    return computeVersionScaffoldEligibility(latestVersion.data, outputMode);
 }
 
 export function computeVersionScaffoldEligibility(
-    data: ProjectVersionData | null | undefined
+    data: ProjectVersionData | null | undefined,
+    outputMode: OutputMode = DEFAULT_OUTPUT_MODE
 ): ScaffoldEligibility {
-    return computeScaffoldEligibility({
+    return computeScaffoldEligibilityForMode({
         architecturePack: data?.architecturePack,
         decisionRecords: data?.decisionRecords,
         guardrailChecklist: data?.guardrailChecklist,
         readinessOverrides: data?.readinessOverrides
-    });
+    }, outputMode);
 }

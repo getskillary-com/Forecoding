@@ -145,6 +145,8 @@ export function FileTreeDisplay({ content, projectName, language }: Props) {
         "_AI_PROMPT.md",
         "ONE_CLICK_PROMPT.md",
         "GENERATION_MANIFEST.json",
+        "VALIDATION_REPORT.json",
+        "scripts/validate-generated-handoff.mjs",
         "app/globals.css",
         "app/layout.tsx",
         "app/page.tsx",
