@@ -2368,7 +2368,7 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'architecture' | 'prd' | 'files' | 'stack'>(
+    const [activeTab, setActiveTab] = useState<'architecture' | 'prd' | 'files' | 'stack' | 'handoff'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
 
@@ -4483,6 +4483,13 @@ Do you want to start scaffold generation now?`;
                         label={uiText.techStackTab}
                         disabled={!generation}
                     />
+                    <TabButton
+                        active={activeTab === 'handoff'}
+                        onClick={() => setActiveTab('handoff')}
+                        icon={<Check className="w-4 h-4" />}
+                        label={workspaceLanguage === "zh" ? "Handoff 校验" : "Handoff"}
+                        disabled={!generation}
+                    />
                 </div>
 
                 <input
@@ -4628,26 +4635,59 @@ Do you want to start scaffold generation now?`;
                     {/* Stack Tab */}
                     {activeTab === 'stack' && generation && (
                         <div className="absolute inset-0 p-6 overflow-y-auto">
-                            <div className={`grid gap-4 ${handoffValidation ? "xl:grid-cols-[minmax(0,1.05fr)_minmax(340px,0.95fr)]" : ""}`}>
-                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                    <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                        <Layers className="h-5 w-5 text-orange-500" />
-                                        {uiText.technologyStack}
-                                    </h3>
-                                    <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
-                                </section>
+                            <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                    <Layers className="h-5 w-5 text-orange-500" />
+                                    {uiText.technologyStack}
+                                </h3>
+                                <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
+                            </section>
+                        </div>
+                    )}
 
-                                {handoffValidation && (
-                                    <div>
-                                        <HandoffValidationCard
-                                            validation={handoffValidation}
-                                            language={workspaceLanguage}
-                                            feedback={handoffImportFeedback}
-                                            onImportReport={handleImportValidationReport}
-                                        />
+                    {/* Handoff Tab */}
+                    {activeTab === 'handoff' && generation && (
+                        <div className="absolute inset-0 p-6 overflow-y-auto">
+                            {handoffValidation ? (
+                                <HandoffValidationCard
+                                    validation={handoffValidation}
+                                    language={workspaceLanguage}
+                                    feedback={handoffImportFeedback}
+                                    onImportReport={handleImportValidationReport}
+                                />
+                            ) : (
+                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                        <div>
+                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                                {workspaceLanguage === "zh" ? "Handoff 校验" : "Handoff Validation"}
+                                            </h3>
+                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">
+                                                {workspaceLanguage === "zh"
+                                                    ? "当前版本还没有可显示的 handoff 校验报告。生成后可导入 VALIDATION_REPORT.json。"
+                                                    : "No handoff validation report is available for this version yet. Import VALIDATION_REPORT.json after generation."}
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleImportValidationReport}
+                                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                                        >
+                                            {workspaceLanguage === "zh" ? "导入 VALIDATION_REPORT.json" : "Import VALIDATION_REPORT.json"}
+                                        </button>
                                     </div>
-                                )}
-                            </div>
+
+                                    {handoffImportFeedback && (
+                                        <div className={`mt-4 rounded-xl border px-3 py-2 text-sm ${
+                                            handoffImportFeedback.type === "success"
+                                                ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300"
+                                                : "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-700/40 dark:bg-rose-900/20 dark:text-rose-300"
+                                        }`}>
+                                            {handoffImportFeedback.message}
+                                        </div>
+                                    )}
+                                </section>
+                            )}
                         </div>
                     )}
 
