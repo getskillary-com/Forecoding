@@ -3997,32 +3997,44 @@ Do you want to start scaffold generation now?`;
                 })
             });
 
-            if (!res.ok) {
+            const payload = await res.json().catch(() => null) as (
+                GenerationResponse & {
+                    error?: string;
+                    details?: string;
+                    code?: string;
+                    status?: number;
+                    blockingReasons?: string[];
+                }
+            ) | null;
+            const payloadHasError = Boolean(
+                payload &&
+                typeof payload === "object" &&
+                typeof payload.error === "string" &&
+                !Array.isArray(payload.projectTree)
+            );
+
+            if (!res.ok || payloadHasError) {
                 let errorMessage = uiText.failedToGenerate;
-                try {
-                    const payload = await res.json() as {
-                        error?: string;
-                        details?: string;
-                        code?: string;
-                        blockingReasons?: string[];
-                    };
+                if (payload) {
                     if (payload.error) {
                         errorMessage = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
                     }
                     if (Array.isArray(payload.blockingReasons) && payload.blockingReasons.length > 0) {
                         errorMessage = payload.blockingReasons[0];
                     }
-                } catch {
-                    // ignore parse error and keep fallback message
                 }
-                if (res.status === 504 && !/timeout/i.test(errorMessage)) {
+                const effectiveStatus = typeof payload?.status === "number" ? payload.status : res.status;
+                if (effectiveStatus === 504 && !/timeout/i.test(errorMessage)) {
                     errorMessage = `${errorMessage}. ${uiText.generateTimedOut}`;
-                } else if (res.status === 524 && !/524/i.test(errorMessage)) {
+                } else if (effectiveStatus === 524 && !/524/i.test(errorMessage)) {
                     errorMessage = `${errorMessage}. ${uiText.gatewayTimedOut}`;
                 }
                 throw new Error(errorMessage);
             }
-            const data: GenerationResponse = await res.json();
+            if (!payload || !Array.isArray(payload.projectTree)) {
+                throw new Error(uiText.scaffoldGenerationFailed);
+            }
+            const data: GenerationResponse = payload;
             if (data.preflightReport && !data.preflightReport.pass) {
                 const codes = data.preflightReport.issues.map((issue) => issue.code).join(", ");
                 throw new Error(uiText.scaffoldPreflightFailed(codes || "unknown"));

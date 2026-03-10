@@ -18,6 +18,8 @@ import {
 import { getProjectWorkspaceLanguage, normalizeProjects } from "@/lib/project-language";
 import type { OutputMode, Project } from "@/types";
 
+export const runtime = "nodejs";
+
 type OutputLanguage = "zh" | "en";
 type OneClickMode = "strict_build_v1";
 type IdeProfile = "generic";
@@ -51,6 +53,14 @@ const MAX_GENERATE_DIAGRAM_CHARS = Math.min(
         Number.parseInt(process.env.GENERATE_MAX_DIAGRAM_CHARS || "", 10) || 16_000
     )
 );
+const GENERATE_STREAM_HEARTBEAT_MS = 10_000;
+
+type GenerateErrorPayload = {
+    error: string;
+    details: string;
+    code: string;
+    status: number;
+};
 
 function parseOutputLanguage(value: unknown): OutputLanguage | undefined {
     if (value === "zh" || value === "en") return value;
@@ -100,6 +110,66 @@ function resolveProjectVersion(projects: Project[], projectId: string, versionId
     }
 
     return null;
+}
+
+function buildGenerateFailurePayload(error: unknown): GenerateErrorPayload {
+    const details = error instanceof Error ? error.message : "Unknown error";
+    const isPreflight = /Scaffold preflight failed/i.test(details);
+    const isTimeout = /timeout/i.test(details);
+
+    return {
+        error: isPreflight
+            ? "Scaffold preflight failed"
+            : "Failed to generate resources",
+        details,
+        code: isPreflight
+            ? "SCAFFOLD_PREFLIGHT_FAILED"
+            : isTimeout
+            ? "GENERATION_TIMEOUT"
+            : "GENERATION_FAILED",
+        status: isPreflight ? 422 : isTimeout ? 504 : 500
+    };
+}
+
+function createKeepAliveJsonStream(executor: () => Promise<unknown>) {
+    return new ReadableStream({
+        async start(controller) {
+            const encoder = new TextEncoder();
+            let closed = false;
+
+            const safeEnqueue = (chunk: string) => {
+                if (closed) return;
+                try {
+                    controller.enqueue(encoder.encode(chunk));
+                } catch {
+                    closed = true;
+                }
+            };
+
+            // Keep long-running AI generation requests alive through the CDN/origin chain.
+            safeEnqueue(" ");
+            const heartbeat = setInterval(() => {
+                safeEnqueue(" ");
+            }, GENERATE_STREAM_HEARTBEAT_MS);
+
+            try {
+                const payload = await executor();
+                safeEnqueue(JSON.stringify(payload));
+            } catch (error) {
+                console.error("Generation error:", error);
+                safeEnqueue(JSON.stringify(buildGenerateFailurePayload(error)));
+            } finally {
+                clearInterval(heartbeat);
+                if (!closed) {
+                    try {
+                        controller.close();
+                    } catch {
+                        closed = true;
+                    }
+                }
+            }
+        }
+    });
 }
 
 export async function POST(req: Request) {
@@ -186,47 +256,47 @@ export async function POST(req: Request) {
         console.info(
             `[generate] request outputMode=${parsedOutputMode} outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
         );
-        const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, version.data.generation?.projectTree, {
-            projectName: project.name || sanitizeText(body.projectName) || undefined,
-            outputLanguage: parsedOutputLanguage,
-            outputMode: parsedOutputMode,
-            oneClickMode: parsedOneClickMode,
-            ideProfile: parsedIdeProfile,
-            templateKindHint: parsedTemplateKindHint,
-            generationContext
-        });
-        const preflight = resources.preflightReport;
-        if (preflight) {
-            console.info(
-                `[generate] preflight pass=${preflight.pass} planCoveragePct=${preflight.planCoveragePct} nextConfigValid=${preflight.nextConfigValid} envExamplePresent=${preflight.envExamplePresent} pathNormalizationFixCount=${preflight.pathNormalizationFixCount} manifestTaskCount=${preflight.manifestTaskCount} missingDepsCount=${preflight.missingDepsCount}`
-            );
-            if (!preflight.pass) {
-                const codes = (Array.isArray(preflight.issues) ? preflight.issues : [])
-                    .map((issue: { code?: string }) => issue.code || "")
-                    .filter(Boolean)
-                    .join(", ");
-                return NextResponse.json(
-                    {
-                        error: "Scaffold preflight failed",
-                        details: codes || "Unknown preflight error"
-                    },
-                    { status: 422 }
+        const responseStream = createKeepAliveJsonStream(async () => {
+            const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, version.data.generation?.projectTree, {
+                projectName: project.name || sanitizeText(body.projectName) || undefined,
+                outputLanguage: parsedOutputLanguage,
+                outputMode: parsedOutputMode,
+                oneClickMode: parsedOneClickMode,
+                ideProfile: parsedIdeProfile,
+                templateKindHint: parsedTemplateKindHint,
+                generationContext
+            });
+            const preflight = resources.preflightReport;
+            if (preflight) {
+                console.info(
+                    `[generate] preflight pass=${preflight.pass} planCoveragePct=${preflight.planCoveragePct} nextConfigValid=${preflight.nextConfigValid} envExamplePresent=${preflight.envExamplePresent} pathNormalizationFixCount=${preflight.pathNormalizationFixCount} manifestTaskCount=${preflight.manifestTaskCount} missingDepsCount=${preflight.missingDepsCount}`
                 );
+                if (!preflight.pass) {
+                    const codes = (Array.isArray(preflight.issues) ? preflight.issues : [])
+                        .map((issue: { code?: string }) => issue.code || "")
+                        .filter(Boolean)
+                        .join(", ");
+                    return {
+                        error: "Scaffold preflight failed",
+                        details: codes || "Unknown preflight error",
+                        code: "SCAFFOLD_PREFLIGHT_FAILED",
+                        status: 422
+                    };
+                }
             }
-        }
-        return NextResponse.json(resources);
+            return resources;
+        });
+
+        return new Response(responseStream, {
+            status: 200,
+            headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "no-store"
+            }
+        });
     } catch (error) {
-        console.error("Generation error:", error);
-        const details = error instanceof Error ? error.message : "Unknown error";
-        const isPreflight = /Scaffold preflight failed/i.test(details);
-        return NextResponse.json(
-            {
-                error: isPreflight
-                    ? "Scaffold preflight failed"
-                    : "Failed to generate resources",
-                details
-            },
-            { status: isPreflight ? 422 : 500 }
-        );
+        console.error("Generation setup error:", error);
+        const failure = buildGenerateFailurePayload(error);
+        return NextResponse.json(failure, { status: failure.status });
     }
 }
