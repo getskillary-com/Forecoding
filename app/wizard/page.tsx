@@ -4485,14 +4485,6 @@ Do you want to start scaffold generation now?`;
                     />
                 </div>
 
-                {generation && handoffValidation && (
-                    <HandoffValidationCard
-                        validation={handoffValidation}
-                        language={workspaceLanguage}
-                        feedback={handoffImportFeedback}
-                        onImportReport={handleImportValidationReport}
-                    />
-                )}
                 <input
                     type="file"
                     ref={validationReportInputRef}
@@ -4636,11 +4628,26 @@ Do you want to start scaffold generation now?`;
                     {/* Stack Tab */}
                     {activeTab === 'stack' && generation && (
                         <div className="absolute inset-0 p-6 overflow-y-auto">
-                            <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                <Layers className="h-5 w-5 text-orange-500" />
-                                {uiText.technologyStack}
-                            </h3>
-                            <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
+                            <div className={`grid gap-4 ${handoffValidation ? "xl:grid-cols-[minmax(0,1.05fr)_minmax(340px,0.95fr)]" : ""}`}>
+                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                    <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                        <Layers className="h-5 w-5 text-orange-500" />
+                                        {uiText.technologyStack}
+                                    </h3>
+                                    <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
+                                </section>
+
+                                {handoffValidation && (
+                                    <div>
+                                        <HandoffValidationCard
+                                            validation={handoffValidation}
+                                            language={workspaceLanguage}
+                                            feedback={handoffImportFeedback}
+                                            onImportReport={handleImportValidationReport}
+                                        />
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
 
@@ -4722,7 +4729,7 @@ function HandoffValidationCard({
     ];
 
     return (
-        <section className="mb-3 rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+        <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
                     <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
