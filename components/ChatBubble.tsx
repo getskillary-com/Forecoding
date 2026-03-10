@@ -6,9 +6,10 @@ import { Message, MessageOption } from '@/types';
 interface Props {
     message: Message;
     onOptionClick?: (option: MessageOption) => void;
+    disableOptions?: boolean;
 }
 
-export function ChatBubble({ message, onOptionClick }: Props) {
+export function ChatBubble({ message, onOptionClick, disableOptions = false }: Props) {
     const isUser = message.role === "user";
     return (
         <div className={`flex flex-col w-full ${isUser ? 'items-end' : 'items-start'}`}>
@@ -44,7 +45,11 @@ export function ChatBubble({ message, onOptionClick }: Props) {
             {message.options && message.options.length > 0 && (
                 <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 max-w-[80%] animate-in fade-in slide-in-from-top-2">
                     {message.options.map((opt, idx) => {
-                        const isDisabled = opt.stale === true || message.questionStatus === "answered" || message.questionStatus === "stale";
+                        const isDisabled =
+                            disableOptions ||
+                            opt.stale === true ||
+                            message.questionStatus === "answered" ||
+                            message.questionStatus === "stale";
                         return (
                         <button
                             key={idx}
