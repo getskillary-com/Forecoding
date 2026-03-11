@@ -16,6 +16,7 @@ import type {
     TemplateKind,
     UiDesignSpec
 } from "@/types";
+import { buildDefaultToolStackMarkdown } from "@/lib/platforms";
 import { normalizeUiDesignSpec, validateUiDesignSpec } from "@/lib/ui-spec";
 
 type OutputLanguage = "zh" | "en";
@@ -948,7 +949,10 @@ export async function generateProjectResources(
         data = normalizeGenerationData(data);
 
         // --- Post-Processing (Consistency Check) ---
-        data.toolStack = ensureDefaultToolStack(data.toolStack);
+        data.toolStack = ensureDefaultToolStack(data.toolStack, {
+            contextText: `${history || ""}\n${diagram || ""}`,
+            platformStrategy: options?.generationContext?.architecturePack?.platformStrategy
+        });
         const templateKind = detectTemplateKind(
             options?.templateKindHint,
             data.projectTree,
@@ -1325,19 +1329,18 @@ function extractFirstJsonArray(text: string) {
     return null;
 }
 
-function ensureDefaultToolStack(toolStack: string | undefined) {
+function ensureDefaultToolStack(
+    toolStack: string | undefined,
+    input?: {
+        contextText?: string;
+        platformStrategy?: StructuredGenerationContext["architecturePack"]["platformStrategy"];
+    }
+) {
     if (toolStack && toolStack.trim().length > 0) return toolStack;
-    return [
-        "| Category | Tool | Why |",
-        "| --- | --- | --- |",
-        "| Framework | Next.js | Fullstack React with routing and API routes |",
-        "| Styling | Tailwind CSS | Fast, consistent UI for non-designers |",
-        "| State | Zustand | Simple global state management |",
-        "| Forms | React Hook Form + Zod | Reliable forms with validation |",
-        "| Data Fetching | SWR | Simple caching and revalidation |",
-        "| Auth | Firebase Auth | Managed authentication with session support |",
-        "| Database | Cloud Firestore | Scalable document database for app data |"
-    ].join("\n");
+    return buildDefaultToolStackMarkdown({
+        contextText: input?.contextText,
+        platformStrategy: input?.platformStrategy
+    });
 }
 
 function inferOutputLanguageFromText(text: string): OutputLanguage {
@@ -1651,7 +1654,7 @@ function buildUiSpecDoc(input: {
     lines.push(`# ${input.projectName || "generated-project"} UI Specification`);
     lines.push("");
     lines.push("## Product Surface");
-    lines.push("- Primary platform: Web first, responsive for desktop/tablet/mobile.");
+    lines.push("- Primary platform: follow the confirmed platform strategy from the architecture pack.");
     lines.push("- Main objective: deliver a complete UI shell before deep feature wiring.");
     lines.push("");
     lines.push("## Key Screens");
@@ -1670,9 +1673,9 @@ function buildUiSpecDoc(input: {
     lines.push("- Success: explicit confirmation toast/banner.");
     lines.push("");
     lines.push("## Responsive Strategy");
-    lines.push("- Mobile: single-column layout, sticky primary actions.");
-    lines.push("- Tablet: adaptive split layout where context helps.");
-    lines.push("- Desktop: multi-panel productivity layout with clear hierarchy.");
+    lines.push("- Adapt the layout and navigation model to the confirmed runtime targets.");
+    lines.push("- Document breakpoint, density, or shell variations only when they matter to the selected platform.");
+    lines.push("- Avoid assuming a browser-only layout if the platform is mobile, desktop, or service-first.");
     lines.push("");
     lines.push("## Component Inventory");
     lines.push("- Top navigation/header");
@@ -1970,19 +1973,17 @@ function buildFunctionalArchitectureDoc(input: {
         "- Retry and recovery actions must be explicit for error states.",
         "",
         "## Responsive Strategy",
-        "- Describe behavior for mobile, tablet, and desktop breakpoints.",
-        "- Avoid fixed-width layouts that break on small screens.",
+        "- Describe runtime-specific layout behavior for the selected platform targets.",
+        "- Avoid assuming browser-only breakpoints when the product is mobile-first, desktop-first, or service-first.",
         "",
         "## Visual Baseline",
         "- Define typography, spacing rhythm, and component emphasis in plain language.",
         "- Keep visual hierarchy consistent with business priorities.",
         "",
         "## CSS Baseline Constraints",
-        "- Scaffold must include app-router baseline files:",
-        "  - `app/globals.css` + `app/layout.tsx` + `app/page.tsx`",
-        "  - or equivalent `src/app/*` / `apps/web/app/*` for template variants.",
-        "- `layout.tsx` must import `./globals.css`.",
-        "- `globals.css` must include minimum reset + body/background/typography styles.",
+        "- Scaffold must include the minimal runtime shell files required by the selected platform baseline.",
+        "- When the platform includes a browser UI, keep a baseline stylesheet and root layout entrypoint.",
+        "- Preserve enough baseline structure for downstream AI IDE execution to render or run the scaffold.",
         "",
         "## Key Requirement Signals",
         ...intentLines,

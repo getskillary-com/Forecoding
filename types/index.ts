@@ -56,6 +56,13 @@ export interface BusinessContext {
     risks: string[];
 }
 
+export interface PlatformStrategy {
+    primaryPlatform: string;
+    targetPlatforms: string[];
+    runtimeEnvironments: string[];
+    distributionChannels: string[];
+}
+
 export interface DomainEntity {
     name: string;
     description: string;
@@ -114,6 +121,7 @@ export interface ExperienceConstraint {
 export interface ArchitecturePack {
     version: "architecture_pack_v1";
     businessContext: BusinessContext;
+    platformStrategy: PlatformStrategy;
     domainModel: DomainEntity[];
     boundedContexts: BoundedContext[];
     moduleResponsibilities: ModuleResponsibility[];
@@ -147,6 +155,7 @@ export type ReadinessCriterionKey =
 
 export type ReadinessRequirementKey =
     | "business_context.product_goal"
+    | "business_context.platforms"
     | "business_context.target_users"
     | "business_context.user_journeys"
     | "business_context.constraints_or_risks"

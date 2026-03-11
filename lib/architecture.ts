@@ -19,6 +19,13 @@ import type {
     StructuredGenerationContext,
     UiRequirements
 } from "@/types";
+import {
+    buildPlatformSummaryLine,
+    hasConfirmedPlatformStrategy,
+    inferPlatformStrategyFromText,
+    mergePlatformStrategies,
+    normalizePlatformStrategy
+} from "@/lib/platforms";
 
 export const ARCHITECTURE_STAGE_LABELS: Record<ArchitectureStage, string> = {
     context: "Context",
@@ -102,6 +109,12 @@ export function createEmptyArchitecturePack(): ArchitecturePack {
             constraints: [],
             risks: []
         },
+        platformStrategy: {
+            primaryPlatform: "",
+            targetPlatforms: [],
+            runtimeEnvironments: [],
+            distributionChannels: []
+        },
         domainModel: [],
         boundedContexts: [],
         moduleResponsibilities: [],
@@ -124,10 +137,33 @@ export function normalizeArchitecturePack(
 ): ArchitecturePack {
     const empty = createEmptyArchitecturePack();
     const candidate = isRecord(value) ? value : {};
+    const businessContext = normalizeBusinessContext(candidate.businessContext);
+    const experienceConstraints = {
+        keyScreens: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.keyScreens),
+        uiComponents: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.uiComponents),
+        interactionStates: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.interactionStates),
+        responsiveStrategy: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.responsiveStrategy)
+    };
+    const platformStrategy = mergePlatformStrategies(
+        normalizePlatformStrategy(candidate.platformStrategy),
+        inferPlatformStrategyFromText(
+            businessContext.productGoal,
+            ...businessContext.targetUsers,
+            ...businessContext.userJourneys,
+            ...businessContext.constraints,
+            ...businessContext.risks,
+            ...experienceConstraints.keyScreens,
+            ...experienceConstraints.uiComponents,
+            ...experienceConstraints.responsiveStrategy,
+            ...(fallbackUi?.keyScreens || []),
+            ...(fallbackUi?.responsiveStrategy || [])
+        )
+    );
 
     const pack: ArchitecturePack = {
         version: "architecture_pack_v1",
-        businessContext: normalizeBusinessContext(candidate.businessContext),
+        businessContext,
+        platformStrategy,
         domainModel: normalizeObjectList(candidate.domainModel, (item) => {
             const name = normalizeString(item.name);
             const description = normalizeString(item.description);
@@ -212,12 +248,7 @@ export function normalizeArchitecturePack(
                 acceptanceCriteria: normalizeStringList(item.acceptanceCriteria)
             };
         }),
-        experienceConstraints: {
-            keyScreens: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.keyScreens),
-            uiComponents: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.uiComponents),
-            interactionStates: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.interactionStates),
-            responsiveStrategy: normalizeStringList((candidate.experienceConstraints as Record<string, unknown> | undefined)?.responsiveStrategy)
-        }
+        experienceConstraints
     };
 
     if (fallbackUi) {
@@ -306,6 +337,7 @@ function countMeaningfulNonFunctionalRequirements(pack: ArchitecturePack) {
 function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementKey | null {
     switch (value) {
         case "business_context.product_goal":
+        case "business_context.platforms":
         case "business_context.target_users":
         case "business_context.user_journeys":
         case "business_context.constraints_or_risks":
@@ -454,6 +486,16 @@ export function createReadinessChecklist(
                 requiredCount: 1,
                 missing: !isMeaningfulText(pack.businessContext.productGoal, 8) ? ["Define a concrete product goal."] : [],
                 override: overrideIndex.get("business_context.product_goal")
+            }),
+            buildReadinessRequirement({
+                key: "business_context.platforms",
+                label: "Platform strategy",
+                satisfiedCount: Number(hasConfirmedPlatformStrategy(pack.platformStrategy)),
+                requiredCount: 1,
+                missing: !hasConfirmedPlatformStrategy(pack.platformStrategy)
+                    ? ["Confirm the primary platform and required runtime targets."]
+                    : [],
+                override: overrideIndex.get("business_context.platforms")
             }),
             buildReadinessRequirement({
                 key: "business_context.target_users",
@@ -663,6 +705,16 @@ export function createMinimumViableLoopChecklist(
             requiredCount: 1,
             missing: !isMeaningfulText(pack.businessContext.productGoal, 8) ? ["Define the core product goal."] : [],
             override: overrideIndex.get("business_context.product_goal")
+        }),
+        buildReadinessRequirement({
+            key: "business_context.platforms",
+            label: "Platform strategy",
+            satisfiedCount: Number(hasConfirmedPlatformStrategy(pack.platformStrategy)),
+            requiredCount: 1,
+            missing: !hasConfirmedPlatformStrategy(pack.platformStrategy)
+                ? ["Confirm the primary platform and runtime targets."]
+                : [],
+            override: overrideIndex.get("business_context.platforms")
         }),
         buildReadinessRequirement({
             key: "business_context.target_users",
@@ -911,6 +963,11 @@ export function buildArchitecturePackScaffoldInput(
     const sections = [
         "# Architecture Pack",
         `Product goal: ${pack.businessContext.productGoal || "Not defined"}`,
+        "",
+        "## Platform Strategy",
+        buildPlatformSummaryLine(pack.platformStrategy) || "- Not defined",
+        `- Runtime environments: ${pack.platformStrategy.runtimeEnvironments.join(", ") || "n/a"}`,
+        `- Distribution channels: ${pack.platformStrategy.distributionChannels.join(", ") || "n/a"}`,
         "",
         "## Target Users",
         pack.businessContext.targetUsers.length > 0 ? pack.businessContext.targetUsers.map((item) => `- ${item}`).join("\n") : "- None",

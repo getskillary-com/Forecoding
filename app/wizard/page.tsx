@@ -81,6 +81,12 @@ import {
     normalizeReadinessOverrides,
     seedArchitecturePackFromAnalysis
 } from "@/lib/architecture";
+import {
+    buildPlatformSummaryLine,
+    hasConfirmedPlatformStrategy,
+    hasRecordedStackDecision,
+    resolvePrimaryPlatformCategory
+} from "@/lib/platforms";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
@@ -336,6 +342,7 @@ function normalizeMessageAction(value: unknown): MessageAction | null {
 function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementKey | null {
     switch (value) {
         case "business_context.product_goal":
+        case "business_context.platforms":
         case "business_context.target_users":
         case "business_context.user_journeys":
         case "business_context.constraints_or_risks":
@@ -1307,12 +1314,216 @@ function buildCommonFallbackOptions(
     ];
 }
 
+function buildPlatformDiscoveryQuestion(language: "zh" | "en") {
+    if (language === "zh") {
+        const questionText = "这一版产品要优先落在哪个平台？";
+        return {
+            content: `当前判断：
+- 在继续拆分边界和技术栈之前，必须先锁定第一优先平台。
+- 我建议先确认“首发平台 + 必须覆盖的运行环境”，这样后面的架构和技术栈建议才不会失真。
+
+需要确认：
+${questionText}`,
+            options: [
+                { label: "Web 应用", value: "先做 Web 应用，需要覆盖桌面和移动浏览器。" },
+                { label: "移动 App", value: "先做移动 App，需要覆盖 iOS 和 Android。" },
+                { label: "桌面应用", value: "先做桌面应用，需要覆盖 Windows 和 macOS。" },
+                { label: "后端服务 / API", value: "先做后端服务或 API，不以界面交付为主。" },
+                { label: "给我平台选项", value: "请先给我 2 到 3 个常见平台路线，并说明取舍。" }
+            ],
+            questionKey: normalizeQuestionKey(questionText)
+        };
+    }
+
+    const questionText = "Which platform should this version target first?";
+    return {
+        content: `Current view:
+- Before we go deeper into boundaries and stack choices, we should lock the primary platform first.
+- I recommend confirming the launch platform and required runtime targets now so the later architecture and stack advice stays grounded.
+
+Please confirm:
+${questionText}`,
+        options: [
+            { label: "Web app", value: "Start with a web app and cover desktop and mobile browsers." },
+            { label: "Mobile app", value: "Start with a mobile app and cover iOS and Android." },
+            { label: "Desktop app", value: "Start with a desktop app and cover Windows and macOS." },
+            { label: "Backend service / API", value: "Start with a backend service or API rather than a UI-first product." },
+            { label: "Show platform options", value: "Show me 2 or 3 common platform routes and explain the tradeoffs first." }
+        ],
+        questionKey: normalizeQuestionKey(questionText)
+    };
+}
+
+function buildStackRecommendationQuestion(
+    language: "zh" | "en",
+    architecturePack: ArchitecturePack
+) {
+    const category = resolvePrimaryPlatformCategory(architecturePack.platformStrategy);
+    if (category === "unknown") return null;
+
+    const featureSignal = [
+        architecturePack.businessContext.productGoal,
+        ...architecturePack.businessContext.userJourneys,
+        ...architecturePack.businessContext.constraints,
+        ...architecturePack.businessContext.risks,
+        ...architecturePack.experienceConstraints.keyScreens
+    ].join(" ").toLowerCase();
+
+    const choose = <T,>(preferred: T[], fallback: T[]) => preferred.length > 0 ? preferred : fallback;
+
+    const optionSets = {
+        web: /seo|landing|marketing|content|public|payment|subscription/.test(featureSignal)
+            ? choose([
+                { zh: "Next.js + PostgreSQL", en: "Next.js + PostgreSQL", zhValue: "先按 Next.js + PostgreSQL + Prisma 的 Web 全栈方案推进。", enValue: "Use the Next.js + PostgreSQL + Prisma web full-stack baseline.", zhFit: "适合 SEO、内容页、登录、支付和后台混合场景。", enFit: "Best for SEO, content, auth, payments, and mixed web surfaces.", zhTradeoff: "一体化交付快，但前后端边界更紧。", enTradeoff: "Fast unified delivery, but frontend and server concerns stay more coupled." },
+                { zh: "React + Vite + Fastify", en: "React + Vite + Fastify", zhValue: "先按 React + Vite 前端配 Fastify API 的分层方案推进。", enValue: "Use the React + Vite frontend with Fastify API baseline.", zhFit: "适合重交互后台和清晰前后端边界。", enFit: "Best for rich internal tools and clearer frontend/backend separation.", zhTradeoff: "边界更清晰，但 SSR/SEO 需要额外处理。", enTradeoff: "Cleaner separation, but SSR/SEO needs more explicit handling." },
+                { zh: "React + Vite + Firebase", en: "React + Vite + Firebase", zhValue: "先按 React + Vite + Firebase 的 MVP 方案推进。", enValue: "Use the React + Vite + Firebase MVP baseline.", zhFit: "适合快速验证和轻量 CRUD MVP。", enFit: "Best for fast validation and lightweight CRUD MVPs.", zhTradeoff: "起步快，但复杂领域模型后期可能迁移。", enTradeoff: "Fast to start, but complex domain logic may need migration later." }
+            ], [])
+            : /internal|admin|ops|dashboard|editor|realtime|canvas|workflow/.test(featureSignal)
+                ? choose([
+                    { zh: "React + Vite + Fastify", en: "React + Vite + Fastify", zhValue: "先按 React + Vite 前端配 Fastify API 的分层方案推进。", enValue: "Use the React + Vite frontend with Fastify API baseline.", zhFit: "适合重交互后台和清晰前后端边界。", enFit: "Best for rich internal tools and clearer frontend/backend separation.", zhTradeoff: "边界更清晰，但 SSR/SEO 需要额外处理。", enTradeoff: "Cleaner separation, but SSR/SEO needs more explicit handling." },
+                    { zh: "Next.js + PostgreSQL", en: "Next.js + PostgreSQL", zhValue: "先按 Next.js + PostgreSQL + Prisma 的 Web 全栈方案推进。", enValue: "Use the Next.js + PostgreSQL + Prisma web full-stack baseline.", zhFit: "适合既有运营后台又有公开界面的产品。", enFit: "Best when the product mixes internal dashboards with public web pages.", zhTradeoff: "整合度高，但系统边界更紧。", enTradeoff: "Highly integrated, but the system boundary is tighter." },
+                    { zh: "React + Vite + Firebase", en: "React + Vite + Firebase", zhValue: "先按 React + Vite + Firebase 的 MVP 方案推进。", enValue: "Use the React + Vite + Firebase MVP baseline.", zhFit: "适合先做轻量验证。", enFit: "Best for lighter validation-first delivery.", zhTradeoff: "简单快，但复杂后端能力会受限。", enTradeoff: "Simple and fast, but complex backend capability is limited." }
+                ], [])
+                : choose([
+                    { zh: "React + Vite + Firebase", en: "React + Vite + Firebase", zhValue: "先按 React + Vite + Firebase 的 MVP 方案推进。", enValue: "Use the React + Vite + Firebase MVP baseline.", zhFit: "适合快速验证和轻量 CRUD MVP。", enFit: "Best for fast validation and lightweight CRUD MVPs.", zhTradeoff: "起步快，但复杂领域模型后期可能迁移。", enTradeoff: "Fast to start, but complex domain logic may need migration later." },
+                    { zh: "Next.js + PostgreSQL", en: "Next.js + PostgreSQL", zhValue: "先按 Next.js + PostgreSQL + Prisma 的 Web 全栈方案推进。", enValue: "Use the Next.js + PostgreSQL + Prisma web full-stack baseline.", zhFit: "适合需要 SSR、登录、支付或公开页面的产品。", enFit: "Best for products that need SSR, auth, payments, or public pages.", zhTradeoff: "能力完整，但服务端复杂度更高。", enTradeoff: "More complete, but with higher server complexity." },
+                    { zh: "React + Vite + Fastify", en: "React + Vite + Fastify", zhValue: "先按 React + Vite 前端配 Fastify API 的分层方案推进。", enValue: "Use the React + Vite frontend with Fastify API baseline.", zhFit: "适合前后端明确分层。", enFit: "Best for explicit frontend/backend layering.", zhTradeoff: "工程边界清晰，但链路更长。", enTradeoff: "Clearer engineering boundaries, but a longer delivery chain." }
+                ], []),
+        mobile: /camera|bluetooth|offline|device|native|sensor/.test(featureSignal)
+            ? choose([
+                { zh: "Native iOS / Android", en: "Native iOS / Android", zhValue: "先按原生 iOS / Android 双端方案推进。", enValue: "Use the native iOS / Android baseline.", zhFit: "适合重设备能力和高性能要求。", enFit: "Best for deep device integration and high-performance needs.", zhTradeoff: "平台能力最强，但双端成本最高。", enTradeoff: "Strongest platform fit, but the highest delivery cost." },
+                { zh: "Expo / React Native", en: "Expo / React Native", zhValue: "先按 Expo + React Native 的跨平台移动方案推进。", enValue: "Use the Expo + React Native cross-platform mobile baseline.", zhFit: "适合兼顾速度与跨平台。", enFit: "Best for balancing speed and cross-platform delivery.", zhTradeoff: "共享代码多，但原生深度有限。", enTradeoff: "High code sharing, but less native depth." },
+                { zh: "Flutter + Supabase", en: "Flutter + Supabase", zhValue: "先按 Flutter + Supabase 的移动方案推进。", enValue: "Use the Flutter + Supabase mobile baseline.", zhFit: "适合强调一致 UI 和动画。", enFit: "Best when UI consistency and animation matter more.", zhTradeoff: "渲染一致性强，但团队需要接受 Dart。", enTradeoff: "Strong rendering consistency, but the team must adopt Dart." }
+            ], [])
+            : choose([
+                { zh: "Expo / React Native", en: "Expo / React Native", zhValue: "先按 Expo + React Native 的跨平台移动方案推进。", enValue: "Use the Expo + React Native cross-platform mobile baseline.", zhFit: "适合同时覆盖 iOS 和 Android，并保持交付速度。", enFit: "Best for covering iOS and Android with strong delivery speed.", zhTradeoff: "共享代码多，但原生深度有限。", enTradeoff: "High code sharing, but less native depth." },
+                { zh: "Flutter + Supabase", en: "Flutter + Supabase", zhValue: "先按 Flutter + Supabase 的移动方案推进。", enValue: "Use the Flutter + Supabase mobile baseline.", zhFit: "适合强调一致 UI 和动画。", enFit: "Best when UI consistency and animation matter more.", zhTradeoff: "渲染一致性强，但团队需要接受 Dart。", enTradeoff: "Strong rendering consistency, but the team must adopt Dart." },
+                { zh: "Native iOS / Android", en: "Native iOS / Android", zhValue: "先按原生 iOS / Android 双端方案推进。", enValue: "Use the native iOS / Android baseline.", zhFit: "适合重设备能力和高性能要求。", enFit: "Best for deep device integration and high-performance needs.", zhTradeoff: "平台能力最强，但双端成本最高。", enTradeoff: "Strongest platform fit, but the highest delivery cost." }
+            ], []),
+        desktop: choose([
+            { zh: "Tauri + React", en: "Tauri + React", zhValue: "先按 Tauri + React 的桌面方案推进。", enValue: "Use the Tauri + React desktop baseline.", zhFit: "适合轻量桌面客户端和较低资源占用目标。", enFit: "Best for lightweight desktop apps with lower runtime overhead.", zhTradeoff: "更高效，但生态不如 Electron 成熟。", enTradeoff: "More efficient, but the ecosystem is smaller than Electron." },
+            { zh: "Electron + React", en: "Electron + React", zhValue: "先按 Electron + React 的桌面方案推进。", enValue: "Use the Electron + React desktop baseline.", zhFit: "适合插件多和生态成熟度优先。", enFit: "Best when ecosystem maturity matters most.", zhTradeoff: "生态成熟，但资源占用通常更高。", enTradeoff: "Mature ecosystem, but usually heavier at runtime." },
+            { zh: "Desktop + API", en: "Desktop + API", zhValue: "先按桌面客户端配独立 API 的分层方案推进。", enValue: "Use a desktop client with a separate API service baseline.", zhFit: "适合桌面端与业务服务严格分层。", enFit: "Best when desktop UI and business services should stay clearly separated.", zhTradeoff: "边界清晰，但整体工程链路更长。", enTradeoff: "Clearer boundaries, but a longer overall delivery chain." }
+        ], []),
+        backend: choose([
+            { zh: "Fastify + PostgreSQL", en: "Fastify + PostgreSQL", zhValue: "先按 Fastify + PostgreSQL 的服务端方案推进。", enValue: "Use the Fastify + PostgreSQL backend baseline.", zhFit: "适合中小型 API 和 TypeScript 团队。", enFit: "Best for small to mid-size APIs and TypeScript-first teams.", zhTradeoff: "轻量直接，但规范需要自己补齐。", enTradeoff: "Lean and fast, but conventions need more manual work." },
+            { zh: "NestJS + PostgreSQL", en: "NestJS + PostgreSQL", zhValue: "先按 NestJS + PostgreSQL 的服务端方案推进。", enValue: "Use the NestJS + PostgreSQL backend baseline.", zhFit: "适合模块边界清晰和长期演进系统。", enFit: "Best for systems that need stronger module conventions and long-term scaling.", zhTradeoff: "结构完整，但样板和抽象层更重。", enTradeoff: "More structured, but heavier in abstraction and boilerplate." },
+            { zh: "FastAPI + PostgreSQL", en: "FastAPI + PostgreSQL", zhValue: "先按 FastAPI + PostgreSQL 的服务端方案推进。", enValue: "Use the FastAPI + PostgreSQL backend baseline.", zhFit: "适合 Python 数据能力和 AI 集成场景。", enFit: "Best for Python-heavy teams and AI-adjacent backend systems.", zhTradeoff: "Python 生态强，但前后端类型共享较弱。", enTradeoff: "Strong Python ecosystem, but weaker shared typing across frontend and backend." }
+        ], []),
+        extension: choose([
+            { zh: "Plasmo + React", en: "Plasmo + React", zhValue: "先按 Plasmo + React 的浏览器扩展方案推进。", enValue: "Use the Plasmo + React browser extension baseline.", zhFit: "适合快速交付浏览器扩展并复用 React 团队经验。", enFit: "Best for fast extension delivery with React-heavy teams.", zhTradeoff: "上手快，但对底层 MV3 细节封装更多。", enTradeoff: "Fast to ship, but more abstraction sits over raw MV3 details." },
+            { zh: "WXT + React/Vue", en: "WXT + React/Vue", zhValue: "先按 WXT 的浏览器扩展方案推进。", enValue: "Use the WXT browser extension baseline.", zhFit: "适合保留前端框架灵活性的扩展项目。", enFit: "Best when framework flexibility still matters.", zhTradeoff: "更灵活，但构建细节更多。", enTradeoff: "More flexible, but asks for more build-system familiarity." },
+            { zh: "Raw Manifest V3", en: "Raw Manifest V3", zhValue: "先按原生 Manifest V3 扩展方案推进。", enValue: "Use the raw Manifest V3 extension baseline.", zhFit: "适合体量小且需要直接控制运行时。", enFit: "Best for smaller extensions that need direct runtime control.", zhTradeoff: "控制力最强，但工程效率最低。", enTradeoff: "Maximum control, but the least productive engineering experience." }
+        ], []),
+        multi: choose([
+            { zh: "Next.js + Expo + NestJS", en: "Next.js + Expo + NestJS", zhValue: "先按 Next.js Web + Expo 移动端 + NestJS 后端的多端方案推进。", enValue: "Use the multi-platform baseline with Next.js web, Expo mobile, and NestJS backend.", zhFit: "适合同时规划 Web、移动端与后台 API。", enFit: "Best when web, mobile, and backend need to be planned together.", zhTradeoff: "边界清晰，但整体复杂度最高。", enTradeoff: "Clear boundaries, but the overall system is the most complex." },
+            { zh: "Next.js + Expo + Firebase", en: "Next.js + Expo + Firebase", zhValue: "先按 Next.js Web + Expo 移动端 + Firebase 的多端 MVP 方案推进。", enValue: "Use the multi-platform MVP baseline with Next.js web, Expo mobile, and Firebase.", zhFit: "适合多端 MVP 和优先验证业务闭环。", enFit: "Best for small-team multi-platform MVP validation.", zhTradeoff: "起步快，但复杂后端能力后期可能拆分。", enTradeoff: "Fast to start, but complex backend logic may need to split out later." },
+            { zh: "Mobile-first + Admin Web", en: "Mobile-first + Admin Web", zhValue: "先按移动端主应用加 Admin Web 的双面方案推进。", enValue: "Use a mobile-first app plus admin web baseline.", zhFit: "适合用户端强移动属性，同时仍需运营后台。", enFit: "Best for mobile-heavy products that still need an admin web surface.", zhTradeoff: "移动体验更强，但 Web 与移动共享度较低。", enTradeoff: "Stronger mobile focus, but less code sharing between web and mobile." }
+        ], [])
+    } as const;
+
+    let options = optionSets.web;
+    switch (category) {
+        case "mobile":
+            options = optionSets.mobile;
+            break;
+        case "desktop":
+            options = optionSets.desktop;
+            break;
+        case "backend":
+            options = optionSets.backend;
+            break;
+        case "extension":
+            options = optionSets.extension;
+            break;
+        case "multi":
+            options = optionSets.multi;
+            break;
+        case "web":
+        default:
+            options = optionSets.web;
+            break;
+    }
+    if (!options || options.length === 0) return null;
+
+    if (language === "zh") {
+        const questionText = "这次先按哪条技术栈基线推进？";
+        return {
+            content: [
+                "当前判断：",
+                `- ${buildPlatformSummaryLine(architecturePack.platformStrategy) || "平台策略已确认。"} `,
+                "- 下一步更合理的做法是先锁定技术栈基线，再继续细化模块边界和交付 guardrails。",
+                "",
+                "推荐技术栈方案：",
+                ...options.flatMap((option, index) => [
+                    `${index + 1}. ${option.zh}`,
+                    `   - 适配：${option.zhFit}`,
+                    `   - 取舍：${option.zhTradeoff}`
+                ]),
+                "",
+                "需要确认：",
+                questionText
+            ].join("\n"),
+            options: [
+                ...options.map((option) => ({ label: option.zh, value: option.zhValue })),
+                { label: "给我更多方案", value: "请再给我 2 到 3 个备选技术栈，并说明取舍。" }
+            ],
+            questionKey: normalizeQuestionKey(questionText)
+        };
+    }
+
+    const questionText = "Which stack baseline should we optimize for first?";
+    return {
+        content: [
+            "Current view:",
+            `- ${buildPlatformSummaryLine(architecturePack.platformStrategy) || "Platform strategy is confirmed."}`,
+            "- The next useful step is to lock the stack baseline before we keep refining module boundaries and delivery guardrails.",
+            "",
+            "Recommended stack options:",
+            ...options.flatMap((option, index) => [
+                `${index + 1}. ${option.en}`,
+                `   - Fit: ${option.enFit}`,
+                `   - Tradeoff: ${option.enTradeoff}`
+            ]),
+            "",
+            "Please confirm:",
+            questionText
+        ].join("\n"),
+        options: [
+            ...options.map((option) => ({ label: option.en, value: option.enValue })),
+            { label: "Show more options", value: "Show me 2 or 3 more stack options and explain the tradeoffs." }
+        ],
+        questionKey: normalizeQuestionKey(questionText)
+    };
+}
+
+function shouldPrioritizePlatformQuestion(architecturePack: ArchitecturePack) {
+    return !hasConfirmedPlatformStrategy(architecturePack.platformStrategy);
+}
+
+function shouldPrioritizeStackQuestion(
+    stage: ArchitectureStage,
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[]
+) {
+    if (!hasConfirmedPlatformStrategy(architecturePack.platformStrategy)) return false;
+    if (hasRecordedStackDecision(decisionRecords)) return false;
+    if (stage !== "decisions") return false;
+
+    return Boolean(
+        architecturePack.businessContext.productGoal.trim() ||
+        architecturePack.businessContext.userJourneys.length > 0 ||
+        architecturePack.businessContext.constraints.length > 0
+    );
+}
+
 function getReadinessRequirementLabel(
     requirementKey: ReadinessRequirementKey,
     language: "zh" | "en"
 ) {
     const labels: Record<ReadinessRequirementKey, { zh: string; en: string }> = {
         "business_context.product_goal": { zh: "产品目标", en: "product goal" },
+        "business_context.platforms": { zh: "平台策略", en: "platform strategy" },
         "business_context.target_users": { zh: "目标用户", en: "target users" },
         "business_context.user_journeys": { zh: "用户旅程", en: "user journeys" },
         "business_context.constraints_or_risks": { zh: "约束与风险", en: "constraints and risks" },
@@ -1355,6 +1566,17 @@ function buildFocusedRequirementQuestion(
     architecturePack: ArchitecturePack,
     messages: Message[]
 ) {
+    if (requirementKey === "business_context.platforms") {
+        const platformQuestion = buildPlatformDiscoveryQuestion(language);
+        return {
+            content: platformQuestion.content,
+            options: platformQuestion.options,
+            questionKey: platformQuestion.questionKey,
+            questionAction: null,
+            questionRequirementKey: requirementKey
+        };
+    }
+
     if (requirementKey === "decisions.non_functional_requirements") {
         const content = language === "zh"
             ? `当前判断：
@@ -1495,9 +1717,14 @@ function buildPrdSummaryLines(
     readiness: ReadinessChecklist
 ) {
     const lines: string[] = [];
+    const platformSummary = buildPlatformSummaryLine(architecturePack.platformStrategy);
 
     if (architecturePack.businessContext.productGoal.trim()) {
         lines.push(architecturePack.businessContext.productGoal.trim());
+    }
+
+    if (platformSummary) {
+        lines.push(platformSummary);
     }
 
     if (evaluation?.analysis?.clarified?.length) {
@@ -1543,6 +1770,11 @@ function buildPrdArchitectureSnapshot(
     readiness: ReadinessChecklist
 ) {
     const items: string[] = [];
+    const platformSummary = buildPlatformSummaryLine(architecturePack.platformStrategy);
+
+    if (platformSummary) {
+        items.push(platformSummary);
+    }
 
     if (architecturePack.businessContext.targetUsers.length > 0) {
         items.push(
@@ -3761,23 +3993,35 @@ Do you want to start scaffold generation now?`;
             }
 
             if (evalRequestIdRef.current === requestId) {
+                const resolvedPack = currentEval.architecturePackDraft ?? architecturePack;
+                const resolvedDecisions = currentEval.decisionDrafts ?? decisionRecords;
+                const resolvedGuardrails = currentEval.guardrailDrafts ?? guardrailChecklist;
+                const resolvedStage = inferArchitectureStage(
+                    resolvedPack,
+                    resolvedDecisions,
+                    resolvedGuardrails,
+                    readinessOverrides
+                );
                 const resolvedEligibility = computeScaffoldEligibility({
-                    architecturePack: currentEval.architecturePackDraft ?? architecturePack,
-                    decisionRecords: currentEval.decisionDrafts ?? decisionRecords,
-                    guardrailChecklist: currentEval.guardrailDrafts ?? guardrailChecklist,
+                    architecturePack: resolvedPack,
+                    decisionRecords: resolvedDecisions,
+                    guardrailChecklist: resolvedGuardrails,
                     readinessOverrides
                 });
+                const coercedPlatformQuestion = shouldPrioritizePlatformQuestion(resolvedPack)
+                    ? buildPlatformDiscoveryQuestion(workspaceLanguage)
+                    : null;
+                const coercedStackQuestion =
+                    !coercedPlatformQuestion &&
+                    shouldPrioritizeStackQuestion(resolvedStage, resolvedPack, resolvedDecisions)
+                        ? buildStackRecommendationQuestion(workspaceLanguage, resolvedPack)
+                        : null;
                 const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
                     ? buildBlockedGenerateQuestion(
                         workspaceLanguage,
-                        inferArchitectureStage(
-                            currentEval.architecturePackDraft ?? architecturePack,
-                            currentEval.decisionDrafts ?? decisionRecords,
-                            currentEval.guardrailDrafts ?? guardrailChecklist,
-                            readinessOverrides
-                        ),
+                        resolvedStage,
                         resolvedEligibility.readiness,
-                        currentEval.architecturePackDraft ?? architecturePack,
+                        resolvedPack,
                         newMessages
                     )
                     : null;
@@ -3796,26 +4040,31 @@ Do you want to start scaffold generation now?`;
                         currentQuestionRequirementKey,
                         workspaceLanguage
                     );
-                    const nextContent = coercedGenerateQuestion
-                        ? coercedGenerateQuestion.content
+                    const coercedQuestion = coercedPlatformQuestion ?? coercedStackQuestion ?? coercedGenerateQuestion;
+                    const nextContent = coercedQuestion
+                        ? coercedQuestion.content
                         : current.content.trim().length > 0
                             ? current.content
                             : fallbackText;
-                    const nextOptions = coercedGenerateQuestion
-                        ? coercedGenerateQuestion.options
+                    const nextOptions = coercedQuestion
+                        ? coercedQuestion.options
                         : current.options && current.options.length > 0
                             ? current.options
                             : fallbackOptions;
-                    const nextQuestionKey = coercedGenerateQuestion
-                        ? coercedGenerateQuestion.questionKey
+                    const nextQuestionKey = coercedQuestion
+                        ? coercedQuestion.questionKey
                         : current.questionKey;
-                    const nextQuestionAction = coercedGenerateQuestion
-                        ? coercedGenerateQuestion.questionAction
-                        : current.questionAction;
-                    const nextQuestionRequirementKey = coercedGenerateQuestion
-                        ? coercedGenerateQuestion.questionRequirementKey
-                        : current.questionRequirementKey;
-                    const nextQuestionStatus = coercedGenerateQuestion ? "pending" as const : current.questionStatus;
+                    const nextQuestionAction = coercedPlatformQuestion || coercedStackQuestion
+                        ? undefined
+                        : coercedGenerateQuestion && coercedQuestion === coercedGenerateQuestion
+                            ? coercedGenerateQuestion.questionAction
+                            : current.questionAction;
+                    const nextQuestionRequirementKey = coercedPlatformQuestion || coercedStackQuestion
+                        ? undefined
+                        : coercedGenerateQuestion && coercedQuestion === coercedGenerateQuestion
+                            ? coercedGenerateQuestion.questionRequirementKey
+                            : current.questionRequirementKey;
+                    const nextQuestionStatus = coercedQuestion ? "pending" as const : current.questionStatus;
                     if (
                         nextContent === current.content &&
                         nextOptions === current.options &&
