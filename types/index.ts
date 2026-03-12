@@ -436,29 +436,6 @@ export interface RuntimeReadiness {
     issues: PreflightIssue[];
 }
 
-export interface HandoffValidationIssue {
-    code: string;
-    message: string;
-    details?: string;
-}
-
-export interface HandoffValidationSummary {
-    placeholdersRemaining: boolean;
-    lintPassed: boolean;
-    typecheckPassed: boolean;
-    buildPassed: boolean;
-}
-
-export interface HandoffValidation {
-    status: "pending" | "passed" | "failed";
-    command: string;
-    reportPath: string;
-    scriptPath: string;
-    updatedAt?: string;
-    summary: HandoffValidationSummary;
-    issues: HandoffValidationIssue[];
-}
-
 export interface EvaluationResponse {
     density_score: number;
     is_ready: boolean;
@@ -487,7 +464,6 @@ export interface GenerationResponse {
     generationManifest?: GenerationManifest;
     preflightReport?: PreflightReport;
     runtimeReadiness?: RuntimeReadiness;
-    handoffValidation?: HandoffValidation;
 }
 
 export interface Attachment {

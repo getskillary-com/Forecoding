@@ -15,7 +15,6 @@ import {
     DiagramGovernance,
     DesignStage,
     GuardrailChecklist,
-    HandoffValidation,
     ReadinessChecklist,
     ReadinessOverride,
     ReadinessRequirementKey,
@@ -161,157 +160,6 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     interactionMotion: "Interaction motion",
     statesAndFeedback: "States and feedback"
 };
-
-function readFileContentFromTree(nodes: FileNode[], targetPath: string, prefix = ""): string {
-    for (const node of nodes || []) {
-        if (!node || typeof node !== "object" || typeof node.name !== "string") continue;
-        const currentPath = prefix ? `${prefix}/${node.name}` : node.name;
-        if (node.type === "file" && currentPath === targetPath) {
-            return typeof node.content === "string" ? node.content : "";
-        }
-        if (node.type === "folder" && Array.isArray(node.children)) {
-            const nested = readFileContentFromTree(node.children, targetPath, currentPath);
-            if (nested) return nested;
-        }
-    }
-
-    return "";
-}
-
-function upsertFileContentInTree(nodes: FileNode[], targetPath: string, content: string): FileNode[] {
-    const segments = targetPath.split("/").filter(Boolean);
-    if (segments.length === 0) return Array.isArray(nodes) ? [...nodes] : [];
-
-    const visit = (items: FileNode[], depth: number): FileNode[] => {
-        const next = Array.isArray(items) ? [...items] : [];
-        const segment = segments[depth];
-        const index = next.findIndex((node) => node?.name === segment);
-        const isLeaf = depth === segments.length - 1;
-
-        if (isLeaf) {
-            const nextFile: FileNode = {
-                name: segment,
-                type: "file",
-                content
-            };
-            if (index >= 0) {
-                next[index] = nextFile;
-            } else {
-                next.push(nextFile);
-            }
-            return next;
-        }
-
-        const existing = index >= 0 ? next[index] : null;
-        const existingChildren = existing?.type === "folder" && Array.isArray(existing.children)
-            ? existing.children
-            : [];
-        const nextFolder: FileNode = {
-            name: segment,
-            type: "folder",
-            children: visit(existingChildren, depth + 1)
-        };
-
-        if (index >= 0) {
-            next[index] = nextFolder;
-        } else {
-            next.push(nextFolder);
-        }
-
-        return next;
-    };
-
-    return visit(nodes, 0);
-}
-
-function parseHandoffValidationFromTree(generation: GenerationResponse | null): HandoffValidation | null {
-    if (!generation || !Array.isArray(generation.projectTree) || generation.projectTree.length === 0) return null;
-    const rawReport = readFileContentFromTree(generation.projectTree, "VALIDATION_REPORT.json").trim();
-    if (!rawReport) return null;
-
-    try {
-        const parsed = JSON.parse(rawReport) as Record<string, unknown>;
-        const rawSummary = parsed.summary && typeof parsed.summary === "object"
-            ? parsed.summary as Record<string, unknown>
-            : {};
-        const rawIssues = Array.isArray(parsed.issues)
-            ? parsed.issues.filter((issue): issue is Record<string, unknown> => Boolean(issue && typeof issue === "object"))
-            : [];
-        const rawStatus = typeof parsed.status === "string" ? parsed.status.trim().toLowerCase() : "";
-        const passFlag = typeof parsed.pass === "boolean" ? parsed.pass : null;
-
-        let status: HandoffValidation["status"] = "pending";
-        if (rawStatus === "pending") {
-            status = "pending";
-        } else if (passFlag === true || rawStatus === "passed" || rawStatus === "pass" || rawStatus === "success") {
-            status = "passed";
-        } else if (passFlag === false || rawStatus === "failed" || rawStatus === "fail" || rawStatus === "error") {
-            status = "failed";
-        } else if (rawIssues.length > 0) {
-            status = "failed";
-        }
-
-        return {
-            status,
-            command: "npm run validate:handoff",
-            reportPath: "VALIDATION_REPORT.json",
-            scriptPath: "scripts/validate-generated-handoff.mjs",
-            updatedAt: typeof parsed.generatedAt === "string" && parsed.generatedAt.trim()
-                ? parsed.generatedAt.trim()
-                : undefined,
-            summary: {
-                placeholdersRemaining: typeof rawSummary.placeholdersRemaining === "boolean"
-                    ? rawSummary.placeholdersRemaining
-                    : rawIssues.some((issue) => issue.code === "PLACEHOLDERS_REMAINING"),
-                lintPassed: typeof rawSummary.lintPassed === "boolean" ? rawSummary.lintPassed : status === "passed",
-                typecheckPassed: typeof rawSummary.typecheckPassed === "boolean" ? rawSummary.typecheckPassed : status === "passed",
-                buildPassed: typeof rawSummary.buildPassed === "boolean" ? rawSummary.buildPassed : status === "passed"
-            },
-            issues: rawIssues.map((issue) => ({
-                code: typeof issue.code === "string" && issue.code.trim() ? issue.code.trim() : "UNKNOWN",
-                message: typeof issue.message === "string" && issue.message.trim() ? issue.message.trim() : "Unknown validation issue.",
-                details: typeof issue.details === "string" && issue.details.trim() ? issue.details.trim() : undefined
-            }))
-        };
-    } catch {
-        return {
-            status: "failed",
-            command: "npm run validate:handoff",
-            reportPath: "VALIDATION_REPORT.json",
-            scriptPath: "scripts/validate-generated-handoff.mjs",
-            summary: {
-                placeholdersRemaining: false,
-                lintPassed: false,
-                typecheckPassed: false,
-                buildPassed: false
-            },
-            issues: [
-                {
-                    code: "INVALID_VALIDATION_REPORT",
-                    message: "VALIDATION_REPORT.json is not valid JSON."
-                }
-            ]
-        };
-    }
-}
-
-function resolveGenerationHandoffValidation(generation: GenerationResponse | null): HandoffValidation | null {
-    if (!generation) return null;
-    return generation.handoffValidation ?? parseHandoffValidationFromTree(generation);
-}
-
-function formatHandoffUpdatedAt(value: string | undefined, language: WorkspaceLanguage) {
-    if (!value) return "";
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return value;
-    return new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en-US", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-    }).format(parsed);
-}
 
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
     if (!Array.isArray(value)) return [];
@@ -2579,10 +2427,6 @@ function WizardContent() {
     const [isAdmin, setIsAdmin] = useState(false);
     const [isAdminStatusLoaded, setIsAdminStatusLoaded] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(420);
-    const [handoffImportFeedback, setHandoffImportFeedback] = useState<{
-        type: "success" | "error";
-        message: string;
-    } | null>(null);
     const isResizingRef = useRef(false);
     const generateInFlightRef = useRef(false);
     const evaluateAbortRef = useRef<AbortController | null>(null);
@@ -2591,7 +2435,6 @@ function WizardContent() {
     // Chat Attachments
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const validationReportInputRef = useRef<HTMLInputElement>(null);
 
     const [currentDiagram, setCurrentDiagram] = useState(
         cachedSnapshot?.data.currentDiagram || "graph TD\nStart[Waiting for input...]"
@@ -2600,14 +2443,13 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'architecture' | 'prd' | 'files' | 'stack' | 'handoff'>(
+    const [activeTab, setActiveTab] = useState<'architecture' | 'prd' | 'files' | 'stack'>(
         cachedSnapshot?.data.generation ? 'files' : 'architecture'
     );
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const workspaceLanguage = getProjectWorkspaceLanguage(project);
     const uiText = getWorkspaceUiText(workspaceLanguage);
-    const handoffValidation = resolveGenerationHandoffValidation(generation);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
     const visibleMessages = messages.slice(baseMessageIndex);
     const hiddenMessageCount = baseMessageIndex;
@@ -4136,73 +3978,6 @@ Do you want to start scaffold generation now?`;
         document.body.style.userSelect = "none";
     };
 
-    const handleImportValidationReport = () => {
-        validationReportInputRef.current?.click();
-    };
-
-    const handleValidationReportSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0] || null;
-        if (!file) return;
-
-        try {
-            if (!generation) {
-                throw new Error(
-                    workspaceLanguage === "zh"
-                        ? "当前没有可回写的脚手架结果。"
-                        : "There is no generated scaffold to update."
-                );
-            }
-
-            const rawText = await file.text();
-            const parsed = JSON.parse(rawText) as Record<string, unknown>;
-            const normalizedReport = `${JSON.stringify(parsed, null, 2)}\n`;
-            const nextTree = upsertFileContentInTree(
-                generation.projectTree,
-                "VALIDATION_REPORT.json",
-                normalizedReport
-            );
-            const provisionalGeneration: GenerationResponse = {
-                ...generation,
-                projectTree: nextTree,
-                handoffValidation: undefined
-            };
-            const nextHandoffValidation = resolveGenerationHandoffValidation(provisionalGeneration);
-
-            if (!nextHandoffValidation) {
-                throw new Error(
-                    workspaceLanguage === "zh"
-                        ? "无法从导入报告中解析 handoff 校验状态。"
-                        : "Unable to derive handoff validation status from the imported report."
-                );
-            }
-
-            setGeneration({
-                ...provisionalGeneration,
-                handoffValidation: nextHandoffValidation
-            });
-            setHasUserEdited(true);
-            setHandoffImportFeedback({
-                type: "success",
-                message: workspaceLanguage === "zh"
-                    ? "已导入 VALIDATION_REPORT.json，工作区状态已更新。"
-                    : "Imported VALIDATION_REPORT.json and refreshed workspace status."
-            });
-        } catch (error) {
-            setHandoffImportFeedback({
-                type: "error",
-                message: error instanceof Error
-                    ? error.message
-                    : workspaceLanguage === "zh"
-                        ? "导入 VALIDATION_REPORT.json 失败。"
-                        : "Failed to import VALIDATION_REPORT.json."
-            });
-        } finally {
-            if (validationReportInputRef.current) {
-                validationReportInputRef.current.value = "";
-            }
-        }
-    };
-
     // --- Generation Handler ---
     const generateScaffold = async () => {
         if (generateInFlightRef.current) return;
@@ -4213,7 +3988,6 @@ Do you want to start scaffold generation now?`;
         generateInFlightRef.current = true;
         setIsGenerating(true);
         setGenerateError(null);
-        setHandoffImportFeedback(null);
         setHasUserEdited(true);
         try {
             await yieldToBrowser();
@@ -4732,22 +4506,7 @@ Do you want to start scaffold generation now?`;
                         label={uiText.techStackTab}
                         disabled={!generation}
                     />
-                    <TabButton
-                        active={activeTab === 'handoff'}
-                        onClick={() => setActiveTab('handoff')}
-                        icon={<Check className="w-4 h-4" />}
-                        label={workspaceLanguage === "zh" ? "Handoff 校验" : "Handoff"}
-                        disabled={!generation}
-                    />
                 </div>
-
-                <input
-                    type="file"
-                    ref={validationReportInputRef}
-                    className="hidden"
-                    accept="application/json,.json"
-                    onChange={handleValidationReportSelect}
-                />
 
                 {/* Content Area */}
                 <div className="fc-surface-strong relative flex-1 min-h-0 overflow-hidden rounded-[var(--radius-2xl)]">
@@ -4894,52 +4653,6 @@ Do you want to start scaffold generation now?`;
                         </div>
                     )}
 
-                    {/* Handoff Tab */}
-                    {activeTab === 'handoff' && generation && (
-                        <div className="absolute inset-0 p-6 overflow-y-auto">
-                            {handoffValidation ? (
-                                <HandoffValidationCard
-                                    validation={handoffValidation}
-                                    language={workspaceLanguage}
-                                    feedback={handoffImportFeedback}
-                                    onImportReport={handleImportValidationReport}
-                                />
-                            ) : (
-                                <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                        <div>
-                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                                {workspaceLanguage === "zh" ? "Handoff 校验" : "Handoff Validation"}
-                                            </h3>
-                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">
-                                                {workspaceLanguage === "zh"
-                                                    ? "当前版本还没有可显示的 handoff 校验报告。生成后可导入 VALIDATION_REPORT.json。"
-                                                    : "No handoff validation report is available for this version yet. Import VALIDATION_REPORT.json after generation."}
-                                            </p>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={handleImportValidationReport}
-                                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                                        >
-                                            {workspaceLanguage === "zh" ? "导入 VALIDATION_REPORT.json" : "Import VALIDATION_REPORT.json"}
-                                        </button>
-                                    </div>
-
-                                    {handoffImportFeedback && (
-                                        <div className={`mt-4 rounded-xl border px-3 py-2 text-sm ${
-                                            handoffImportFeedback.type === "success"
-                                                ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300"
-                                                : "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-700/40 dark:bg-rose-900/20 dark:text-rose-300"
-                                        }`}>
-                                            {handoffImportFeedback.message}
-                                        </div>
-                                    )}
-                                </section>
-                            )}
-                        </div>
-                    )}
-
                 </div>
                 </main>
             </div>
@@ -4954,166 +4667,6 @@ type TabButtonProps = {
     label: string;
     disabled?: boolean;
 };
-
-function HandoffValidationCard({
-    validation,
-    language,
-    feedback,
-    onImportReport
-}: {
-    validation: HandoffValidation;
-    language: WorkspaceLanguage;
-    feedback: {
-        type: "success" | "error";
-        message: string;
-    } | null;
-    onImportReport: () => void;
-}) {
-    const isZh = language === "zh";
-    const updatedAt = formatHandoffUpdatedAt(validation.updatedAt, language);
-    const statusMeta =
-        validation.status === "passed"
-            ? {
-                label: isZh ? "已通过" : "Passed",
-                icon: <Check className="h-4 w-4" />,
-                className: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300"
-            }
-            : validation.status === "failed"
-                ? {
-                    label: isZh ? "未通过" : "Failed",
-                    icon: <X className="h-4 w-4" />,
-                    className: "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-700/40 dark:bg-rose-900/20 dark:text-rose-300"
-                }
-                : {
-                    label: isZh ? "待执行" : "Pending",
-                    icon: <Loader2 className="h-4 w-4 animate-spin" />,
-                    className: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-300"
-                };
-
-    const metricState = (passed: boolean) => {
-        if (passed) return isZh ? "通过" : "Pass";
-        if (validation.status === "pending") return isZh ? "待执行" : "Pending";
-        return isZh ? "失败" : "Fail";
-    };
-
-    const summaryItems = [
-        {
-            label: isZh ? "占位文件" : "Placeholders",
-            value: validation.summary.placeholdersRemaining
-                ? (isZh ? "仍存在" : "Remaining")
-                : (isZh ? "已清空" : "Cleared")
-        },
-        {
-            label: isZh ? "Lint" : "Lint",
-            value: metricState(validation.summary.lintPassed)
-        },
-        {
-            label: isZh ? "Typecheck" : "Typecheck",
-            value: metricState(validation.summary.typecheckPassed)
-        },
-        {
-            label: isZh ? "Build" : "Build",
-            value: metricState(validation.summary.buildPassed)
-        }
-    ];
-
-    return (
-        <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                        {isZh ? "Handoff 校验" : "Handoff Validation"}
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">
-                        {isZh
-                            ? "AI IDE 完成所有实现任务后，执行最终交付校验并回写报告。"
-                            : "Run the final delivery gate after the AI IDE finishes all implementation tasks."}
-                    </p>
-                    {updatedAt && (
-                        <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-                            {isZh ? `报告时间 ${updatedAt}` : `Report updated ${updatedAt}`}
-                        </p>
-                    )}
-                </div>
-                <div className="flex flex-col items-start gap-2 lg:items-end">
-                    <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${statusMeta.className}`}>
-                        {statusMeta.icon}
-                        {statusMeta.label}
-                    </span>
-                    <button
-                        type="button"
-                        onClick={onImportReport}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                    >
-                        {isZh ? "导入 VALIDATION_REPORT.json" : "Import VALIDATION_REPORT.json"}
-                    </button>
-                </div>
-            </div>
-
-            {feedback && (
-                <div className={`mt-4 rounded-xl border px-3 py-2 text-sm ${
-                    feedback.type === "success"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300"
-                        : "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-700/40 dark:bg-rose-900/20 dark:text-rose-300"
-                }`}>
-                    {feedback.message}
-                </div>
-            )}
-
-            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
-                <div className="space-y-3">
-                    <div className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 p-3 dark:bg-slate-950/30">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                            {isZh ? "执行命令" : "Command"}
-                        </p>
-                        <code className="mt-2 block text-sm text-slate-900 dark:text-slate-100">{validation.command}</code>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 p-3 dark:bg-slate-950/30">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                {isZh ? "报告路径" : "Report Path"}
-                            </p>
-                            <code className="mt-2 block text-sm text-slate-900 dark:text-slate-100">{validation.reportPath}</code>
-                        </div>
-                        <div className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 p-3 dark:bg-slate-950/30">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                {isZh ? "校验脚本" : "Validator Script"}
-                            </p>
-                            <code className="mt-2 block text-sm text-slate-900 dark:text-slate-100">{validation.scriptPath}</code>
-                        </div>
-                    </div>
-
-                    {validation.issues.length > 0 && (
-                        <div className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 p-3 dark:bg-slate-950/30">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                {isZh ? "当前问题" : "Open Issues"}
-                            </p>
-                            <div className="mt-2 space-y-2">
-                                {validation.issues.slice(0, 3).map((issue) => (
-                                    <div key={`${issue.code}-${issue.message}`} className="rounded-lg border border-[color:var(--border)] bg-white/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
-                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{issue.code}</p>
-                                        <p className="mt-1">{issue.message}</p>
-                                        {issue.details && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{issue.details}</p>}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                    {summaryItems.map((item) => (
-                        <div key={item.label} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 p-3 dark:bg-slate-950/30">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{item.label}</p>
-                            <p className="mt-2 text-sm font-semibold text-slate-900 dark:text-slate-100">{item.value}</p>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </section>
-    );
-}
 
 function TabButton({ active, onClick, icon, label, disabled }: TabButtonProps) {
     return (

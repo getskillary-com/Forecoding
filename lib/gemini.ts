@@ -5,7 +5,6 @@ import { CTO_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION
 import type {
     GenerationManifest,
     GenerationTask,
-    HandoffValidation,
     Message,
     OutputMode,
     PhasePlan,
@@ -1039,9 +1038,6 @@ export async function generateProjectResources(
                     toolStack: data.toolStack,
                     history
                 });
-                ensureValidationAssets({
-                    tree: data.projectTree
-                });
                 ensureCssRenderBaseline({
                     tree: data.projectTree,
                     templateKind,
@@ -1147,9 +1143,6 @@ export async function generateProjectResources(
             outputMode: resolvedOutputMode,
             preflight
         });
-        if (resolvedOutputMode === "runnable_scaffold") {
-            data.handoffValidation = buildHandoffValidation(data.projectTree);
-        }
 
         return data;
 
@@ -1403,8 +1396,6 @@ const ZIP_REAL_CONTENT_PATHS = new Set([
     "_AI_PROMPT.md",
     "ONE_CLICK_PROMPT.md",
     "GENERATION_MANIFEST.json",
-    "VALIDATION_REPORT.json",
-    "scripts/validate-generated-handoff.mjs",
     "app/globals.css",
     "app/layout.tsx",
     "app/page.tsx",
@@ -1590,9 +1581,6 @@ function ensureCoreConfigFiles(
         projectName,
         toolStack,
         history
-    });
-    ensureValidationAssets({
-        tree: finalTree
     });
     ensureCssRenderBaseline({
         tree: finalTree,
@@ -2432,16 +2420,14 @@ function generatePackageJson(input: {
                 build: "next build",
                 start: "next start",
                 lint: "next lint",
-                "type-check": "tsc --noEmit",
-                "validate:handoff": "node scripts/validate-generated-handoff.mjs"
+                "type-check": "tsc --noEmit"
             }
             : {
                 dev: "vite",
                 build: "vite build",
                 preview: "vite preview",
                 lint: "eslint .",
-                "type-check": "tsc --noEmit",
-                "validate:handoff": "node scripts/validate-generated-handoff.mjs"
+                "type-check": "tsc --noEmit"
             },
         dependencies: input.framework === "next"
             ? {
@@ -2478,8 +2464,7 @@ function generateMonorepoRootPackageJson(input: {
             dev: "turbo run dev --parallel",
             build: "turbo run build",
             lint: "turbo run lint",
-            "type-check": "turbo run type-check",
-            "validate:handoff": "node scripts/validate-generated-handoff.mjs"
+            "type-check": "turbo run type-check"
         },
         dependencies: {
             ...input.dependencyClosure.deps
@@ -2832,7 +2817,6 @@ function buildStructuredReadme(input: {
     lines.push("```bash");
     lines.push("npm run build");
     lines.push("npm run start");
-    lines.push("npm run validate:handoff");
     lines.push("```");
     lines.push("");
     lines.push("## Environment Variables");
@@ -3066,14 +3050,12 @@ function buildStructuredReadmeStable(input: {
     lines.push("- `GENERATION_MANIFEST.json` is the machine-readable task graph.");
     lines.push("- `IMPLEMENTATION_PLAN.md` is the only execution-order source.");
     lines.push("- For placeholder files, generate final code via directory-level `_AI_PROMPT.md`.");
-    lines.push("- After Phase 6, run `npm run validate:handoff` and commit the refreshed `VALIDATION_REPORT.json`.");
     lines.push("");
     lines.push("## Acceptance Checklist");
     lines.push("- [ ] Project installs and starts successfully.");
     lines.push("- [ ] Outputs for Phase 0~6 are completed and validated.");
     lines.push("- [ ] Key pages/APIs match requirement intent.");
     lines.push("- [ ] README, IMPLEMENTATION_PLAN, and implementation stay aligned.");
-    lines.push("- [ ] `VALIDATION_REPORT.json` records a passing handoff validation run.");
     lines.push("- [ ] No secret leakage in repository.");
     lines.push("");
     lines.push("## FAQ");
@@ -3087,7 +3069,7 @@ function buildStructuredReadmeStable(input: {
     lines.push("Update README + IMPLEMENTATION_PLAN first, then align implementation.");
     lines.push("");
     lines.push("### 4) How do we keep delivery quality stable?");
-    lines.push("Run phase-level validation commands, finish `npm run validate:handoff`, and complete manual QA before merge.");
+    lines.push("Run phase-level validation commands and complete manual QA before merge.");
     lines.push("");
     return lines.join("\n");
 }
@@ -3134,9 +3116,7 @@ function classifyImplementationPhase(filePath: string): number {
         "IMPLEMENTATION_PLAN.md",
         "ONE_CLICK_PROMPT.md",
         "GENERATION_MANIFEST.json",
-        "_AI_PROMPT.md",
-        "VALIDATION_REPORT.json",
-        "scripts/validate-generated-handoff.mjs"
+        "_AI_PROMPT.md"
     ]);
 
     if (bootstrapSet.has(normalized)) return 0;
@@ -3152,8 +3132,6 @@ function classifyImplementationPhase(filePath: string): number {
     if (withoutSrc.startsWith("lib/") && /(store|service|utils|helper|core|actions)/i.test(withoutSrc)) return 2;
     if (withoutSrc.startsWith("lib/")) return 2;
     if (/^apps\/.+\/src\/screens\/.+\.(tsx|ts|jsx|js)$/i.test(withoutSrc)) return 4;
-    if (normalized === "VALIDATION_REPORT.json") return 6;
-    if (normalized === "scripts/validate-generated-handoff.mjs") return 6;
     if (normalized.startsWith("docs/")) return 6;
     return 4;
 }
@@ -3192,11 +3170,6 @@ function buildPhaseValidationCommands(
 
     if (phaseIndex >= 1 && phaseIndex <= 5) {
         pushScript("type-check", "npx tsc --noEmit");
-        return commands;
-    }
-
-    if (hasScript("validate:handoff")) {
-        commands.push("npm run validate:handoff");
         return commands;
     }
 
@@ -3863,7 +3836,6 @@ function buildOneClickPrompt(input: {
             "```bash",
             "npm install",
             "npm run build",
-            "npm run validate:handoff",
             "```",
             ""
         ].join("\n");
@@ -3889,7 +3861,6 @@ function buildOneClickPrompt(input: {
         "```bash",
         "npm install",
         "npm run build",
-        "npm run validate:handoff",
         "```",
         ""
     ].join("\n");
@@ -4222,26 +4193,6 @@ function deriveMissingDependencies(toolStack: string, packageJsonText: string) {
     return missing;
 }
 
-function validateGeneratedValidationAssets(tree: any[]) {
-    const missing: string[] = [];
-    if (!getFileContentByPath(tree, "scripts/validate-generated-handoff.mjs").trim()) {
-        missing.push("scripts/validate-generated-handoff.mjs");
-    }
-    if (!getFileContentByPath(tree, "VALIDATION_REPORT.json").trim()) {
-        missing.push("VALIDATION_REPORT.json");
-    }
-
-    const scripts = readPackageScripts(tree);
-    if (typeof scripts["validate:handoff"] !== "string" || scripts["validate:handoff"].trim().length === 0) {
-        missing.push("package.json:scripts.validate:handoff");
-    }
-
-    return {
-        valid: missing.length === 0,
-        missing
-    };
-}
-
 function runGenerationPreflight(input: {
     tree: any[];
     outputMode: OutputMode;
@@ -4269,18 +4220,6 @@ function runGenerationPreflight(input: {
             message: "`.env.example` is missing."
         });
     }
-    if (input.outputMode === "runnable_scaffold") {
-        const validationAssets = validateGeneratedValidationAssets(input.tree);
-        if (!validationAssets.valid) {
-            issues.push({
-                code: "RUNTIME_BASELINE_INCOMPLETE",
-                severity: "error",
-                message: "Runnable scaffold is missing handoff validation assets.",
-                details: validationAssets.missing.join(", ")
-            });
-        }
-    }
-
     const cssBaseline = validateCssBaselineBundle({
         tree: input.tree,
         templateKind: input.manifest.templateKind
@@ -4460,76 +4399,6 @@ function buildRuntimeReadiness(input: {
         lintable: staticValidationReady,
         buildable: staticValidationReady,
         issues: input.preflight.issues
-    };
-}
-
-function parseJsonObject(text: string) {
-    if (!text.trim()) return null;
-    try {
-        const parsed = JSON.parse(text);
-        return parsed && typeof parsed === "object" ? parsed as Record<string, any> : null;
-    } catch {
-        return null;
-    }
-}
-
-function buildHandoffValidation(tree: any[]): HandoffValidation {
-    const reportPath = "VALIDATION_REPORT.json";
-    const scriptPath = "scripts/validate-generated-handoff.mjs";
-    const command = "npm run validate:handoff";
-    const report = parseJsonObject(getFileContentByPath(tree, reportPath));
-    const summarySource =
-        report && report.summary && typeof report.summary === "object"
-            ? report.summary as Record<string, any>
-            : {};
-    const issues = Array.isArray(report?.issues)
-        ? report.issues
-            .filter((issue): issue is Record<string, any> => Boolean(issue && typeof issue === "object"))
-            .map((issue) => ({
-                code: typeof issue.code === "string" && issue.code.trim() ? issue.code.trim() : "UNKNOWN",
-                message: typeof issue.message === "string" && issue.message.trim() ? issue.message.trim() : "Unknown validation issue.",
-                details: typeof issue.details === "string" && issue.details.trim() ? issue.details.trim() : undefined
-            }))
-        : [];
-    const passFlag = typeof report?.pass === "boolean" ? report.pass : null;
-    const rawStatus = typeof report?.status === "string" ? report.status.trim().toLowerCase() : "";
-
-    let status: HandoffValidation["status"] = "pending";
-    if (!report) {
-        status = "failed";
-    } else if (rawStatus === "pending") {
-        status = "pending";
-    } else if (passFlag === true || rawStatus === "passed" || rawStatus === "pass" || rawStatus === "success") {
-        status = "passed";
-    } else if (passFlag === false || rawStatus === "failed" || rawStatus === "fail" || rawStatus === "error") {
-        status = "failed";
-    } else if (issues.length > 0) {
-        status = "failed";
-    }
-
-    return {
-        status,
-        command,
-        reportPath,
-        scriptPath,
-        updatedAt: typeof report?.generatedAt === "string" && report.generatedAt.trim()
-            ? report.generatedAt.trim()
-            : undefined,
-        summary: {
-            placeholdersRemaining: typeof summarySource.placeholdersRemaining === "boolean"
-                ? summarySource.placeholdersRemaining
-                : issues.some((issue) => issue.code === "PLACEHOLDERS_REMAINING"),
-            lintPassed: typeof summarySource.lintPassed === "boolean"
-                ? summarySource.lintPassed
-                : status === "passed",
-            typecheckPassed: typeof summarySource.typecheckPassed === "boolean"
-                ? summarySource.typecheckPassed
-                : status === "passed",
-            buildPassed: typeof summarySource.buildPassed === "boolean"
-                ? summarySource.buildPassed
-                : status === "passed"
-        },
-        issues
     };
 }
 
@@ -4722,244 +4591,6 @@ function buildQualitySection(filePath: string, input: { usesZod: boolean }) {
     }
 
     return lines.join("\n");
-}
-
-function buildValidationReportSeed() {
-    return JSON.stringify({
-        version: "handoff_validation_report_v1",
-        status: "pending",
-        generatedAt: new Date().toISOString(),
-        summary: {
-            placeholdersRemaining: true,
-            lintPassed: false,
-            typecheckPassed: false,
-            buildPassed: false
-        },
-        commands: [],
-        issues: [
-            {
-                code: "PENDING_AI_IDE_EXECUTION",
-                message: "Run `npm run validate:handoff` after AI IDE completes all implementation tasks."
-            }
-        ]
-    }, null, 2);
-}
-
-function buildGeneratedHandoffValidatorScript() {
-    return [
-        "#!/usr/bin/env node",
-        "",
-        "import fsp from \"node:fs/promises\";",
-        "import path from \"node:path\";",
-        "import { spawn } from \"node:child_process\";",
-        "",
-        "const REPORT_PATH = path.resolve(process.cwd(), \"VALIDATION_REPORT.json\");",
-        "const IGNORE_DIRS = new Set([\"node_modules\", \".git\", \".next\", \"dist\", \"build\", \"coverage\"]);",
-        "",
-        "function quoteForCmdArg(value) {",
-        "  if (!value) return '\"\"';",
-        "  const escaped = value.replace(/\"/g, '\"\"');",
-        "  return /[ \\t&()^<>|]/.test(value) ? `\"${escaped}\"` : escaped;",
-        "}",
-        "",
-        "function spawnPortable(command, args, cwd) {",
-        "  if (process.platform === \"win32\") {",
-        "    const commandLine = [command, ...args.map((arg) => quoteForCmdArg(String(arg)))].join(\" \");",
-        "    return spawn(\"cmd.exe\", [\"/d\", \"/s\", \"/c\", commandLine], { cwd, stdio: [\"ignore\", \"pipe\", \"pipe\"], windowsHide: true });",
-        "  }",
-        "  return spawn(command, args, { cwd, stdio: [\"ignore\", \"pipe\", \"pipe\"], windowsHide: true });",
-        "}",
-        "",
-        "function truncate(text, maxChars = 4000) {",
-        "  const normalized = (text || \"\").trim();",
-        "  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars)}...`;",
-        "}",
-        "",
-        "function isCodeFile(filePath) {",
-        "  return /\\.(ts|tsx|js|jsx|mjs|cjs|css)$/i.test(filePath);",
-        "}",
-        "",
-        "function isPlaceholderContent(filePath, content) {",
-        "  const source = (content || \"\").trim();",
-        "  if (!source || !isCodeFile(filePath)) return false;",
-        "  return (",
-        "    /GENERATION PENDING/i.test(source) ||",
-        "    /^#\\s+(Page|Component|API|Layout|Module|Type)\\s+Spec/i.test(source) ||",
-        "    /##\\s+Role\\s*&\\s*Responsibility/i.test(source) ||",
-        "    /##\\s+Core\\s+Interactions/i.test(source) ||",
-        "    /##\\s+UI\\s+Requirements/i.test(source)",
-        "  );",
-        "}",
-        "",
-        "async function collectFiles(dir, prefix = \"\") {",
-        "  const entries = await fsp.readdir(dir, { withFileTypes: true });",
-        "  const files = [];",
-        "  for (const entry of entries) {",
-        "    if (IGNORE_DIRS.has(entry.name)) continue;",
-        "    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;",
-        "    const absolutePath = path.join(dir, entry.name);",
-        "    if (entry.isDirectory()) {",
-        "      files.push(...await collectFiles(absolutePath, relativePath));",
-        "      continue;",
-        "    }",
-        "    files.push(relativePath);",
-        "  }",
-        "  return files;",
-        "}",
-        "",
-        "async function readPackageJson() {",
-        "  const packageJson = JSON.parse(await fsp.readFile(path.resolve(process.cwd(), \"package.json\"), \"utf8\"));",
-        "  return packageJson && typeof packageJson === \"object\" ? packageJson : {};",
-        "}",
-        "",
-        "function collectDependencyNames(packageJson) {",
-        "  return new Set([",
-        "    ...Object.keys(packageJson?.dependencies || {}),",
-        "    ...Object.keys(packageJson?.devDependencies || {}),",
-        "    ...Object.keys(packageJson?.peerDependencies || {})",
-        "  ]);",
-        "}",
-        "",
-        "function buildCommands(packageJson) {",
-        "  const scripts = packageJson && typeof packageJson === \"object\" && packageJson.scripts && typeof packageJson.scripts === \"object\" ? packageJson.scripts : {};",
-        "  const dependencies = collectDependencyNames(packageJson);",
-        "  const hasScript = (...names) => names.some((name) => typeof scripts[name] === \"string\" && scripts[name].trim().length > 0);",
-        "  const commands = [];",
-        "",
-        "  if (hasScript(\"lint\")) {",
-        "    commands.push({ name: \"lint\", command: \"npm\", args: [\"run\", \"lint\"] });",
-        "  } else if (dependencies.has(\"eslint\") || dependencies.has(\"@eslint/js\")) {",
-        "    commands.push({ name: \"lint\", command: \"npx\", args: [\"eslint\", \".\"] });",
-        "  } else {",
-        "    commands.push({ name: \"lint\", skipped: true, reason: \"Lint is not configured.\" });",
-        "  }",
-        "",
-        "  if (hasScript(\"type-check\")) {",
-        "    commands.push({ name: \"typecheck\", command: \"npm\", args: [\"run\", \"type-check\"] });",
-        "  } else if (hasScript(\"typecheck\")) {",
-        "    commands.push({ name: \"typecheck\", command: \"npm\", args: [\"run\", \"typecheck\"] });",
-        "  } else if (dependencies.has(\"typescript\")) {",
-        "    commands.push({ name: \"typecheck\", command: \"npx\", args: [\"tsc\", \"--noEmit\"] });",
-        "  } else {",
-        "    commands.push({ name: \"typecheck\", skipped: true, reason: \"TypeScript type-check is not configured.\" });",
-        "  }",
-        "",
-        "  if (hasScript(\"build\")) {",
-        "    commands.push({ name: \"build\", command: \"npm\", args: [\"run\", \"build\"] });",
-        "  } else if (dependencies.has(\"next\")) {",
-        "    commands.push({ name: \"build\", command: \"npx\", args: [\"next\", \"build\"] });",
-        "  } else if (dependencies.has(\"vite\")) {",
-        "    commands.push({ name: \"build\", command: \"npx\", args: [\"vite\", \"build\"] });",
-        "  } else {",
-        "    commands.push({ name: \"build\", skipped: true, reason: \"Build command is not configured.\" });",
-        "  }",
-        "",
-        "  return commands;",
-        "}",
-        "",
-        "function runCommand(command, args) {",
-        "  return new Promise((resolve) => {",
-        "    const child = spawnPortable(command, args, process.cwd());",
-        "    let stdout = \"\";",
-        "    let stderr = \"\";",
-        "    child.stdout.on(\"data\", (chunk) => { stdout += chunk.toString(); });",
-        "    child.stderr.on(\"data\", (chunk) => { stderr += chunk.toString(); });",
-        "    child.on(\"error\", (error) => resolve({ ok: false, exitCode: 1, stdout, stderr: `${stderr}\\n${error.message}`.trim() }));",
-        "    child.on(\"close\", (code) => resolve({ ok: code === 0, exitCode: typeof code === \"number\" ? code : 1, stdout, stderr }));",
-        "  });",
-        "}",
-        "",
-        "async function writeReport(report) {",
-        "  await fsp.writeFile(REPORT_PATH, `${JSON.stringify(report, null, 2)}\\n`, \"utf8\");",
-        "  process.stdout.write(`${JSON.stringify(report, null, 2)}\\n`);",
-        "}",
-        "",
-        "async function main() {",
-        "  const files = await collectFiles(process.cwd());",
-        "  const placeholderFiles = [];",
-        "  for (const filePath of files) {",
-        "    const content = await fsp.readFile(path.resolve(process.cwd(), filePath), \"utf8\").catch(() => \"\");",
-        "    if (isPlaceholderContent(filePath, content)) placeholderFiles.push(filePath);",
-        "  }",
-        "",
-        "  const report = {",
-        "    version: \"handoff_validation_report_v1\",",
-        "    generatedAt: new Date().toISOString(),",
-        "    pass: false,",
-        "    summary: { placeholdersRemaining: placeholderFiles.length > 0, lintPassed: false, typecheckPassed: false, buildPassed: false },",
-        "    commands: [],",
-        "    issues: []",
-        "  };",
-        "",
-        "  if (placeholderFiles.length > 0) {",
-        "    report.issues.push({ code: \"PLACEHOLDERS_REMAINING\", message: \"Placeholder/spec files are still present.\", details: placeholderFiles.slice(0, 20).join(\", \") });",
-        "    await writeReport(report);",
-        "    process.exitCode = 1;",
-        "    return;",
-        "  }",
-        "",
-        "  const packageJson = await readPackageJson();",
-        "  for (const item of buildCommands(packageJson)) {",
-        "    if (item.skipped) {",
-        "      report.commands.push({",
-        "        name: item.name,",
-        "        command: \"\",",
-        "        ok: true,",
-        "        exitCode: 0,",
-        "        skipped: true,",
-        "        stdout: \"\",",
-        "        stderr: item.reason",
-        "      });",
-        "      if (item.name === \"lint\") report.summary.lintPassed = true;",
-        "      if (item.name === \"typecheck\") report.summary.typecheckPassed = true;",
-        "      if (item.name === \"build\") report.summary.buildPassed = true;",
-        "      continue;",
-        "    }",
-        "",
-        "    const result = await runCommand(item.command, item.args);",
-        "    report.commands.push({",
-        "      name: item.name,",
-        "      command: `${item.command} ${item.args.join(\" \")}`,",
-        "      ok: result.ok,",
-        "      exitCode: result.exitCode,",
-        "      skipped: false,",
-        "      stdout: truncate(result.stdout),",
-        "      stderr: truncate(result.stderr)",
-        "    });",
-        "    if (item.name === \"lint\") report.summary.lintPassed = result.ok;",
-        "    if (item.name === \"typecheck\") report.summary.typecheckPassed = result.ok;",
-        "    if (item.name === \"build\") report.summary.buildPassed = result.ok;",
-        "    if (!result.ok) {",
-        "      report.issues.push({ code: `${item.name.toUpperCase()}_FAILED`, message: `${item.name} command failed.`, details: truncate(result.stderr || result.stdout) });",
-        "    }",
-        "  }",
-        "",
-        "  report.pass = report.issues.length === 0;",
-        "  await writeReport(report);",
-        "  if (!report.pass) process.exitCode = 1;",
-        "}",
-        "",
-        "main().catch(async (error) => {",
-        "  const report = {",
-        "    version: \"handoff_validation_report_v1\",",
-        "    generatedAt: new Date().toISOString(),",
-        "    pass: false,",
-        "    summary: { placeholdersRemaining: false, lintPassed: false, typecheckPassed: false, buildPassed: false },",
-        "    commands: [],",
-        "    issues: [{ code: \"VALIDATOR_ERROR\", message: error instanceof Error ? error.message : String(error) }]",
-        "  };",
-        "  await writeReport(report).catch(() => undefined);",
-        "  process.exitCode = 1;",
-        "});",
-        ""
-    ].join("\n");
-}
-
-function ensureValidationAssets(input: {
-    tree: any[];
-}) {
-    upsertFileByPath(input.tree, "scripts/validate-generated-handoff.mjs", buildGeneratedHandoffValidatorScript());
-    upsertFileByPath(input.tree, "VALIDATION_REPORT.json", buildValidationReportSeed());
 }
 
 function buildTemplateSection(filePath: string, input: { usesZod: boolean }) {
