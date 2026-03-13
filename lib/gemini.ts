@@ -47,9 +47,18 @@ function normalizeProvider(value: string | undefined) {
 const OPENAI_API_KEY = readEnvString("OPENAI_API_KEY");
 const OPENAI_MODEL = readEnvString("OPENAI_MODEL", "gpt-5-mini");
 const OPENAI_API_BASE_URL = readEnvString("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_REASONING_EFFORT_RAW = readEnvString("OPENAI_REASONING_EFFORT", "minimal").toLowerCase();
+const OPENAI_REASONING_EFFORT = (
+    OPENAI_REASONING_EFFORT_RAW === "minimal" ||
+    OPENAI_REASONING_EFFORT_RAW === "low" ||
+    OPENAI_REASONING_EFFORT_RAW === "medium" ||
+    OPENAI_REASONING_EFFORT_RAW === "high"
+)
+    ? OPENAI_REASONING_EFFORT_RAW
+    : "minimal";
 const OPENAI_MAX_OUTPUT_TOKENS = Math.min(
-    65_536,
-    Math.max(512, readEnvNumber("OPENAI_MAX_OUTPUT_TOKENS", 32_768))
+    128_000,
+    Math.max(1_024, readEnvNumber("OPENAI_MAX_OUTPUT_TOKENS", 65_536))
 );
 const OPENAI_TIMEOUT_MS = Math.min(
     600_000,
@@ -472,6 +481,12 @@ function buildOpenAITextConfig(jsonMode: boolean) {
     };
 }
 
+function buildOpenAIReasoningConfig() {
+    return {
+        effort: OPENAI_REASONING_EFFORT
+    };
+}
+
 async function requestOpenAIResponse(body: Record<string, unknown>) {
     if (!OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY is missing.");
@@ -746,6 +761,7 @@ async function generateTextWithOpenAI(
         model: OPENAI_MODEL,
         input: finalPrompt,
         max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        reasoning: buildOpenAIReasoningConfig(),
         text: buildOpenAITextConfig(Boolean(options.jsonMode))
     });
 
@@ -766,6 +782,7 @@ async function generateTextWithOpenAIMessages(
         instructions: systemInstructionText,
         input: buildOpenAIInput(messages),
         max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        reasoning: buildOpenAIReasoningConfig(),
         text: buildOpenAITextConfig(false)
     });
 
@@ -952,6 +969,7 @@ async function* streamWithOpenAI(messages: Message[], systemInstructionText: str
         instructions: systemInstructionText,
         input: buildOpenAIInput(messages),
         max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        reasoning: buildOpenAIReasoningConfig(),
         text: buildOpenAITextConfig(false),
         stream: true
     });
