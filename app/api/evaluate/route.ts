@@ -122,6 +122,24 @@ function buildFallbackQuestion(output: string, language: "zh" | "en") {
         : "Could you confirm this direction so I can proceed?";
 }
 
+function buildFallbackOptions(language: "zh" | "en") {
+    if (language === "zh") {
+        return [
+            "按你的建议继续::按你的建议继续推进",
+            "我来补充细节::我来补充更多关键信息",
+            "给我常见选项::请给我常见可选方案",
+            "我暂时不确定::我暂时不确定，请给默认建议"
+        ];
+    }
+
+    return [
+        "Proceed with your recommendation::Proceed with your recommendation.",
+        "I will add more detail::I will add more detail.",
+        "Show me common options::Show me common options.",
+        "I am not sure yet::I am not sure yet. Please use the default approach."
+    ];
+}
+
 function getEvaluateFallbackMessage(
     language: "zh" | "en",
     key: "high_demand" | "empty_before_content" | "service_unavailable" | "no_output"
@@ -355,8 +373,12 @@ export async function POST(req: Request) {
                 };
 
                 const enqueueQuestionFallback = (message: string) => {
-                    safeEnqueue(`<question>${message} (ref: ${requestId})</question>`);
+                    const optionsBlock = buildFallbackOptions(responseLanguage).join("\n");
+                    safeEnqueue(
+                        `<question>${message} (ref: ${requestId})</question>\n<options>${optionsBlock}</options>`
+                    );
                     fallbackQuestionInjected = true;
+                    sawQuestionTag = true;
                 };
 
                 // Send an early byte to reduce upstream gateway idle timeouts.
@@ -482,7 +504,7 @@ export async function POST(req: Request) {
                         enqueueQuestionFallback(getEvaluateFallbackMessage(responseLanguage, "no_output"));
                     } else if (emittedMeaningfulChunk && !sawQuestionTag && !fallbackQuestionInjected) {
                         console.warn(
-                            `[evaluate][${requestId}] missingQuestionTag streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
+                            `[evaluate][${requestId}] missingQuestionTag injectingFallback streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
                         enqueueQuestionFallback(buildFallbackQuestion(fullOutput, responseLanguage));
                     }

@@ -1272,6 +1272,7 @@ export async function* streamEvaluateInput(
     context?: string,
     options?: EvaluateRuntimeOptions
 ) {
+    const activeProvider = getActiveAiProvider();
     const maxContextChars = 12000;
     const maxSourceContextChars = 6000;
     const maxDesignMemoryChars = 14000;
@@ -1305,11 +1306,13 @@ export async function* streamEvaluateInput(
     const responseLanguageBlock = options?.outputLanguage === "zh"
         ? `\n\n# Strict Response Language\nAll human-readable output must be in Simplified Chinese. Keep XML tags in English, but every question, summary, option label, note, and explanation must remain in Chinese. Do not switch back to English unless quoting code, file paths, package names, or API identifiers.`
         : `\n\n# Strict Response Language\nAll human-readable output must be in English. Keep XML tags in English, and do not switch to Chinese unless quoting user-provided content.`;
+    const providerOutputContractBlock = activeProvider === "openai"
+        ? `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing. You MUST always include one complete <question> block and one complete <options> block before ending the response.\n- Never omit <question>, even if architecture is already clear.\n- If no clarification is strictly required, use <question> to state the recommended next step and ask the user for a light confirmation.\n- If options are uncertain, still include 3-4 concise options in the required "Label::Reply" format.\n- Do not stop after <readiness> or summary sections. The response is incomplete until <question> and <options> are both present.`
+        : "";
 
-    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}${responseLanguageBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
+    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}${responseLanguageBlock}${providerOutputContractBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
-        const activeProvider = getActiveAiProvider();
         const forceGeminiBackup = options?.preferBackupModel === true && hasGeminiKey();
         console.log(
             `[AI] Evaluate provider routing configured=${activeProvider} hasOpenAI=${hasOpenAiKey()} hasGemini=${hasGeminiKey()} claudeCooldown=${shouldSkipClaude()}`
