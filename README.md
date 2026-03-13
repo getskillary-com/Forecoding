@@ -35,7 +35,7 @@ The primary durable artifact is the `ArchitecturePack`, not the chat transcript.
 - React 19
 - TypeScript
 - Firebase Auth + Firestore
-- Gemini / Claude provider abstraction
+- OpenAI / Gemini / Claude provider abstraction
 - Stripe Checkout
 
 ## Local development
@@ -52,6 +52,11 @@ Open `http://localhost:3000`.
 AI provider:
 
 ```env
+AI_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-5-mini
+
+# or
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key
 

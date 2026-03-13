@@ -48,8 +48,16 @@ env:
     secret: GEMINI_API_KEY
     availability:
       - RUNTIME
+  - variable: OPENAI_API_KEY
+    secret: OPENAI_API_KEY
+    availability:
+      - RUNTIME
   - variable: AI_PROVIDER
-    value: "gemini"
+    value: "openai"
+    availability:
+      - RUNTIME
+  - variable: OPENAI_MODEL
+    value: "gpt-5-mini"
     availability:
       - RUNTIME
   - variable: EMAIL_SERVER

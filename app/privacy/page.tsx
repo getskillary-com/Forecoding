@@ -52,7 +52,7 @@ export default function PrivacyPage() {
             <ul className="list-disc pl-6 space-y-1">
               <li>Stripe (payment processing)</li>
               <li>Google Cloud / Firebase (cloud hosting and database services)</li>
-              <li>Google Gemini API (AI model processing)</li>
+              <li>OpenAI and other configured AI model providers (AI model processing)</li>
               <li>Email service providers (verification and notification delivery)</li>
             </ul>
           </section>

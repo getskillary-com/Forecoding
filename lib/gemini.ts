@@ -38,11 +38,35 @@ function readEnvNumber(name: string, fallback: number) {
 
 function normalizeProvider(value: string | undefined) {
     const raw = (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+    if (raw === "openai" || raw === "gpt") return "openai";
     if (raw === "claude" || raw === "anthropic") return "claude";
     if (raw === "gemini" || raw === "google") return "gemini";
     return "";
 }
 
+const OPENAI_API_KEY = readEnvString("OPENAI_API_KEY");
+const OPENAI_MODEL = readEnvString("OPENAI_MODEL", "gpt-5-mini");
+const OPENAI_API_BASE_URL = readEnvString("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_MAX_OUTPUT_TOKENS = Math.min(
+    65_536,
+    Math.max(512, readEnvNumber("OPENAI_MAX_OUTPUT_TOKENS", 32_768))
+);
+const OPENAI_TIMEOUT_MS = Math.min(
+    600_000,
+    Math.max(10_000, readEnvNumber("OPENAI_TIMEOUT_MS", 300_000))
+);
+const OPENAI_RETRY_BASE_MS = Math.min(
+    2_000,
+    Math.max(100, readEnvNumber("OPENAI_RETRY_BASE_MS", 500))
+);
+const OPENAI_RETRY_MAX_MS = Math.min(
+    8_000,
+    Math.max(500, readEnvNumber("OPENAI_RETRY_MAX_MS", 4_000))
+);
+const OPENAI_RETRY_JITTER_MS = Math.min(
+    1_000,
+    Math.max(0, readEnvNumber("OPENAI_RETRY_JITTER_MS", 250))
+);
 const CLAUDE_API_KEY = readEnvString("CLAUDE_API_KEY") || readEnvString("ANTHROPIC_API_KEY");
 const CLAUDE_MODEL = readEnvString("CLAUDE_MODEL", "claude-opus-4-6");
 const CLAUDE_API_BASE_URL = readEnvString("CLAUDE_API_BASE_URL", "https://api.anthropic.com").replace(/\/+$/, "");
@@ -69,14 +93,16 @@ const GEMINI_STREAM_RETRY_JITTER_MS = Math.min(
 );
 
 const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
-    (GEMINI_API_KEY
+    (OPENAI_API_KEY
+        ? "openai"
+        : GEMINI_API_KEY
         ? "gemini"
         : CLAUDE_API_KEY
         ? "claude"
-        : "gemini");
+        : "openai");
 
 // Initialize Gemini Client
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 // Model Configuration
 // User explicitly requested gemini-2.5-flash
@@ -84,15 +110,30 @@ const CORE_MODEL = "gemini-2.5-flash";
 const BACKUP_MODEL = "gemini-2.5-flash";
 
 export function getActiveAiProvider() {
-    return AI_PROVIDER || "gemini";
+    return AI_PROVIDER || "openai";
+}
+
+function isOpenAiProvider() {
+    return AI_PROVIDER === "openai";
 }
 
 function isClaudeProvider() {
     return AI_PROVIDER === "claude";
 }
 
+function hasOpenAiKey() {
+    return Boolean(OPENAI_API_KEY);
+}
+
 function hasGeminiKey() {
     return Boolean(GEMINI_API_KEY);
+}
+
+function getGeminiClient() {
+    if (!genAI) {
+        throw new Error("GEMINI_API_KEY is missing.");
+    }
+    return genAI;
 }
 
 let claudeCooldownUntil = 0;
@@ -123,6 +164,25 @@ const CLAUDE_RETRYABLE_ERROR_PATTERNS = [
     /temporarily unavailable/i,
     /timed out/i,
     /timeout/i,
+    /econnreset/i,
+    /socket hang up/i
+];
+
+const OPENAI_RETRYABLE_ERROR_PATTERNS = [
+    /\b408\b/i,
+    /\b409\b/i,
+    /\b429\b/i,
+    /\b500\b/i,
+    /\b502\b/i,
+    /\b503\b/i,
+    /\b504\b/i,
+    /rate limit/i,
+    /temporarily unavailable/i,
+    /service unavailable/i,
+    /overloaded/i,
+    /timed out/i,
+    /timeout/i,
+    /api_connection_error/i,
     /econnreset/i,
     /socket hang up/i
 ];
@@ -159,6 +219,11 @@ function isRetryableClaudeStreamError(error: unknown) {
     return CLAUDE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+function isRetryableOpenAiError(error: unknown) {
+    const message = getErrorMessage(error);
+    return OPENAI_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
 function isRetryableGeminiCoreError(error: unknown) {
     const message = getErrorMessage(error);
     return GEMINI_CORE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
@@ -179,13 +244,14 @@ async function withFallback<T>(
     operation: (model: any) => Promise<T>,
     isJsonMode: boolean = false
 ): Promise<T> {
+    const client = getGeminiClient();
     const useBackupFirst = shouldSkipGeminiCore();
     const primaryModelName = useBackupFirst ? BACKUP_MODEL : CORE_MODEL;
     const fallbackModelName = useBackupFirst ? null : BACKUP_MODEL;
 
     try {
         console.log(`[AI] Attempting with model: ${primaryModelName}`);
-        const model = genAI.getGenerativeModel({
+        const model = client.getGenerativeModel({
             model: primaryModelName,
             generationConfig: isJsonMode ? { responseMimeType: "application/json" } : undefined
         });
@@ -202,7 +268,7 @@ async function withFallback<T>(
         }
 
         console.warn(`[AI] ${primaryModelName} failed (${message}). Falling back to ${fallbackModelName}`);
-        const fallbackModel = genAI.getGenerativeModel({
+        const fallbackModel = client.getGenerativeModel({
             model: fallbackModelName,
             generationConfig: isJsonMode ? { responseMimeType: "application/json" } : undefined
         });
@@ -302,6 +368,115 @@ function buildClaudeMessages(messages: Message[]) {
     }));
 }
 
+type OpenAIInputTextBlock = { type: "input_text"; text: string };
+type OpenAIInputImageBlock = { type: "input_image"; image_url: string; detail: "auto" };
+type OpenAIInputFileBlock = { type: "input_file"; filename: string; file_data: string };
+type OpenAIInputBlock = OpenAIInputTextBlock | OpenAIInputImageBlock | OpenAIInputFileBlock;
+
+function stripBase64Prefix(content: string) {
+    return content.includes("base64,") ? content.split("base64,")[1] : content;
+}
+
+function buildDataUrl(mimeType: string, content: string) {
+    if (content.startsWith("data:")) return content;
+    return `data:${mimeType};base64,${stripBase64Prefix(content)}`;
+}
+
+function buildOpenAIContent(message: Message): OpenAIInputBlock[] {
+    const blocks: OpenAIInputBlock[] = [];
+
+    if (message.content?.trim()) {
+        blocks.push({ type: "input_text", text: message.content });
+    }
+
+    for (const attachment of message.attachments || []) {
+        if (attachment.type === "image") {
+            blocks.push({
+                type: "input_image",
+                image_url: buildDataUrl(attachment.mimeType, attachment.content),
+                detail: "auto"
+            });
+            continue;
+        }
+
+        if (attachment.type === "pdf") {
+            blocks.push({
+                type: "input_file",
+                filename: attachment.name || "attachment.pdf",
+                file_data: stripBase64Prefix(attachment.content)
+            });
+            continue;
+        }
+
+        blocks.push({
+            type: "input_text",
+            text: `\n\n[Attached File: ${attachment.name}]\n${attachment.content}`
+        });
+    }
+
+    if (!blocks.length) {
+        blocks.push({ type: "input_text", text: "" });
+    }
+
+    return blocks;
+}
+
+function buildOpenAIInput(messages: Message[]) {
+    return messages.map((message) => ({
+        type: "message" as const,
+        role: message.role,
+        content: buildOpenAIContent(message)
+    }));
+}
+
+function buildOpenAITextConfig(jsonMode: boolean) {
+    if (jsonMode) {
+        return {
+            format: { type: "json_object" as const }
+        };
+    }
+
+    return {
+        format: { type: "text" as const },
+        verbosity: "medium" as const
+    };
+}
+
+async function requestOpenAIResponse(body: Record<string, unknown>) {
+    if (!OPENAI_API_KEY) {
+        throw new Error("OPENAI_API_KEY is missing.");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(`${OPENAI_API_BASE_URL}/responses`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                Authorization: `Bearer ${OPENAI_API_KEY}`
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`[OpenAI] ${response.status}: ${clipErrorText(errorBody)}`);
+        }
+
+        return response;
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+            throw new Error(`[OpenAI] Request timed out after ${OPENAI_TIMEOUT_MS}ms.`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 function splitSseEvents(buffer: string) {
     // Some gateways normalize SSE lines to CRLF. Normalize before event splitting.
     const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -317,6 +492,139 @@ function parseClaudeTextResponse(payload: unknown): string {
         .filter((block) => block?.type === "text" && typeof block.text === "string")
         .map((block) => block.text || "")
         .join("");
+}
+
+function parseOpenAITextResponse(payload: unknown): string {
+    if (!payload || typeof payload !== "object") return "";
+
+    const response = payload as {
+        output_text?: string;
+        output?: Array<{
+            type?: string;
+            content?: Array<{ type?: string; text?: string; refusal?: string }>;
+        }>;
+    };
+
+    if (typeof response.output_text === "string" && response.output_text.trim()) {
+        return response.output_text;
+    }
+
+    if (!Array.isArray(response.output)) return "";
+
+    const fragments: string[] = [];
+    for (const item of response.output) {
+        if (!Array.isArray(item?.content)) continue;
+        for (const block of item.content) {
+            if ((block?.type === "output_text" || block?.type === "text") && typeof block.text === "string") {
+                fragments.push(block.text);
+                continue;
+            }
+
+            if (block?.type === "refusal" && typeof block.refusal === "string") {
+                fragments.push(block.refusal);
+            }
+        }
+    }
+
+    return fragments.join("");
+}
+
+function parseSseEnvelope(rawEvent: string) {
+    let eventType = "";
+    const dataLines: string[] = [];
+
+    for (const line of rawEvent.split("\n")) {
+        if (line.startsWith("event:")) {
+            eventType = line.slice(6).trim();
+            continue;
+        }
+
+        if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+        }
+    }
+
+    return {
+        eventType,
+        data: dataLines.join("\n")
+    };
+}
+
+function parseOpenAISseChunk(rawEvent: string) {
+    const { eventType, data } = parseSseEnvelope(rawEvent);
+    if (!data) return { text: "", error: "", done: false };
+    if (data === "[DONE]") return { text: "", error: "", done: true };
+
+    try {
+        const payload = JSON.parse(data) as {
+            type?: string;
+            delta?: string;
+            error?: { message?: string };
+            response?: { error?: { message?: string } };
+            message?: string;
+        };
+        const resolvedType = eventType || payload.type || "";
+
+        if (resolvedType === "response.output_text.delta") {
+            return { text: typeof payload.delta === "string" ? payload.delta : "", error: "", done: false };
+        }
+
+        if (resolvedType === "response.completed" || resolvedType === "response.output_text.done") {
+            return { text: "", error: "", done: true };
+        }
+
+        if (resolvedType === "error" || resolvedType === "response.failed") {
+            const message = payload.error?.message || payload.response?.error?.message || payload.message;
+            return { text: "", error: message || "OpenAI stream error.", done: false };
+        }
+    } catch {
+        return { text: "", error: "", done: false };
+    }
+
+    return { text: "", error: "", done: false };
+}
+
+async function generateTextWithOpenAI(
+    prompt: string,
+    options: { jsonMode?: boolean } = {}
+) {
+    const finalPrompt = options.jsonMode
+        ? `${prompt}\n\nIMPORTANT: Return ONLY valid JSON. No markdown, no commentary.`
+        : prompt;
+
+    const response = await requestOpenAIResponse({
+        model: OPENAI_MODEL,
+        input: finalPrompt,
+        max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        text: buildOpenAITextConfig(Boolean(options.jsonMode))
+    });
+
+    const payload = await response.json();
+    const text = parseOpenAITextResponse(payload);
+    if (!text) {
+        throw new Error("[OpenAI] Empty response text.");
+    }
+    return text;
+}
+
+async function generateTextWithOpenAIMessages(
+    messages: Message[],
+    systemInstructionText: string
+) {
+    const response = await requestOpenAIResponse({
+        model: OPENAI_MODEL,
+        instructions: systemInstructionText,
+        input: buildOpenAIInput(messages),
+        max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        text: buildOpenAITextConfig(false)
+    });
+
+    const payload = await response.json();
+    const text = parseOpenAITextResponse(payload);
+    if (!text) {
+        throw new Error("[OpenAI] Empty response text.");
+    }
+    return text;
 }
 
 async function generateTextWithClaude(
@@ -488,21 +796,82 @@ async function* streamWithClaude(messages: Message[], systemInstructionText: str
     }
 }
 
+async function* streamWithOpenAI(messages: Message[], systemInstructionText: string) {
+    const response = await requestOpenAIResponse({
+        model: OPENAI_MODEL,
+        instructions: systemInstructionText,
+        input: buildOpenAIInput(messages),
+        max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        text: buildOpenAITextConfig(false),
+        stream: true
+    });
+
+    if (!response.body) {
+        throw new Error("[OpenAI] Empty streaming body.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let emittedChunk = false;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const split = splitSseEvents(buffer);
+        const events = split.events;
+        buffer = split.remainder;
+
+        for (const rawEvent of events) {
+            const parsed = parseOpenAISseChunk(rawEvent);
+            if (parsed.error) throw new Error(parsed.error);
+            if (parsed.text) {
+                emittedChunk = true;
+                yield parsed.text;
+            }
+            if (parsed.done && emittedChunk) {
+                return;
+            }
+        }
+    }
+
+    if (buffer.trim()) {
+        const parsed = parseOpenAISseChunk(buffer);
+        if (parsed.error) throw new Error(parsed.error);
+        if (parsed.text) {
+            emittedChunk = true;
+            yield parsed.text;
+        }
+    }
+
+    if (!emittedChunk) {
+        const fallbackText = await generateTextWithOpenAIMessages(messages, systemInstructionText);
+        if (fallbackText.trim()) {
+            yield fallbackText;
+            return;
+        }
+        throw new Error("[OpenAI] Empty streaming and non-stream fallback response.");
+    }
+}
+
 async function* streamWithGemini(
     messages: Message[],
     systemInstructionText: string,
     preferBackupModel: boolean = false
 ) {
+    const client = getGeminiClient();
     const contents = buildGeminiContents(messages);
     const openStream = async (modelName: string) => {
-        const chatModel = genAI.getGenerativeModel({
+        const chatModel = client.getGenerativeModel({
             model: modelName,
             systemInstruction: systemInstructionText
         });
         return await chatModel.generateContentStream({ contents });
     };
     const generateNonStream = async (modelName: string) => {
-        const chatModel = genAI.getGenerativeModel({
+        const chatModel = client.getGenerativeModel({
             model: modelName,
             systemInstruction: systemInstructionText
         });
@@ -642,6 +1011,40 @@ async function* streamWithGemini(
 
 async function generateModelText(prompt: string, isJsonMode: boolean = false) {
     // Honor explicit provider selection on every request. Cooldown should not silently switch providers.
+    if (isOpenAiProvider()) {
+        const maxOpenAiAttempts = 2;
+        for (let attempt = 0; attempt < maxOpenAiAttempts; attempt++) {
+            try {
+                return await generateTextWithOpenAI(prompt, { jsonMode: isJsonMode });
+            } catch (error) {
+                const retryable = isRetryableOpenAiError(error);
+                const isLastAttempt = attempt >= maxOpenAiAttempts - 1;
+                const message = getErrorMessage(error);
+
+                if (retryable && !isLastAttempt) {
+                    const backoffMs = computeRetryDelayMs(
+                        OPENAI_RETRY_BASE_MS,
+                        OPENAI_RETRY_MAX_MS,
+                        OPENAI_RETRY_JITTER_MS,
+                        attempt
+                    );
+                    console.warn(
+                        `[AI] OpenAI request transient failure. Retrying in ${backoffMs}ms: ${message}`
+                    );
+                    await sleep(backoffMs);
+                    continue;
+                }
+
+                if (retryable && hasGeminiKey()) {
+                    console.warn(`[AI] OpenAI request unavailable. Falling back to Gemini: ${message}`);
+                    break;
+                }
+
+                throw error;
+            }
+        }
+    }
+
     if (isClaudeProvider()) {
         const maxClaudeAttempts = 2;
         for (let attempt = 0; attempt < maxClaudeAttempts; attempt++) {
@@ -740,7 +1143,7 @@ export async function* streamEvaluateInput(
         const activeProvider = getActiveAiProvider();
         const forceGeminiBackup = options?.preferBackupModel === true && hasGeminiKey();
         console.log(
-            `[AI] Evaluate provider routing configured=${activeProvider} hasGemini=${hasGeminiKey()} claudeCooldown=${shouldSkipClaude()}`
+            `[AI] Evaluate provider routing configured=${activeProvider} hasOpenAI=${hasOpenAiKey()} hasGemini=${hasGeminiKey()} claudeCooldown=${shouldSkipClaude()}`
         );
 
         if (forceGeminiBackup) {
@@ -755,7 +1158,53 @@ export async function* streamEvaluateInput(
             return;
         }
 
-        let shouldUseGeminiStream = !isClaudeProvider();
+        let shouldUseGeminiStream = !isClaudeProvider() && !isOpenAiProvider();
+
+        if (isOpenAiProvider()) {
+            const maxOpenAiAttempts = 2;
+            for (let attempt = 0; attempt < maxOpenAiAttempts; attempt++) {
+                let emittedAnyChunk = false;
+                try {
+                    for await (const chunk of streamWithOpenAI(messages, systemInstructionText)) {
+                        if (!chunk) continue;
+                        emittedAnyChunk = true;
+                        yield chunk;
+                    }
+                    return;
+                } catch (error) {
+                    const retryable = isRetryableOpenAiError(error);
+                    const isLastAttempt = attempt >= maxOpenAiAttempts - 1;
+                    const message = getErrorMessage(error);
+
+                    if (!emittedAnyChunk && retryable && !isLastAttempt) {
+                        const backoffMs = computeRetryDelayMs(
+                            OPENAI_RETRY_BASE_MS,
+                            OPENAI_RETRY_MAX_MS,
+                            OPENAI_RETRY_JITTER_MS,
+                            attempt
+                        );
+                        console.warn(
+                            `[AI] OpenAI stream transient failure. Retrying in ${backoffMs}ms: ${message}`
+                        );
+                        await sleep(backoffMs);
+                        continue;
+                    }
+
+                    if (!emittedAnyChunk && retryable && hasGeminiKey()) {
+                        console.warn(`[AI] OpenAI stream unavailable. Falling back to Gemini: ${message}`);
+                        shouldUseGeminiStream = true;
+                        break;
+                    }
+
+                    if (!emittedAnyChunk && retryable) {
+                        yield "<question>AI provider timeout. Please try again in a moment.</question>";
+                        return;
+                    }
+
+                    throw error;
+                }
+            }
+        }
 
         if (isClaudeProvider()) {
             const maxClaudeAttempts = 2;
