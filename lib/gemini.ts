@@ -371,7 +371,10 @@ function buildClaudeMessages(messages: Message[]) {
 type OpenAIInputTextBlock = { type: "input_text"; text: string };
 type OpenAIInputImageBlock = { type: "input_image"; image_url: string; detail: "auto" };
 type OpenAIInputFileBlock = { type: "input_file"; filename: string; file_data: string };
-type OpenAIInputBlock = OpenAIInputTextBlock | OpenAIInputImageBlock | OpenAIInputFileBlock;
+type OpenAIOutputTextBlock = { type: "output_text"; text: string };
+type OpenAIUserContentBlock = OpenAIInputTextBlock | OpenAIInputImageBlock | OpenAIInputFileBlock;
+type OpenAIAssistantContentBlock = OpenAIOutputTextBlock;
+type OpenAIInputBlock = OpenAIUserContentBlock | OpenAIAssistantContentBlock;
 
 function stripBase64Prefix(content: string) {
     return content.includes("base64,") ? content.split("base64,")[1] : content;
@@ -383,7 +386,25 @@ function buildDataUrl(mimeType: string, content: string) {
 }
 
 function buildOpenAIContent(message: Message): OpenAIInputBlock[] {
-    const blocks: OpenAIInputBlock[] = [];
+    if (message.role === "assistant") {
+        const assistantText = [
+            message.content?.trim() || "",
+            ...(message.attachments || []).map((attachment) => (
+                `[Previous assistant attachment omitted: ${attachment.name} (${attachment.mimeType})]`
+            ))
+        ]
+            .filter(Boolean)
+            .join("\n\n");
+
+        return [
+            {
+                type: "output_text",
+                text: assistantText
+            }
+        ];
+    }
+
+    const blocks: OpenAIUserContentBlock[] = [];
 
     if (message.content?.trim()) {
         blocks.push({ type: "input_text", text: message.content });
