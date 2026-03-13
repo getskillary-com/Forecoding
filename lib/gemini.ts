@@ -224,6 +224,15 @@ function isRetryableOpenAiError(error: unknown) {
     return OPENAI_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+function isRecoverableOpenAiNoContentError(error: unknown) {
+    const message = getErrorMessage(error);
+    return (
+        /empty response text/i.test(message) ||
+        /empty streaming and non-stream fallback response/i.test(message) ||
+        /no model output/i.test(message)
+    );
+}
+
 function isRetryableGeminiCoreError(error: unknown) {
     const message = getErrorMessage(error);
     return GEMINI_CORE_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
@@ -1159,6 +1168,7 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
                 return await generateTextWithOpenAI(prompt, { jsonMode: isJsonMode });
             } catch (error) {
                 const retryable = isRetryableOpenAiError(error);
+                const recoverableNoContent = isRecoverableOpenAiNoContentError(error);
                 const isLastAttempt = attempt >= maxOpenAiAttempts - 1;
                 const message = getErrorMessage(error);
 
@@ -1176,8 +1186,8 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
                     continue;
                 }
 
-                if (retryable && hasGeminiKey()) {
-                    console.warn(`[AI] OpenAI request unavailable. Falling back to Gemini: ${message}`);
+                if ((retryable || recoverableNoContent) && hasGeminiKey()) {
+                    console.warn(`[AI] OpenAI request unavailable before usable output. Falling back to Gemini: ${message}`);
                     break;
                 }
 
@@ -1314,6 +1324,7 @@ export async function* streamEvaluateInput(
                     return;
                 } catch (error) {
                     const retryable = isRetryableOpenAiError(error);
+                    const recoverableNoContent = isRecoverableOpenAiNoContentError(error);
                     const isLastAttempt = attempt >= maxOpenAiAttempts - 1;
                     const message = getErrorMessage(error);
 
@@ -1331,13 +1342,15 @@ export async function* streamEvaluateInput(
                         continue;
                     }
 
-                    if (!emittedAnyChunk && retryable && hasGeminiKey()) {
-                        console.warn(`[AI] OpenAI stream unavailable. Falling back to Gemini: ${message}`);
+                    if (!emittedAnyChunk && (retryable || recoverableNoContent) && hasGeminiKey()) {
+                        console.warn(
+                            `[AI] OpenAI stream unavailable before usable output. Falling back to Gemini: ${message}`
+                        );
                         shouldUseGeminiStream = true;
                         break;
                     }
 
-                    if (!emittedAnyChunk && retryable) {
+                    if (!emittedAnyChunk && (retryable || recoverableNoContent)) {
                         yield "<question>AI provider timeout. Please try again in a moment.</question>";
                         return;
                     }
