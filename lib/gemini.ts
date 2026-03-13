@@ -520,9 +520,16 @@ function parseOpenAITextResponse(payload: unknown): string {
 
     const response = payload as {
         output_text?: string;
+        status?: string;
         output?: Array<{
             type?: string;
-            content?: Array<{ type?: string; text?: string; refusal?: string }>;
+            text?: unknown;
+            refusal?: unknown;
+            content?: Array<{
+                type?: string;
+                text?: unknown;
+                refusal?: unknown;
+            }>;
         }>;
     };
 
@@ -532,22 +539,72 @@ function parseOpenAITextResponse(payload: unknown): string {
 
     if (!Array.isArray(response.output)) return "";
 
+    const readTextValue = (value: unknown): string => {
+        if (typeof value === "string") return value;
+        if (!value || typeof value !== "object") return "";
+        const candidate = value as { text?: unknown; value?: unknown };
+        if (typeof candidate.text === "string") return candidate.text;
+        if (typeof candidate.value === "string") return candidate.value;
+        return "";
+    };
+
     const fragments: string[] = [];
     for (const item of response.output) {
+        if (
+            (item?.type === "output_text" || item?.type === "text" || item?.type === "summary_text") &&
+            readTextValue(item.text)
+        ) {
+            fragments.push(readTextValue(item.text));
+        }
+
+        if (item?.type === "refusal" && readTextValue(item.refusal)) {
+            fragments.push(readTextValue(item.refusal));
+        }
+
         if (!Array.isArray(item?.content)) continue;
         for (const block of item.content) {
-            if ((block?.type === "output_text" || block?.type === "text") && typeof block.text === "string") {
-                fragments.push(block.text);
+            if (
+                (block?.type === "output_text" || block?.type === "text" || block?.type === "summary_text") &&
+                readTextValue(block.text)
+            ) {
+                fragments.push(readTextValue(block.text));
                 continue;
             }
 
-            if (block?.type === "refusal" && typeof block.refusal === "string") {
-                fragments.push(block.refusal);
+            if (block?.type === "refusal" && readTextValue(block.refusal)) {
+                fragments.push(readTextValue(block.refusal));
             }
         }
     }
 
     return fragments.join("");
+}
+
+function summarizeOpenAIResponse(payload: unknown) {
+    if (!payload || typeof payload !== "object") return "unparseable_payload";
+
+    const response = payload as {
+        status?: string;
+        output?: Array<{
+            type?: string;
+            content?: Array<{ type?: string }>;
+        }>;
+        incomplete_details?: { reason?: string };
+    };
+
+    const outputTypes = Array.isArray(response.output)
+        ? response.output.map((item) => item?.type || "unknown").join(",")
+        : "none";
+    const contentTypes = Array.isArray(response.output)
+        ? response.output
+            .flatMap((item) => Array.isArray(item?.content) ? item.content : [])
+            .map((item) => item?.type || "unknown")
+            .join(",")
+        : "none";
+    const status = response.status || "unknown";
+    const incompleteReason = response.incomplete_details?.reason || "none";
+
+    return `status=${status} incompleteReason=${incompleteReason} outputTypes=${outputTypes} contentTypes=${contentTypes}`;
 }
 
 function parseSseEnvelope(rawEvent: string) {
@@ -573,13 +630,20 @@ function parseSseEnvelope(rawEvent: string) {
 
 function parseOpenAISseChunk(rawEvent: string) {
     const { eventType, data } = parseSseEnvelope(rawEvent);
-    if (!data) return { text: "", error: "", done: false };
-    if (data === "[DONE]") return { text: "", error: "", done: true };
+    if (!data) return { text: "", error: "", done: false, finalText: false };
+    if (data === "[DONE]") return { text: "", error: "", done: true, finalText: false };
 
     try {
         const payload = JSON.parse(data) as {
             type?: string;
             delta?: string;
+            text?: string;
+            refusal?: string;
+            part?: {
+                type?: string;
+                text?: string;
+                refusal?: string;
+            };
             error?: { message?: string };
             response?: { error?: { message?: string } };
             message?: string;
@@ -587,22 +651,78 @@ function parseOpenAISseChunk(rawEvent: string) {
         const resolvedType = eventType || payload.type || "";
 
         if (resolvedType === "response.output_text.delta") {
-            return { text: typeof payload.delta === "string" ? payload.delta : "", error: "", done: false };
+            return {
+                text: typeof payload.delta === "string" ? payload.delta : "",
+                error: "",
+                done: false,
+                finalText: false
+            };
         }
 
-        if (resolvedType === "response.completed" || resolvedType === "response.output_text.done") {
-            return { text: "", error: "", done: true };
+        if (resolvedType === "response.content_part.done") {
+            if (
+                payload.part?.type === "output_text" ||
+                payload.part?.type === "text" ||
+                payload.part?.type === "summary_text"
+            ) {
+                return {
+                    text: payload.part.text || "",
+                    error: "",
+                    done: false,
+                    finalText: true
+                };
+            }
+
+            if (payload.part?.type === "refusal") {
+                return {
+                    text: payload.part.refusal || "",
+                    error: "",
+                    done: false,
+                    finalText: true
+                };
+            }
+        }
+
+        if (resolvedType === "response.output_text.done") {
+            return {
+                text: typeof payload.text === "string" ? payload.text : "",
+                error: "",
+                done: true,
+                finalText: true
+            };
+        }
+
+        if (resolvedType === "response.refusal.delta") {
+            return {
+                text: typeof payload.delta === "string" ? payload.delta : "",
+                error: "",
+                done: false,
+                finalText: false
+            };
+        }
+
+        if (resolvedType === "response.refusal.done") {
+            return {
+                text: typeof payload.refusal === "string" ? payload.refusal : "",
+                error: "",
+                done: true,
+                finalText: true
+            };
+        }
+
+        if (resolvedType === "response.completed" || resolvedType === "response.done") {
+            return { text: "", error: "", done: true, finalText: false };
         }
 
         if (resolvedType === "error" || resolvedType === "response.failed") {
             const message = payload.error?.message || payload.response?.error?.message || payload.message;
-            return { text: "", error: message || "OpenAI stream error.", done: false };
+            return { text: "", error: message || "OpenAI stream error.", done: false, finalText: false };
         }
     } catch {
-        return { text: "", error: "", done: false };
+        return { text: "", error: "", done: false, finalText: false };
     }
 
-    return { text: "", error: "", done: false };
+    return { text: "", error: "", done: false, finalText: false };
 }
 
 async function generateTextWithOpenAI(
@@ -623,7 +743,7 @@ async function generateTextWithOpenAI(
     const payload = await response.json();
     const text = parseOpenAITextResponse(payload);
     if (!text) {
-        throw new Error("[OpenAI] Empty response text.");
+        throw new Error(`[OpenAI] Empty response text. ${summarizeOpenAIResponse(payload)}`);
     }
     return text;
 }
@@ -643,7 +763,7 @@ async function generateTextWithOpenAIMessages(
     const payload = await response.json();
     const text = parseOpenAITextResponse(payload);
     if (!text) {
-        throw new Error("[OpenAI] Empty response text.");
+        throw new Error(`[OpenAI] Empty response text. ${summarizeOpenAIResponse(payload)}`);
     }
     return text;
 }
@@ -848,7 +968,7 @@ async function* streamWithOpenAI(messages: Message[], systemInstructionText: str
         for (const rawEvent of events) {
             const parsed = parseOpenAISseChunk(rawEvent);
             if (parsed.error) throw new Error(parsed.error);
-            if (parsed.text) {
+            if (parsed.text && (!parsed.finalText || !emittedChunk)) {
                 emittedChunk = true;
                 yield parsed.text;
             }
@@ -861,7 +981,7 @@ async function* streamWithOpenAI(messages: Message[], systemInstructionText: str
     if (buffer.trim()) {
         const parsed = parseOpenAISseChunk(buffer);
         if (parsed.error) throw new Error(parsed.error);
-        if (parsed.text) {
+        if (parsed.text && (!parsed.finalText || !emittedChunk)) {
             emittedChunk = true;
             yield parsed.text;
         }
