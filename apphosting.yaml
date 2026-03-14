@@ -53,7 +53,7 @@ env:
     availability:
       - RUNTIME
   - variable: AI_PROVIDER
-    value: "openai"
+    value: "gemini"
     availability:
       - RUNTIME
   - variable: OPENAI_MODEL

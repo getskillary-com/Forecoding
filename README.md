@@ -52,13 +52,13 @@ Open `http://localhost:3000`.
 AI provider:
 
 ```env
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+
+# or
 AI_PROVIDER=openai
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-5-mini
-
-# or
-AI_PROVIDER=gemini
-GEMINI_API_KEY=your_gemini_api_key
 
 # or
 AI_PROVIDER=claude

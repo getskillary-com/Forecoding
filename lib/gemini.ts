@@ -108,7 +108,7 @@ const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
         ? "gemini"
         : CLAUDE_API_KEY
         ? "claude"
-        : "openai");
+        : "gemini");
 
 // Initialize Gemini Client
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
@@ -119,7 +119,7 @@ const CORE_MODEL = "gemini-2.5-flash";
 const BACKUP_MODEL = "gemini-2.5-flash";
 
 export function getActiveAiProvider() {
-    return AI_PROVIDER || "openai";
+    return AI_PROVIDER || "gemini";
 }
 
 function isOpenAiProvider() {
