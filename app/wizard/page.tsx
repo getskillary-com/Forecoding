@@ -1032,6 +1032,7 @@ function normalizeMermaidForComparison(raw: string | null | undefined): string {
         .replace(/```mermaid\s*/gi, "")
         .replace(/```/g, "")
         .replace(/\r/g, "")
+        .replace(/<\s*\/\s*subgraph\s*>/gi, "\nend\n")
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
@@ -4440,6 +4441,7 @@ Do you want to start scaffold generation now?`;
                         // Fallback: cleanup potential raw code artifacts just in case
                         code = code.replace(/```mermaid\n?|```\n?/g, "").replace(/```$/g, "").trim();
                     }
+                    code = code.replace(/<\s*\/\s*subgraph\s*>/gi, "\nend\n").trim();
 
                     const normalizedCandidate = normalizeMermaidForComparison(code);
                     if (

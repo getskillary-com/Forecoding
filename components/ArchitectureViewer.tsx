@@ -100,6 +100,24 @@ function formatMermaidError(err: unknown) {
     return message;
 }
 
+function buildSafeMermaidId(raw: string) {
+    const normalized = raw.trim().toLowerCase();
+    const ascii = normalized
+        .replace(/<[^>]+>/g, " ")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+    if (ascii) return ascii;
+
+    let hash = 0;
+    for (const char of raw) {
+        hash = ((hash << 5) - hash) + char.charCodeAt(0);
+        hash |= 0;
+    }
+
+    return `group_${Math.abs(hash)}`;
+}
+
 function sanitizeMermaidCode(input: string) {
     const normalizedSource = input
         .replace(/```mermaid\s*/gi, "")
@@ -107,6 +125,7 @@ function sanitizeMermaidCode(input: string) {
         .replace(/\r/g, "")
         .replace(/\uFF08/g, "(")
         .replace(/\uFF09/g, ")")
+        .replace(/<\s*\/\s*subgraph\s*>/gi, "\nend\n")
         .trim();
 
     const lines = normalizedSource.split("\n");
@@ -167,6 +186,21 @@ function sanitizeMermaidCode(input: string) {
             return `${indent}subgraph ${idPart}["${label}"]`;
         }
 
+        const plainSubgraphMatch = line.match(/^(\s*)subgraph\s+(.+?)\s*$/);
+        if (plainSubgraphMatch) {
+            const indent = plainSubgraphMatch[1] || "";
+            const rawTitle = plainSubgraphMatch[2].trim();
+            const cleanedTitle = normalizeLabel(
+                rawTitle
+                    .replace(/^["']|["']$/g, "")
+                    .replace(/<[^>]+>/g, " ")
+                    .trim()
+            );
+            const safeId = buildSafeMermaidId(cleanedTitle || rawTitle);
+            changed = true;
+            return `${indent}subgraph ${safeId}["${cleanedTitle || rawTitle}"]`;
+        }
+
         // Normalize labels in node declarations, so parser is less fragile with punctuation/newlines.
         const normalizedNodes = line.replace(/([A-Za-z][\w-]*)\s*\[(.+?)\]/g, (_, nodeId: string, rawLabel: string) => {
             const label = normalizeLabel(rawLabel);
@@ -213,6 +247,13 @@ type ArchitectureViewerProps = {
     language: WorkspaceLanguage;
 };
 
+type HoveredNodeState = {
+    id: string;
+    label: string;
+    x: number;
+    y: number;
+} | null;
+
 export default function ArchitectureViewer({ code, onNodeSelect, language }: ArchitectureViewerProps) {
     const [svg, setSvg] = useState('');
     const [error, setError] = useState<string | null>(null);
@@ -224,6 +265,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     const [isDragging, setIsDragging] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+    const [hoveredNode, setHoveredNode] = useState<HoveredNodeState>(null);
     const dragOriginRef = useRef({ x: 0, y: 0 });
     const dragMovedRef = useRef(false);
     const mermaidRef = useRef<typeof import('mermaid').default | null>(null);
@@ -379,6 +421,83 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         };
     }, [isExpanded]);
 
+    const fitDiagramToViewport = useCallback(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const svgElement = container.querySelector("svg") as SVGSVGElement | null;
+        if (!svgElement) return;
+
+        let width = svgElement.viewBox?.baseVal?.width || 0;
+        let height = svgElement.viewBox?.baseVal?.height || 0;
+
+        if ((!width || !height) && typeof svgElement.getBBox === "function") {
+            try {
+                const bounds = svgElement.getBBox();
+                width = bounds.width || width;
+                height = bounds.height || height;
+            } catch {
+                // Ignore getBBox failures and fall back to explicit dimensions below.
+            }
+        }
+
+        if (!width || !height) {
+            const explicitWidth = Number.parseFloat(svgElement.getAttribute("width") || "0");
+            const explicitHeight = Number.parseFloat(svgElement.getAttribute("height") || "0");
+            width = explicitWidth || width;
+            height = explicitHeight || height;
+        }
+
+        if (!width || !height) {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+            return;
+        }
+
+        const containerWidth = Math.max(container.clientWidth, 1);
+        const containerHeight = Math.max(container.clientHeight, 1);
+        const paddingFactor = isExpanded ? 0.9 : 0.84;
+        const fitScale = Math.min(
+            (containerWidth * paddingFactor) / width,
+            (containerHeight * paddingFactor) / height
+        );
+
+        const nextZoom = Number.isFinite(fitScale)
+            ? Math.min(Math.max(fitScale, 0.35), 1.4)
+            : 1;
+
+        setZoom(nextZoom);
+        setPan({ x: 0, y: 0 });
+    }, [isExpanded]);
+
+    useEffect(() => {
+        if (!svg || error || typeof window === "undefined") return;
+
+        const raf = window.requestAnimationFrame(() => {
+            fitDiagramToViewport();
+        });
+
+        return () => {
+            window.cancelAnimationFrame(raf);
+        };
+    }, [svg, error, isExpanded, fitDiagramToViewport]);
+
+    useEffect(() => {
+        if (!svg || error || typeof window === "undefined") return;
+
+        const handleResize = () => {
+            window.requestAnimationFrame(() => {
+                fitDiagramToViewport();
+            });
+        };
+
+        window.addEventListener("resize", handleResize);
+
+        return () => {
+            window.removeEventListener("resize", handleResize);
+        };
+    }, [svg, error, fitDiagramToViewport]);
+
     const handleWheel = (e: React.WheelEvent) => {
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
@@ -395,12 +514,34 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     };
 
     const handleMouseMove = (e: React.MouseEvent) => {
+        const target = e.target as Element | null;
+        const nodeEl = target?.closest(".node");
+
+        if (!isDragging && nodeEl && containerRef.current) {
+            const label = extractNodeLabel(nodeEl);
+            const id = extractNodeId(nodeEl, label || "node");
+            if (label) {
+                const rect = containerRef.current.getBoundingClientRect();
+                setHoveredNode({
+                    id,
+                    label,
+                    x: e.clientX - rect.left + 16,
+                    y: e.clientY - rect.top + 16
+                });
+            } else {
+                setHoveredNode(null);
+            }
+        } else if (!isDragging) {
+            setHoveredNode(null);
+        }
+
         if (isDragging) {
             const dx = e.clientX - dragOriginRef.current.x;
             const dy = e.clientY - dragOriginRef.current.y;
             if (Math.abs(dx) + Math.abs(dy) > 3) {
                 dragMovedRef.current = true;
             }
+            setHoveredNode(null);
             setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
         }
     };
@@ -412,10 +553,13 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     const handleZoomIn = () => setZoom(z => Math.min(z * 1.2, 5));
     const handleZoomOut = () => setZoom(z => Math.max(z * 0.8, 0.1));
     const handleReset = () => {
-        setZoom(1);
-        setPan({ x: 0, y: 0 });
+        setHoveredNode(null);
+        fitDiagramToViewport();
     };
-    const toggleExpanded = () => setIsExpanded((current) => !current);
+    const toggleExpanded = () => {
+        setHoveredNode(null);
+        setIsExpanded((current) => !current);
+    };
 
     const handleDownload = () => {
         if (!svg) return;
@@ -448,12 +592,25 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         onNodeSelect({ id, label });
     }, [onNodeSelect]);
 
+    const tooltipStyle = hoveredNode
+        ? {
+            left: Math.max(12, Math.min(
+                hoveredNode.x,
+                (containerRef.current?.clientWidth ?? 280) - 280
+            )),
+            top: Math.max(12, Math.min(
+                hoveredNode.y,
+                (containerRef.current?.clientHeight ?? 140) - 96
+            ))
+        }
+        : undefined;
+
     return (
         <div
             ref={viewerRef}
             className={`w-full h-full flex flex-col relative bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 shadow-inner overflow-hidden border border-slate-800/50 ${
                 isExpanded
-                    ? "fixed inset-0 z-[120] rounded-none border-none"
+                    ? "fixed inset-0 z-[140] rounded-none border-none bg-slate-950/95"
                     : "rounded-xl"
             }`}
         >
@@ -493,7 +650,10 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
+                onMouseLeave={() => {
+                    handleMouseUp();
+                    setHoveredNode(null);
+                }}
             >
                 {svg ? (
                     <div
@@ -520,6 +680,18 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                         </div>
                         <p className="text-sm font-medium tracking-wide">{language === "zh" ? "等待架构内容..." : "Waiting for architecture..."}</p>
                         <p className="text-xs text-slate-600 mt-1">{language === "zh" ? "从你的想法开始描述" : "Start describing your idea"}</p>
+                    </div>
+                )}
+
+                {svg && hoveredNode && !isDragging && (
+                    <div
+                        className="pointer-events-none absolute z-30 max-w-[260px] rounded-2xl border border-sky-400/30 bg-slate-950/95 px-3 py-2 text-xs font-medium leading-5 text-slate-100 shadow-2xl backdrop-blur-md"
+                        style={tooltipStyle}
+                    >
+                        <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-sky-300/75">
+                            {language === "zh" ? "模块详情" : "Module"}
+                        </div>
+                        <div className="break-words text-sm text-slate-50">{hoveredNode.label}</div>
                     </div>
                 )}
 
