@@ -318,6 +318,10 @@ export type MessageQuestionStatus =
     | "answered"
     | "stale";
 
+export type MessageKind =
+    | "chat"
+    | "system";
+
 export interface MessageOption {
     label: string;
     value: string;
@@ -481,6 +485,7 @@ export interface Attachment {
 export interface Message {
     role: 'user' | 'assistant';
     content: string;
+    kind?: MessageKind;
     options?: MessageOption[];
     attachments?: Attachment[];
     questionKey?: string | null;

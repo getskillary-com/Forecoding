@@ -2265,7 +2265,9 @@ function buildEvaluateMessages(messages: Message[], options: EvaluateMessageBuil
     const maxRecentBinaryAttachments = options.maxRecentBinaryAttachments ?? EVALUATE_MAX_RECENT_BINARY_ATTACHMENTS;
     const allowBinaryAttachments = options.allowBinaryAttachments ?? true;
 
-    const history = messages.slice(-historySize);
+    const history = messages
+        .filter((message) => message.kind !== "system")
+        .slice(-historySize);
     const lastUserOffset = [...history].reverse().findIndex((m) => m.role === "user");
     const lastUserIndex = lastUserOffset >= 0 ? history.length - 1 - lastUserOffset : -1;
 
@@ -2440,6 +2442,7 @@ function buildPricingProjectSnapshot(
     const compactMessages: Message[] = messages.map((message) => ({
         role: message.role,
         content: message.content,
+        kind: message.kind,
         options: message.options,
         attachments: message.attachments?.map((attachment) => ({
             ...attachment,
@@ -3302,6 +3305,7 @@ function WizardContent() {
         questionRequirementKey?: ReadinessRequirementKey | null;
     }): Message => ({
         role: "assistant",
+        kind: "system",
         content: input.content,
         options: input.options,
         questionKey: input.questionKey ?? undefined,

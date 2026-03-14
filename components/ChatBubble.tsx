@@ -1,7 +1,7 @@
 import React, { memo, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText } from "lucide-react";
+import { FileText, Sparkles } from "lucide-react";
 import { Message, MessageOption } from '@/types';
 
 interface Props {
@@ -20,6 +20,7 @@ export const ChatBubble = memo(function ChatBubble({
     isStreaming = false
 }: Props) {
     const isUser = message.role === "user";
+    const isSystem = !isUser && message.kind === "system";
     const widthClassName = isUser
         ? "max-w-[80%]"
         : "w-full max-w-[calc(100%-2rem)] sm:max-w-[80%] xl:max-w-[48rem]";
@@ -44,10 +45,18 @@ export const ChatBubble = memo(function ChatBubble({
     return (
         <div className={`flex flex-col w-full ${isUser ? 'items-end' : 'items-start'}`}>
             <div className={widthClassName}>
+                {isSystem && (
+                    <div className="mb-2 inline-flex items-center gap-1 rounded-full border border-amber-200/80 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200">
+                        <Sparkles className="h-3 w-3" />
+                        <span>系统引导</span>
+                    </div>
+                )}
                 <div
                     className={`rounded-xl p-4 ${isUser
                         ? 'bg-blue-600 text-white rounded-tr-none'
-                        : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-tl-none shadow-sm'
+                        : isSystem
+                            ? 'bg-amber-50/90 text-amber-950 border border-amber-200/80 dark:bg-amber-900/20 dark:text-amber-50 dark:border-amber-700/40 rounded-tl-none shadow-sm'
+                            : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-tl-none shadow-sm'
                         }`}
                 >
                     {/* Attachments Display */}
@@ -90,15 +99,26 @@ export const ChatBubble = memo(function ChatBubble({
                                 : 'pointer-events-none translate-y-3 opacity-0'
                         }`}
                     >
-                        <div className="relative overflow-hidden rounded-2xl border border-blue-100/80 bg-gradient-to-b from-blue-50/95 via-white to-white p-3 shadow-sm dark:border-blue-900/40 dark:from-blue-950/35 dark:via-slate-900 dark:to-slate-900">
-                            <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-blue-200/45 via-blue-100/10 to-transparent dark:from-blue-500/10 dark:via-blue-400/5" />
+                        <div className={`relative overflow-hidden rounded-2xl p-3 shadow-sm ${
+                            isSystem
+                                ? 'border border-amber-200/80 bg-gradient-to-b from-amber-50/95 via-white to-white dark:border-amber-700/40 dark:from-amber-900/15 dark:via-slate-900 dark:to-slate-900'
+                                : 'border border-blue-100/80 bg-gradient-to-b from-blue-50/95 via-white to-white dark:border-blue-900/40 dark:from-blue-950/35 dark:via-slate-900 dark:to-slate-900'
+                        }`}>
+                            <div className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b ${
+                                isSystem
+                                    ? 'from-amber-200/45 via-amber-100/10 to-transparent dark:from-amber-500/10 dark:via-amber-400/5'
+                                    : 'from-blue-200/45 via-blue-100/10 to-transparent dark:from-blue-500/10 dark:via-blue-400/5'
+                            }`} />
                             <div className="relative grid grid-cols-1 gap-2 md:grid-cols-2">
                                 {message.options.map((opt, idx) => {
                                     const isDisabled =
-                                        disableOptions ||
-                                        opt.stale === true ||
-                                        message.questionStatus === "answered" ||
-                                        message.questionStatus === "stale";
+                                                disableOptions ||
+                                                opt.stale === true ||
+                                                message.questionStatus === "answered" ||
+                                                message.questionStatus === "stale";
+                                    const enabledClassName = isSystem
+                                        ? 'bg-white/95 dark:bg-slate-800/95 border-amber-200 dark:border-amber-700/40 hover:-translate-y-0.5 hover:bg-amber-50 dark:hover:bg-amber-900/25 text-amber-800 dark:text-amber-200'
+                                        : 'bg-white/95 dark:bg-slate-800/95 border-blue-200 dark:border-blue-900 hover:-translate-y-0.5 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300';
                                     return (
                                         <button
                                             key={idx}
@@ -108,7 +128,7 @@ export const ChatBubble = memo(function ChatBubble({
                                             className={`text-left p-3 text-sm border rounded-xl transition-all duration-200 shadow-sm font-medium ${
                                                 isDisabled
                                                     ? 'bg-gray-100 dark:bg-gray-900 border-gray-200 dark:border-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed'
-                                                    : 'bg-white/95 dark:bg-slate-800/95 border-blue-200 dark:border-blue-900 hover:-translate-y-0.5 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                                                    : enabledClassName
                                             }`}
                                         >
                                             {(() => {
