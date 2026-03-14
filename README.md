@@ -54,8 +54,8 @@ AI provider:
 ```env
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_BACKUP_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.1-pro-preview
+GEMINI_BACKUP_MODEL=gemini-3.1-pro-preview
 
 # or
 AI_PROVIDER=openai

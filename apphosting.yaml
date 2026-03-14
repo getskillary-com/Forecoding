@@ -57,11 +57,11 @@ env:
     availability:
       - RUNTIME
   - variable: GEMINI_MODEL
-    value: "gemini-2.5-flash"
+    value: "gemini-3.1-pro-preview"
     availability:
       - RUNTIME
   - variable: GEMINI_BACKUP_MODEL
-    value: "gemini-2.5-flash"
+    value: "gemini-3.1-pro-preview"
     availability:
       - RUNTIME
   - variable: OPENAI_MODEL
