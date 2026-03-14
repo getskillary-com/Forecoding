@@ -56,6 +56,14 @@ env:
     value: "gemini"
     availability:
       - RUNTIME
+  - variable: GEMINI_MODEL
+    value: "gemini-2.5-flash"
+    availability:
+      - RUNTIME
+  - variable: GEMINI_BACKUP_MODEL
+    value: "gemini-2.5-flash"
+    availability:
+      - RUNTIME
   - variable: OPENAI_MODEL
     value: "gpt-5-mini"
     availability:

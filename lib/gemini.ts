@@ -83,6 +83,9 @@ const CLAUDE_API_VERSION = readEnvString("CLAUDE_API_VERSION", "2023-06-01");
 const CLAUDE_MAX_TOKENS = readEnvNumber("CLAUDE_MAX_TOKENS", 8192);
 const CLAUDE_COOLDOWN_MS = readEnvNumber("CLAUDE_COOLDOWN_MS", 120000);
 const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = readEnvString("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+const GEMINI_BACKUP_MODEL = readEnvString("GEMINI_BACKUP_MODEL", GEMINI_MODEL).trim() || GEMINI_MODEL;
 const GEMINI_CORE_COOLDOWN_MS = readEnvNumber("GEMINI_CORE_COOLDOWN_MS", 180000);
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
@@ -114,9 +117,8 @@ const AI_PROVIDER = normalizeProvider(readEnvString("AI_PROVIDER")) ||
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 // Model Configuration
-// User explicitly requested gemini-2.5-flash
-const CORE_MODEL = "gemini-2.5-flash";
-const BACKUP_MODEL = "gemini-2.5-flash";
+const CORE_MODEL = GEMINI_MODEL;
+const BACKUP_MODEL = GEMINI_BACKUP_MODEL;
 
 export function getActiveAiProvider() {
     return AI_PROVIDER || "gemini";
