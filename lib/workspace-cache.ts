@@ -86,10 +86,12 @@ export function getCachedProject(projectId?: string | null): Project | null {
     return projects.find((project) => project.id === projectId) || null;
 }
 
-export function getCachedProjectSnapshot(projectId?: string | null): ProjectSnapshot | null {
+export function getCachedProjectSnapshot(projectId?: string | null, versionId?: string | null): ProjectSnapshot | null {
     const project = getCachedProject(projectId);
     if (!project) return null;
-    const version = project.versions[project.versions.length - 1];
+    const version = versionId
+        ? project.versions.find((candidate) => candidate.id === versionId) ?? project.versions[project.versions.length - 1]
+        : project.versions[project.versions.length - 1];
     if (!version) return null;
     return { project, version, data: version.data };
 }

@@ -7,6 +7,10 @@ interface Props {
     content: FileNode[] | string;
     projectName?: string;
     language: WorkspaceLanguage;
+    title?: string;
+    downloadLabel?: string;
+    zipFileNameSuffix?: string;
+    emptyStateLabel?: string;
 }
 
 type PreviewFile = {
@@ -107,7 +111,7 @@ function TreeNode({
                 <span className="font-mono text-gray-700 dark:text-gray-300">{node.name}</span>
                 {!isFolder && (
                     <span className="ml-auto text-xs italic text-gray-400">
-                        {language === "zh" ? "含规范说明" : "Spec Included"}
+                        {language === "zh" ? "含说明" : "Spec Included"}
                     </span>
                 )}
             </div>
@@ -131,7 +135,15 @@ function TreeNode({
     );
 }
 
-export function FileTreeDisplay({ content, projectName, language }: Props) {
+export function FileTreeDisplay({
+    content,
+    projectName,
+    language,
+    title,
+    downloadLabel,
+    zipFileNameSuffix,
+    emptyStateLabel
+}: Props) {
     const [isZipping, setIsZipping] = useState(false);
     const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
     const ZIP_REAL_CONTENT_FILES = new Set([
@@ -160,7 +172,12 @@ export function FileTreeDisplay({ content, projectName, language }: Props) {
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
         .replace(/\s+/g, " ")
         .replace(/[. ]+$/g, "");
-    const zipFileName = `${zipFileNameBase || "founder-scaffold"}-scaffold.zip`;
+    const resolvedZipSuffix = (zipFileNameSuffix || "scaffold")
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+        .replace(/\s+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase();
+    const zipFileName = `${zipFileNameBase || "founder-scaffold"}-${resolvedZipSuffix || "scaffold"}.zip`;
     const scaffoldHintMaxChars = 1200;
     const filesForPreview = useMemo(
         () => (typeof content === "string" ? [] : collectFiles(content)),
@@ -243,7 +260,7 @@ export function FileTreeDisplay({ content, projectName, language }: Props) {
                     if (scaffoldLanguage === "zh") {
                         promptContent += "# AI 代码生成任务\n\n";
                         promptContent += `这个文件包含以下目录的生成说明：\`${currentPath || "root"}\`\n\n`;
-                        promptContent += "**使用方式：** 在 AI IDE 中打开这个文件，并按下列约束执行。\n\n";
+                        promptContent += "**使用方式：** 在 AI IDE 中打开这个文件，并按下面约束执行。\n\n";
                         promptContent += "## 强制执行顺序\n";
                         promptContent += "1. 先阅读 `ONE_CLICK_PROMPT.md`。\n";
                         promptContent += "2. 再按 `GENERATION_MANIFEST.json` 的 Phase 顺序执行。\n";
@@ -333,12 +350,18 @@ export function FileTreeDisplay({ content, projectName, language }: Props) {
         return <pre className="whitespace-pre-wrap p-4 text-xs font-mono">{content}</pre>;
     }
 
+    const fallbackTitle = language === "zh" ? "Scaffold 预览" : "Scaffold Preview";
+    const fallbackDownloadLabel = language === "zh" ? "下载 ZIP" : "Download ZIP";
+    const fallbackEmptyStateLabel = language === "zh"
+        ? "这个产物里没有可预览的文件。"
+        : "No previewable file in this artifact.";
+
     return (
         <div className="flex h-full flex-col">
             <div className="mb-4 flex items-center justify-between px-2">
                 <h3 className="flex items-center gap-2 text-lg font-semibold">
                     <Folder className="h-5 w-5 text-purple-500" />
-                    {language === "zh" ? "脚手架结构" : "Scaffold Structure"}
+                    {title || fallbackTitle}
                 </h3>
                 <div className="flex items-center gap-2">
                     <button
@@ -349,7 +372,7 @@ export function FileTreeDisplay({ content, projectName, language }: Props) {
                         <Download className="h-4 w-4" />
                         {isZipping
                             ? (language === "zh" ? "正在打包..." : "Zipping...")
-                            : (language === "zh" ? "下载脚手架 ZIP" : "Download Scaffold ZIP")}
+                            : (downloadLabel || fallbackDownloadLabel)}
                     </button>
                 </div>
             </div>
@@ -373,11 +396,11 @@ export function FileTreeDisplay({ content, projectName, language }: Props) {
                     <div className="min-h-0 flex-1 overflow-auto p-4">
                         {selectedPreviewFile ? (
                             <pre className="whitespace-pre-wrap text-xs font-mono text-gray-700 dark:text-gray-200">
-                                {selectedPreviewFile.content || (language === "zh" ? "// 空规范" : "// Empty specification")}
+                                {selectedPreviewFile.content || (language === "zh" ? "// 空文件" : "// Empty specification")}
                             </pre>
                         ) : (
                             <div className="text-sm text-gray-500 dark:text-gray-400">
-                                {language === "zh" ? "这个脚手架中没有可预览的文件。" : "No previewable file in this scaffold."}
+                                {emptyStateLabel || fallbackEmptyStateLabel}
                             </div>
                         )}
                     </div>

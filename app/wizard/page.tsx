@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Layers, Check, Paperclip, X, FileText, Square } from "lucide-react";
+import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Check, Paperclip, X, FileText, Square, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import {
     ArchitecturePack,
     ArchitectureStage,
@@ -12,9 +12,11 @@ import {
     MessageQuestionStatus,
     EvaluationResponse,
     GenerationResponse,
+    GenerationArtifacts,
     DiagramGovernance,
     DesignStage,
     GuardrailChecklist,
+    OutputMode,
     ReadinessChecklist,
     ReadinessOverride,
     ReadinessRequirementKey,
@@ -37,10 +39,6 @@ const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer
     loading: () => <div className="h-full w-full" />
 });
 const FileTreeDisplay = dynamic(() => import("@/components/FileTreeDisplay").then((m) => m.FileTreeDisplay), {
-    ssr: false,
-    loading: () => <div className="h-full w-full" />
-});
-const ToolStackTable = dynamic(() => import("@/components/ToolStackTable").then((m) => m.ToolStackTable), {
     ssr: false,
     loading: () => <div className="h-full w-full" />
 });
@@ -111,9 +109,9 @@ const GENERATE_MAX_MESSAGE_CONTENT_CHARS = 2_000;
 const GENERATE_MAX_ANALYSIS_CHARS = 10_000;
 const GENERATE_MAX_SUMMARY_CHARS = 50_000;
 const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
-const GENERATE_OUTPUT_MODE = "runnable_scaffold" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
+const GENERATE_OUTPUT_MODES: readonly OutputMode[] = ["virtual_spec", "runnable_scaffold"] as const;
 const SOURCE_CONTEXT_ITEM_EXCERPT_CHARS = 700;
 const SOURCE_CONTEXT_MAX_ITEMS = 6;
 const SOURCE_SEARCH_TERM_MAX_COUNT = 24;
@@ -160,6 +158,8 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     interactionMotion: "Interaction motion",
     statesAndFeedback: "States and feedback"
 };
+
+type StudioTab = "architecture" | "prd" | "spec" | "runnable";
 
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
     if (!Array.isArray(value)) return [];
@@ -723,6 +723,52 @@ function normalizeSourceArtifacts(value: unknown): SourceArtifact[] {
         .slice(-40);
 }
 
+function isGenerationResponse(value: unknown): value is GenerationResponse {
+    return Boolean(value && typeof value === "object" && Array.isArray((value as GenerationResponse).projectTree));
+}
+
+function inferGenerationOutputMode(generation: GenerationResponse): OutputMode {
+    return generation.outputMode === "virtual_spec" ? "virtual_spec" : "runnable_scaffold";
+}
+
+function normalizeGenerationArtifacts(
+    value: unknown,
+    fallbackGeneration?: GenerationResponse | null
+): GenerationArtifacts {
+    const artifacts: GenerationArtifacts = {};
+
+    if (value && typeof value === "object") {
+        const candidate = value as Partial<GenerationArtifacts>;
+        if (isGenerationResponse(candidate.virtual_spec)) {
+            artifacts.virtual_spec = candidate.virtual_spec;
+        }
+        if (isGenerationResponse(candidate.runnable_scaffold)) {
+            artifacts.runnable_scaffold = candidate.runnable_scaffold;
+        }
+    }
+
+    if (!artifacts.virtual_spec && !artifacts.runnable_scaffold && isGenerationResponse(fallbackGeneration)) {
+        artifacts[inferGenerationOutputMode(fallbackGeneration)] = fallbackGeneration;
+    }
+
+    return artifacts;
+}
+
+function resolvePrimaryGeneration(
+    artifacts: GenerationArtifacts,
+    fallbackGeneration?: GenerationResponse | null
+): GenerationResponse | null {
+    if (artifacts.runnable_scaffold) return artifacts.runnable_scaffold;
+    if (artifacts.virtual_spec) return artifacts.virtual_spec;
+    return isGenerationResponse(fallbackGeneration) ? fallbackGeneration : null;
+}
+
+function getPreferredGeneratedTab(artifacts: GenerationArtifacts): StudioTab {
+    if (artifacts.virtual_spec) return "spec";
+    if (artifacts.runnable_scaffold) return "runnable";
+    return "architecture";
+}
+
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
     const messages = normalizeMessages(data?.messages);
     const readinessOverrides = normalizeReadinessOverrides(data?.readinessOverrides);
@@ -1173,13 +1219,15 @@ function buildPlatformDiscoveryQuestion(language: "zh" | "en") {
 需要确认：
 ${questionText}`,
             options: [
-                { label: "Web 应用", value: "先做 Web 应用，需要覆盖桌面和移动浏览器。" },
-                { label: "移动 App", value: "先做移动 App，需要覆盖 iOS 和 Android。" },
-                { label: "桌面应用", value: "先做桌面应用，需要覆盖 Windows 和 macOS。" },
-                { label: "后端服务 / API", value: "先做后端服务或 API，不以界面交付为主。" },
+                { label: "Web 应用", value: "先做 Web 应用，需要覆盖桌面和移动浏览器。", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
+                { label: "移动 App", value: "先做移动 App，需要覆盖 iOS 和 Android。", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
+                { label: "桌面应用", value: "先做桌面应用，需要覆盖 Windows 和 macOS。", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
+                { label: "后端服务 / API", value: "先做后端服务或 API，不以界面交付为主。", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
                 { label: "给我平台选项", value: "请先给我 2 到 3 个常见平台路线，并说明取舍。" }
             ],
-            questionKey: normalizeQuestionKey(questionText)
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: "business_context.platforms" as const
         };
     }
 
@@ -1192,13 +1240,15 @@ ${questionText}`,
 Please confirm:
 ${questionText}`,
         options: [
-            { label: "Web app", value: "Start with a web app and cover desktop and mobile browsers." },
-            { label: "Mobile app", value: "Start with a mobile app and cover iOS and Android." },
-            { label: "Desktop app", value: "Start with a desktop app and cover Windows and macOS." },
-            { label: "Backend service / API", value: "Start with a backend service or API rather than a UI-first product." },
+            { label: "Web app", value: "Start with a web app and cover desktop and mobile browsers.", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
+            { label: "Mobile app", value: "Start with a mobile app and cover iOS and Android.", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
+            { label: "Desktop app", value: "Start with a desktop app and cover Windows and macOS.", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
+            { label: "Backend service / API", value: "Start with a backend service or API rather than a UI-first product.", action: "fill_requirement" as const, requirementKey: "business_context.platforms" as const },
             { label: "Show platform options", value: "Show me 2 or 3 common platform routes and explain the tradeoffs first." }
         ],
-        questionKey: normalizeQuestionKey(questionText)
+        questionKey: normalizeQuestionKey(questionText),
+        questionAction: "fill_requirement" as const,
+        questionRequirementKey: "business_context.platforms" as const
     };
 }
 
@@ -1313,10 +1363,17 @@ function buildStackRecommendationQuestion(
                 questionText
             ].join("\n"),
             options: [
-                ...options.map((option) => ({ label: option.zh, value: option.zhValue })),
+                ...options.map((option) => ({
+                    label: option.zh,
+                    value: option.zhValue,
+                    action: "fill_requirement" as const,
+                    requirementKey: "decisions.decision_records" as const
+                })),
                 { label: "给我更多方案", value: "请再给我 2 到 3 个备选技术栈，并说明取舍。" }
             ],
-            questionKey: normalizeQuestionKey(questionText)
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: "decisions.decision_records" as const
         };
     }
 
@@ -1338,10 +1395,17 @@ function buildStackRecommendationQuestion(
             questionText
         ].join("\n"),
         options: [
-            ...options.map((option) => ({ label: option.en, value: option.enValue })),
+            ...options.map((option) => ({
+                label: option.en,
+                value: option.enValue,
+                action: "fill_requirement" as const,
+                requirementKey: "decisions.decision_records" as const
+            })),
             { label: "Show more options", value: "Show me 2 or 3 more stack options and explain the tradeoffs." }
         ],
-        questionKey: normalizeQuestionKey(questionText)
+        questionKey: normalizeQuestionKey(questionText),
+        questionAction: "fill_requirement" as const,
+        questionRequirementKey: "decisions.decision_records" as const
     };
 }
 
@@ -1420,9 +1484,57 @@ function buildFocusedRequirementQuestion(
             content: platformQuestion.content,
             options: platformQuestion.options,
             questionKey: platformQuestion.questionKey,
-            questionAction: null,
+            questionAction: platformQuestion.questionAction ?? null,
             questionRequirementKey: requirementKey
         };
+    }
+
+    if (requirementKey === "boundaries.data_ownership") {
+        const content = language === "zh"
+            ? `当前判断：
+- 现在只缺一条明确的数据归属规则，后面的隐私边界和保留策略才有依据。
+- 我推荐默认采用“用户拥有提交的想法与分析结果，平台仅为提供服务而处理，默认保留 30 天”的方案。
+
+需要确认：
+是否按推荐应用这条数据归属默认规则？`
+            : `Current view:
+- We still need one explicit data ownership rule so the privacy and retention boundary stays clear.
+- I recommend the default policy that users own submitted ideas and analysis results, while the product only processes them to deliver the service with a default 30-day retention window.
+
+Please confirm:
+Should I apply this default data ownership rule now?`;
+
+        const questionText = language === "zh"
+            ? "是否按推荐应用这条数据归属默认规则？"
+            : "Should I apply this default data ownership rule now?";
+
+        return {
+            content,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐应用", value: "请按推荐应用这条数据归属默认规则。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来指定规则", value: "我来指定自定义的数据归属与保留期。" },
+                    { label: "列出当前阻塞项", value: "请列出当前阻塞项。", action: "show_blockers" as const, requirementKey }
+                ]
+                : [
+                    { label: "Apply the default", value: "Apply the default data ownership rule.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will define a custom ownership and retention policy." },
+                    { label: "List blockers", value: "List the current blockers.", action: "show_blockers" as const, requirementKey }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "decisions.decision_records" && hasConfirmedPlatformStrategy(architecturePack.platformStrategy)) {
+        const stackQuestion = buildStackRecommendationQuestion(language, architecturePack);
+        if (stackQuestion) {
+            return {
+                ...stackQuestion,
+                questionRequirementKey: requirementKey
+            };
+        }
     }
 
     if (requirementKey === "decisions.non_functional_requirements") {
@@ -2284,12 +2396,29 @@ function compactSourceArtifactsForPricing(artifacts: SourceArtifact[]): SourceAr
     }));
 }
 
+function compactGenerationForStorage(generation: GenerationResponse | null): GenerationResponse | null {
+    return generation
+        ? {
+            ...generation,
+            projectTree: compactProjectTreeForPricing(generation.projectTree)
+        }
+        : null;
+}
+
+function compactGenerationArtifactsForStorage(artifacts: GenerationArtifacts): GenerationArtifacts {
+    return {
+        virtual_spec: compactGenerationForStorage(artifacts.virtual_spec ?? null),
+        runnable_scaffold: compactGenerationForStorage(artifacts.runnable_scaffold ?? null)
+    };
+}
+
 function buildPricingProjectSnapshot(
     project: Project | null,
     currentVersion: ProjectVersion | null,
     messages: Message[],
     evaluation: EvaluationResponse | null,
     generation: GenerationResponse | null,
+    generationArtifacts: GenerationArtifacts,
     currentDiagram: string,
     diagramGovernance: DiagramGovernance,
     tasks: Task[],
@@ -2324,12 +2453,11 @@ function buildPricingProjectSnapshot(
         triggeredAction: message.triggeredAction
     }));
 
-    const compactGeneration: GenerationResponse | null = generation
-        ? {
-            ...generation,
-            projectTree: compactProjectTreeForPricing(generation.projectTree)
-        }
-        : null;
+    const compactGenerationArtifacts = compactGenerationArtifactsForStorage(generationArtifacts);
+    const compactGeneration = resolvePrimaryGeneration(
+        compactGenerationArtifacts,
+        compactGenerationForStorage(generation)
+    );
 
     const snapshotVersion: ProjectVersion = {
         ...currentVersion,
@@ -2338,6 +2466,7 @@ function buildPricingProjectSnapshot(
             messages: compactMessages,
             evaluation,
             generation: compactGeneration,
+            generationArtifacts: compactGenerationArtifacts,
             currentDiagram,
             diagramGovernance,
             tasks,
@@ -2368,13 +2497,26 @@ function buildPricingProjectSnapshot(
     };
 }
 
+function resolveProjectVersionForWizard(sourceProject: Project, versionId: string | null) {
+    if (sourceProject.versions.length === 0) return null;
+    if (versionId) {
+        return sourceProject.versions.find((candidate) => candidate.id === versionId)
+            ?? sourceProject.versions[sourceProject.versions.length - 1];
+    }
+    return sourceProject.versions[sourceProject.versions.length - 1];
+}
+
 function WizardContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
-    const cachedSnapshot = getCachedProjectSnapshot(projectId);
+    const cachedSnapshot = getCachedProjectSnapshot(projectId, versionId);
     const initialNormalizedState = normalizeVersionDesignState(cachedSnapshot?.data ?? null);
+    const initialGenerationArtifacts = normalizeGenerationArtifacts(
+        cachedSnapshot?.data?.generationArtifacts ?? null,
+        cachedSnapshot?.data?.generation ?? null
+    );
     const rawCachedStage = (cachedSnapshot?.data as { designStage?: unknown } | undefined)?.designStage;
     const initialEvaluation = initialNormalizedState.evaluation;
     const initialUiDesignSpec = initialNormalizedState.uiDesignSpec;
@@ -2388,7 +2530,6 @@ function WizardContent() {
     const SIDEBAR_MIN = 320;
     const SIDEBAR_MAX = 720;
     const MAIN_MIN = 420;
-
     // --- State ---
     const [project, setProject] = useState<Project | null>(cachedSnapshot?.project ?? null);
     const [currentVersion, setCurrentVersion] = useState<ProjectVersion | null>(cachedSnapshot?.version ?? null);
@@ -2403,7 +2544,10 @@ function WizardContent() {
 
     // Core Domain State
     const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(initialEvaluation);
-    const [generation, setGeneration] = useState<GenerationResponse | null>(cachedSnapshot?.data.generation ?? null);
+    const [generationArtifacts, setGenerationArtifacts] = useState<GenerationArtifacts>(initialGenerationArtifacts);
+    const [generation, setGeneration] = useState<GenerationResponse | null>(
+        resolvePrimaryGeneration(initialGenerationArtifacts, cachedSnapshot?.data?.generation ?? null)
+    );
     const [tasks, setTasks] = useState<Task[]>(cachedSnapshot?.data.tasks ?? []);
     const [designStage, setDesignStage] = useState<DesignStage>(initialDesignStage);
     const [uiDesignState, setUiDesignState] = useState<UiDesignState>(initialUiDesignState);
@@ -2427,6 +2571,7 @@ function WizardContent() {
     const [isAdmin, setIsAdmin] = useState(false);
     const [isAdminStatusLoaded, setIsAdminStatusLoaded] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(420);
+    const [isChatCollapsed, setIsChatCollapsed] = useState(false);
     const isResizingRef = useRef(false);
     const generateInFlightRef = useRef(false);
     const evaluateAbortRef = useRef<AbortController | null>(null);
@@ -2443,8 +2588,8 @@ function WizardContent() {
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
 
-    const [activeTab, setActiveTab] = useState<'architecture' | 'prd' | 'files' | 'stack'>(
-        cachedSnapshot?.data.generation ? 'files' : 'architecture'
+    const [activeTab, setActiveTab] = useState<StudioTab>(
+        getPreferredGeneratedTab(initialGenerationArtifacts)
     );
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2453,6 +2598,14 @@ function WizardContent() {
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
     const visibleMessages = messages.slice(baseMessageIndex);
     const hiddenMessageCount = baseMessageIndex;
+    const lastMessageIndex = messages.length - 1;
+    const isAssistantStreaming =
+        isLoading &&
+        lastMessageIndex >= 0 &&
+        messages[lastMessageIndex]?.role === "assistant";
+    const isAssistantStreamingWithContent =
+        isAssistantStreaming &&
+        messages[lastMessageIndex]?.content.trim().length > 0;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
     const scaffoldEligibility = computeScaffoldEligibility({
@@ -2469,13 +2622,19 @@ function WizardContent() {
         : minimumViableLoop.blockingIssues;
     const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
     const architectureViewerCode = currentDiagram;
-    const isConversationLocked = Boolean(generation);
+    const isConversationLocked = Boolean(
+        (generationArtifacts.virtual_spec && generationArtifacts.runnable_scaffold) ||
+        (generation && !generationArtifacts.virtual_spec && !generationArtifacts.runnable_scaffold)
+    );
     const lockedChatDescription = workspaceLanguage === "zh"
         ? "当前版本的脚手架已生成，聊天输入现已关闭。"
         : "This version's scaffold has been generated. Chat input is now disabled.";
     const lockedInputPlaceholder = workspaceLanguage === "zh"
         ? "当前版本已完成脚手架生成，无法继续输入。"
         : "This version is locked after scaffold generation.";
+    const collapseChatLabel = workspaceLanguage === "zh" ? "隐藏聊天" : "Hide chat";
+    const expandChatLabel = workspaceLanguage === "zh" ? "显示聊天" : "Show chat";
+    const collapsedChatHint = workspaceLanguage === "zh" ? "聊天已隐藏" : "Chat hidden";
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
         try {
@@ -2533,18 +2692,23 @@ function WizardContent() {
 
             setProject(foundProject);
 
-            const latestVersion = foundProject.versions[foundProject.versions.length - 1];
-            if (!latestVersion) return;
+            const selectedVersion = resolveProjectVersionForWizard(foundProject, versionId);
+            if (!selectedVersion) return;
 
-            setCurrentVersion(latestVersion);
-            setLoadedVersionId(latestVersion.id);
+            setCurrentVersion(selectedVersion);
+            setLoadedVersionId(selectedVersion.id);
 
-            const data = latestVersion.data;
+            const data = selectedVersion.data;
             const normalizedDesignState = normalizeVersionDesignState(data);
+            const normalizedGenerationArtifacts = normalizeGenerationArtifacts(
+                data.generationArtifacts ?? null,
+                data.generation ?? null
+            );
             setMessages(normalizedDesignState.messages);
             setMessageWindow(MESSAGE_WINDOW_SIZE);
             setEvaluation(normalizedDesignState.evaluation);
-            setGeneration(data.generation);
+            setGenerationArtifacts(normalizedGenerationArtifacts);
+            setGeneration(resolvePrimaryGeneration(normalizedGenerationArtifacts, data.generation));
             setCurrentDiagram(data.currentDiagram);
             setDiagramGovernance(normalizeDiagramGovernance(data.diagramGovernance));
             setTasks(data.tasks);
@@ -2560,11 +2724,10 @@ function WizardContent() {
             setArchitectureReadiness(normalizedDesignState.readiness);
             setFunctionalLockedAt(normalizedDesignState.functionalLockedAt);
             setUiReadyAt(normalizedDesignState.uiReadyAt);
+            setActiveTab(getPreferredGeneratedTab(normalizedGenerationArtifacts));
 
-            if (data.generation) setActiveTab("files");
-
-            if (versionId && versionId !== latestVersion.id) {
-                router.replace(`/wizard?projectId=${projectId}&versionId=${latestVersion.id}`);
+            if (versionId && versionId !== selectedVersion.id) {
+                router.replace(`/wizard?projectId=${projectId}&versionId=${selectedVersion.id}`);
             }
         };
 
@@ -2572,13 +2735,13 @@ function WizardContent() {
             setIsHydrating(true);
             setLoadedVersionId(null);
             setHasUserEdited(false);
-            await yieldToBrowser();
 
             const localProjects = readProjectsFromLocalStorage();
             const localProject = localProjects.find((p) => p.id === projectId);
             if (localProject) {
                 hydrateFromProject(localProject);
             }
+            await yieldToBrowser();
 
             try {
                 const url = projectId
@@ -2763,6 +2926,7 @@ function WizardContent() {
                             messages,
                             evaluation,
                             generation,
+                            generationArtifacts,
                             currentDiagram,
                             diagramGovernance,
                             tasks,
@@ -2827,6 +2991,7 @@ function WizardContent() {
         messages,
         evaluation,
         generation,
+        generationArtifacts,
         currentDiagram,
         diagramGovernance,
         tasks,
@@ -2857,11 +3022,31 @@ function WizardContent() {
         }
     }, [SIDEBAR_MIN, SIDEBAR_MAX, MAIN_MIN]);
 
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const saved = localStorage.getItem("fl_chat_collapsed");
+        if (saved === "1") {
+            setIsChatCollapsed(true);
+        }
+    }, []);
+
     // 1c. Persist sidebar width
     useEffect(() => {
         if (typeof window === 'undefined') return;
         localStorage.setItem("fl_sidebar_width", String(sidebarWidth));
     }, [sidebarWidth]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        localStorage.setItem("fl_chat_collapsed", isChatCollapsed ? "1" : "0");
+    }, [isChatCollapsed]);
+
+    useEffect(() => {
+        if (!isChatCollapsed) return;
+        isResizingRef.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+    }, [isChatCollapsed]);
 
     // 1d. Sidebar resize handlers
     useEffect(() => {
@@ -2918,6 +3103,7 @@ function WizardContent() {
                 messages,
                 evaluation,
                 generation,
+                generationArtifacts,
                 currentDiagram,
                 diagramGovernance,
                 tasks,
@@ -2970,6 +3156,7 @@ function WizardContent() {
         messages,
         evaluation,
         generation,
+        generationArtifacts,
         currentDiagram,
         diagramGovernance,
         tasks,
@@ -2994,8 +3181,8 @@ function WizardContent() {
 
     // 4. Scroll to bottom
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
+        messagesEndRef.current?.scrollIntoView({ behavior: isLoading ? "auto" : "smooth" });
+    }, [messages, isLoading]);
 
     // --- Handlers ---
 
@@ -3179,7 +3366,510 @@ Do you want to start scaffold generation now?`;
         requirementKey: ReadinessRequirementKey,
         language: "zh" | "en",
         baseMessages: Message[]
-    ) => {
+    ): {
+        architecturePack: ArchitecturePack;
+        decisionRecords?: DecisionRecord[];
+        guardrailChecklist: GuardrailChecklist;
+        readinessOverrides: ReadinessOverride[];
+        summary: string;
+        applied: boolean;
+    } => {
+        const latestUserAnswer = [...baseMessages]
+            .reverse()
+            .find((message) => message.role === "user" && message.content.trim().length > 0)
+            ?.content
+            .trim() ?? "";
+        const latestAnswerLower = latestUserAnswer.toLowerCase();
+        const isSteeringReply = (text: string) => {
+            const normalized = text.trim();
+            if (!normalized) return true;
+            if (AFFIRMATIVE_RESPONSE_PATTERN.test(normalized)) return true;
+            if (DEFER_RESPONSE_PATTERN.test(normalized)) return true;
+            return /阻塞项|blockers|补齐这个缺口|fill this gap|按推荐继续补齐这个缺口|按默认方案继续完善|show me 2 or 3|请给我 2 到 3 个常见方案|我来补充这个缺口|i will fill/i.test(normalized);
+        };
+        const meaningfulUserInputs = baseMessages
+            .filter((message) => message.role === "user")
+            .map((message) => message.content.trim())
+            .filter((text) => text.length > 0 && !isSteeringReply(text));
+        const mergeStringValues = (existing: string[], defaults: string[]) =>
+            [...new Set([...existing.map((item) => item.trim()).filter(Boolean), ...defaults.map((item) => item.trim()).filter(Boolean)])];
+        const mergeObjectsByKey = <T,>(existing: T[], defaults: T[], getKey: (item: T) => string) => {
+            const seen = new Set(existing.map((item) => getKey(item).trim().toLowerCase()).filter(Boolean));
+            const merged = [...existing];
+            for (const item of defaults) {
+                const key = getKey(item).trim().toLowerCase();
+                if (!key || seen.has(key)) continue;
+                seen.add(key);
+                merged.push(item);
+            }
+            return merged;
+        };
+        const productGoalCandidate = meaningfulUserInputs.find((text) =>
+            !/^先做\s*(web 应用|移动 app|桌面应用|后端服务\s*\/\s*api)/i.test(text) &&
+            !/^start with (a )?(web app|mobile app|desktop app|backend service)/i.test(text)
+        ) ?? "";
+        const inferredProductGoal = architecturePack.businessContext.productGoal.trim() ||
+            productGoalCandidate ||
+            (language === "zh"
+                ? "做一个帮助团队捕获、整理并排序大众需求的 Web 应用。"
+                : "Build a web app that helps teams capture, organize, and prioritize broad user demand.");
+        const ideaSignal = `${inferredProductGoal} ${meaningfulUserInputs.join(" ")}`.toLowerCase();
+        const defaultTargetUsers = language === "zh"
+            ? (/大众|consumer|public|mass/.test(ideaSignal)
+                ? ["产品经理与创业者", "市场研究团队"]
+                : ["产品团队", "创业团队"])
+            : (/大众|consumer|public|mass/.test(ideaSignal)
+                ? ["Product managers and founders", "Market research teams"]
+                : ["Product teams", "Startup teams"]);
+        const defaultUserJourneys = language === "zh"
+            ? [
+                "输入一个想验证的产品主题，并定义想观察的大众需求方向。",
+                "收集并整理用户反馈、评论或需求线索，归纳高频痛点与机会点。",
+                "查看需求摘要、优先级排序结果，并沉淀为后续产品决策输入。"
+            ]
+            : [
+                "Enter a product topic to validate and define the demand direction to observe.",
+                "Collect and organize user feedback or demand signals into recurring pain points and opportunities.",
+                "Review the demand summary and priority ranking, then turn it into downstream product decisions."
+            ];
+        const defaultConstraints = language === "zh"
+            ? [
+                "首发版本需要同时覆盖桌面和移动浏览器。",
+                "需求信号的采集与展示需要满足隐私与来源合规要求。"
+            ]
+            : [
+                "The first release must support both desktop and mobile browsers.",
+                "Demand signal collection and presentation must respect privacy and source-compliance requirements."
+            ];
+        const defaultRisks = language === "zh"
+            ? [
+                "冷启动阶段可能缺少足够高质量的需求样本，影响结果可信度。",
+                "AI 对模糊反馈的聚类与总结可能偏离真实市场需求。"
+            ]
+            : [
+                "The cold-start stage may lack enough high-quality demand samples, which can reduce confidence in the results.",
+                "AI clustering and summarization may drift away from the real market need when feedback is vague."
+            ];
+        const defaultBoundedContexts = language === "zh"
+            ? [
+                {
+                    name: "需求采集",
+                    responsibility: "接收主题、目标用户和原始需求信号。",
+                    owns: ["主题输入", "原始需求线索"],
+                    dependencies: ["需求分析"]
+                },
+                {
+                    name: "需求分析",
+                    responsibility: "清洗、聚类、总结并排序需求机会。",
+                    owns: ["需求摘要", "优先级结果"],
+                    dependencies: ["需求采集"]
+                }
+            ]
+            : [
+                {
+                    name: "Demand capture",
+                    responsibility: "Accept the topic, target audience, and raw demand signals.",
+                    owns: ["Topic input", "Raw demand signals"],
+                    dependencies: ["Demand analysis"]
+                },
+                {
+                    name: "Demand analysis",
+                    responsibility: "Clean, cluster, summarize, and rank demand opportunities.",
+                    owns: ["Demand summary", "Priority results"],
+                    dependencies: ["Demand capture"]
+                }
+            ];
+        const defaultModuleResponsibilities = language === "zh"
+            ? [
+                {
+                    module: "主题输入与采集模块",
+                    responsibility: "创建需求捕获任务并记录原始输入。",
+                    inputs: ["主题", "目标用户", "用户反馈"],
+                    outputs: ["原始需求信号"]
+                },
+                {
+                    module: "需求分析与摘要模块",
+                    responsibility: "对原始需求信号做聚类、总结和优先级排序。",
+                    inputs: ["原始需求信号"],
+                    outputs: ["需求摘要", "优先级列表"]
+                }
+            ]
+            : [
+                {
+                    module: "Topic input and capture module",
+                    responsibility: "Create demand-capture tasks and store the raw inputs.",
+                    inputs: ["Topic", "Target user", "User feedback"],
+                    outputs: ["Raw demand signals"]
+                },
+                {
+                    module: "Demand analysis and summary module",
+                    responsibility: "Cluster, summarize, and prioritize the raw demand signals.",
+                    inputs: ["Raw demand signals"],
+                    outputs: ["Demand summary", "Priority list"]
+                }
+            ];
+        const defaultIntegrationContracts = language === "zh"
+            ? [
+                {
+                    name: "需求分析提交 API",
+                    kind: "api" as const,
+                    producer: "需求采集",
+                    consumer: "需求分析",
+                    payload: "主题、目标用户与原始需求信号",
+                    notes: "提交后触发清洗、聚类和摘要生成。"
+                }
+            ]
+            : [
+                {
+                    name: "Demand analysis submission API",
+                    kind: "api" as const,
+                    producer: "Demand capture",
+                    consumer: "Demand analysis",
+                    payload: "Topic, target audience, and raw demand signals",
+                    notes: "Submitting this payload triggers cleaning, clustering, and summary generation."
+                }
+            ];
+        const defaultImplementationOrder = language === "zh"
+            ? [
+                "先实现主题输入与需求采集流程。",
+                "再实现需求分析、聚类与摘要输出。",
+                "最后补齐结果展示、导出与质量校验。"
+            ]
+            : [
+                "Implement the topic-input and demand-capture flow first.",
+                "Then build the demand analysis, clustering, and summary output flow.",
+                "Finish with result presentation, export, and quality checks."
+            ];
+        const defaultAcceptanceCriteria = language === "zh"
+            ? [
+                "用户可以提交一个待验证的主题并完成一次需求捕获。",
+                "系统会输出可读的需求摘要与优先级排序结果。",
+                "桌面和移动浏览器都能完成主要流程。",
+                "核心结果可以被再次查看或导出。"
+            ]
+            : [
+                "A user can submit a topic and complete one full demand-capture run.",
+                "The system returns a readable demand summary with a ranked priority list.",
+                "The core flow works on both desktop and mobile browsers.",
+                "The core result can be reviewed again or exported."
+            ];
+        const defaultTestStrategy = language === "zh"
+            ? [
+                "为需求输入到摘要输出的主流程编写端到端测试。",
+                "为需求聚类与优先级排序逻辑编写单元测试。"
+            ]
+            : [
+                "Add an end-to-end test for the topic-input to summary-output happy path.",
+                "Add unit tests for clustering and priority-ranking logic."
+            ];
+        const defaultUiComponents = language === "zh"
+            ? ["主题输入表单", "需求信号列表", "摘要与优先级卡片"]
+            : ["Topic input form", "Demand signal list", "Summary and priority cards"];
+        const defaultResponsiveStrategy = language === "zh"
+            ? ["桌面端采用输入区与结果区双栏布局，移动端切换为单栏堆叠。"]
+            : ["Use a two-column input/result layout on desktop and a single-column stacked layout on mobile."];
+        const inferPlatformStrategy = () => {
+            const candidates = [latestUserAnswer, ...meaningfulUserInputs.slice().reverse()].filter(Boolean);
+            for (const candidate of candidates) {
+                const normalized = candidate.toLowerCase();
+                if (/web\s*app|web 应用|桌面和移动浏览器|desktop and mobile browsers|浏览器|browser/.test(normalized)) {
+                    return {
+                        primaryPlatform: language === "zh" ? "Web 应用" : "Web app",
+                        targetPlatforms: language === "zh" ? ["桌面浏览器", "移动浏览器"] : ["Desktop browser", "Mobile browser"],
+                        runtimeEnvironments: language === "zh" ? ["Web 浏览器"] : ["Web browser"],
+                        distributionChannels: language === "zh" ? ["浏览器访问", "托管 Web 应用"] : ["Browser access", "Hosted web app"]
+                    };
+                }
+                if (/mobile\s*app|移动 app|移动端|ios|android|app store|google play/.test(normalized)) {
+                    return {
+                        primaryPlatform: language === "zh" ? "移动 App" : "Mobile app",
+                        targetPlatforms: language === "zh" ? ["iOS", "Android"] : ["iOS", "Android"],
+                        runtimeEnvironments: language === "zh" ? ["iOS App", "Android App"] : ["iOS app", "Android app"],
+                        distributionChannels: language === "zh" ? ["App Store", "Google Play"] : ["App Store", "Google Play"]
+                    };
+                }
+                if (/desktop\s*app|桌面应用|windows|macos/.test(normalized)) {
+                    return {
+                        primaryPlatform: language === "zh" ? "桌面应用" : "Desktop app",
+                        targetPlatforms: language === "zh" ? ["Windows", "macOS"] : ["Windows", "macOS"],
+                        runtimeEnvironments: language === "zh" ? ["Windows 桌面应用", "macOS 桌面应用"] : ["Windows desktop app", "macOS desktop app"],
+                        distributionChannels: language === "zh" ? ["桌面安装包"] : ["Desktop installer"]
+                    };
+                }
+                if (/backend\s*service|后端服务|service api|api rather than a ui-first product/.test(normalized)) {
+                    return {
+                        primaryPlatform: language === "zh" ? "后端服务 / API" : "Backend service / API",
+                        targetPlatforms: language === "zh" ? ["服务端 API"] : ["Service API"],
+                        runtimeEnvironments: language === "zh" ? ["Node.js 服务运行时"] : ["Node.js service runtime"],
+                        distributionChannels: language === "zh" ? ["API 调用", "后台任务"] : ["API clients", "Background jobs"]
+                    };
+                }
+            }
+
+            return {
+                primaryPlatform: language === "zh" ? "Web 应用" : "Web app",
+                targetPlatforms: language === "zh" ? ["桌面浏览器", "移动浏览器"] : ["Desktop browser", "Mobile browser"],
+                runtimeEnvironments: language === "zh" ? ["Web 浏览器"] : ["Web browser"],
+                distributionChannels: language === "zh" ? ["浏览器访问", "托管 Web 应用"] : ["Browser access", "Hosted web app"]
+            };
+        };
+
+        if (requirementKey === "business_context.platforms") {
+            const nextPlatformStrategy = inferPlatformStrategy();
+
+            return {
+                architecturePack: {
+                    ...architecturePack,
+                    platformStrategy: nextPlatformStrategy
+                },
+                guardrailChecklist,
+                readinessOverrides,
+                summary: language === "zh"
+                    ? `已按推荐确认平台策略：${nextPlatformStrategy.primaryPlatform}。`
+                    : `Confirmed the recommended platform strategy: ${nextPlatformStrategy.primaryPlatform}.`,
+                applied: true
+            };
+        }
+
+        if (requirementKey === "business_context.product_goal" && inferredProductGoal.trim()) {
+            return {
+                architecturePack: {
+                    ...architecturePack,
+                    businessContext: {
+                        ...architecturePack.businessContext,
+                        productGoal: inferredProductGoal.trim()
+                    }
+                },
+                guardrailChecklist,
+                readinessOverrides,
+                summary: language === "zh"
+                    ? `已按推荐补齐产品目标：${inferredProductGoal.trim()}`
+                    : `Filled the product goal using the recommended default: ${inferredProductGoal.trim()}`,
+                applied: true
+            };
+        }
+
+        if (requirementKey === "business_context.target_users") {
+            const nextTargetUsers = mergeStringValues(architecturePack.businessContext.targetUsers, defaultTargetUsers);
+            if (nextTargetUsers.length > architecturePack.businessContext.targetUsers.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        businessContext: {
+                            ...architecturePack.businessContext,
+                            targetUsers: nextTargetUsers
+                        }
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐目标用户。"
+                        : "Filled the target users using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "business_context.user_journeys") {
+            const nextJourneys = mergeStringValues(architecturePack.businessContext.userJourneys, defaultUserJourneys);
+            if (nextJourneys.length > architecturePack.businessContext.userJourneys.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        businessContext: {
+                            ...architecturePack.businessContext,
+                            userJourneys: nextJourneys
+                        }
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐关键用户旅程。"
+                        : "Filled the key user journeys using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "business_context.constraints_or_risks") {
+            const nextConstraints = mergeStringValues(architecturePack.businessContext.constraints, defaultConstraints);
+            const nextRisks = mergeStringValues(architecturePack.businessContext.risks, defaultRisks);
+            if (
+                nextConstraints.length > architecturePack.businessContext.constraints.length ||
+                nextRisks.length > architecturePack.businessContext.risks.length
+            ) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        businessContext: {
+                            ...architecturePack.businessContext,
+                            constraints: nextConstraints,
+                            risks: nextRisks
+                        }
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐约束与风险。"
+                        : "Filled the constraints and risks using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "boundaries.bounded_contexts") {
+            const nextBoundedContexts = mergeObjectsByKey(
+                architecturePack.boundedContexts,
+                defaultBoundedContexts,
+                (item) => item.name
+            );
+            if (nextBoundedContexts.length > architecturePack.boundedContexts.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        boundedContexts: nextBoundedContexts
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐限界上下文。"
+                        : "Filled the bounded contexts using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "boundaries.module_responsibilities") {
+            const nextModuleResponsibilities = mergeObjectsByKey(
+                architecturePack.moduleResponsibilities,
+                defaultModuleResponsibilities,
+                (item) => item.module
+            );
+            if (nextModuleResponsibilities.length > architecturePack.moduleResponsibilities.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        moduleResponsibilities: nextModuleResponsibilities
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐模块职责。"
+                        : "Filled the module responsibilities using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "boundaries.data_ownership") {
+            const defaultDataOwnership = language === "zh"
+                ? {
+                    data: "用户提交的想法与分析结果",
+                    owner: "用户",
+                    consumers: ["架构分析服务", "项目工作区"],
+                    notes: "平台仅为提供服务而处理数据，默认保留 30 天，支持后续按策略调整。"
+                }
+                : {
+                    data: "User-submitted ideas and analysis results",
+                    owner: "User",
+                    consumers: ["Architecture analysis service", "Project workspace"],
+                    notes: "The product processes this data only to deliver the service, with a default 30-day retention window that can be revised later."
+                };
+            const hasEquivalentRule = architecturePack.dataOwnership.some((item) =>
+                item.data.trim().toLowerCase() === defaultDataOwnership.data.toLowerCase()
+            );
+
+            if (!hasEquivalentRule) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        dataOwnership: [...architecturePack.dataOwnership, defaultDataOwnership]
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐默认数据归属规则。"
+                        : "Added the recommended default data ownership rule.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "decisions.integration_contracts") {
+            const nextIntegrationContracts = mergeObjectsByKey(
+                architecturePack.integrationContracts,
+                defaultIntegrationContracts,
+                (item) => item.name
+            );
+            if (nextIntegrationContracts.length > architecturePack.integrationContracts.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        integrationContracts: nextIntegrationContracts
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐集成契约。"
+                        : "Filled the integration contracts using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "decisions.decision_records") {
+            const stackQuestion = buildStackRecommendationQuestion(language, architecturePack);
+            const candidateOptions = stackQuestion?.options?.filter((option) => !DEFER_RESPONSE_PATTERN.test(option.value || option.label)) ?? [];
+            const selectedOption = candidateOptions.find((option) => {
+                const label = option.label.toLowerCase();
+                const value = option.value.toLowerCase();
+                return latestAnswerLower.includes(label) || latestAnswerLower.includes(value);
+            }) ?? candidateOptions[0];
+
+            if (selectedOption) {
+                const alreadyRecorded = decisionRecords.some((record) =>
+                    record.decision.trim().toLowerCase() === selectedOption.value.trim().toLowerCase()
+                );
+
+                if (!alreadyRecorded) {
+                    const alternativesRejected = candidateOptions
+                        .filter((option) => option.label !== selectedOption.label)
+                        .slice(0, 3)
+                        .map((option) => option.label);
+
+                    return {
+                        architecturePack,
+                        guardrailChecklist,
+                        readinessOverrides,
+                        decisionRecords: normalizeDecisionRecords([
+                            ...decisionRecords,
+                            {
+                                title: language === "zh" ? "采用首发技术栈基线" : "Adopt the initial stack baseline",
+                                decision: selectedOption.value,
+                                rationale: language === "zh"
+                                    ? "基于当前已确认的平台策略与产品范围，先锁定这条默认技术栈基线，以减少后续实现分歧并继续完善架构包。"
+                                    : "Based on the confirmed platform strategy and current product scope, lock this default stack baseline now to reduce downstream implementation drift.",
+                                alternativesRejected,
+                                consequences: language === "zh"
+                                    ? [
+                                        "后续模块职责、集成契约和交付 guardrails 将以这条技术栈为基线展开。",
+                                        "如果范围变化明显，再重新评估替代技术栈。"
+                                    ]
+                                    : [
+                                        "The next module boundaries, integration contracts, and delivery guardrails will assume this stack baseline.",
+                                        "If the scope changes materially, revisit the stack choice later."
+                                    ]
+                            }
+                        ]),
+                        summary: language === "zh"
+                            ? `已按推荐记录技术决策：${selectedOption.label}。`
+                            : `Recorded the recommended architecture decision: ${selectedOption.label}.`,
+                        applied: true
+                    };
+                }
+            }
+        }
+
         if (requirementKey === "decisions.non_functional_requirements") {
             const existingText = architecturePack.nonFunctionalRequirements
                 .map((item) => `${item.category} ${item.requirement} ${item.rationale}`.toLowerCase());
@@ -3190,17 +3880,17 @@ Do you want to start scaffold generation now?`;
             const candidates = [
                 {
                     category: language === "zh" ? "质量" : "quality",
-                    requirement: language === "zh" ? "准确性" : "Accuracy",
+                    requirement: language === "zh" ? "结果可信度" : "Result confidence",
                     rationale: language === "zh"
-                        ? "确保基础四则运算在各种输入下都返回可靠且一致的结果。"
-                        : "Ensure the core arithmetic operations always return reliable and consistent results."
+                        ? "确保需求摘要、聚类与优先级结果在相同输入下保持稳定且可解释。"
+                        : "Ensure summaries, clustering, and prioritization stay stable and explainable for the same input."
                 },
                 {
                     category: language === "zh" ? "体验" : "usability",
-                    requirement: language === "zh" ? "易用性" : "Usability",
+                    requirement: language === "zh" ? "响应速度" : "Responsiveness",
                     rationale: language === "zh"
-                        ? "让日常计算在最少步骤内完成，降低误触和理解成本。"
-                        : "Keep daily calculations easy to complete with minimal friction and low cognitive load."
+                        ? "让用户在提交主题后尽快看到可读的需求摘要与优先级结果。"
+                        : "Let users see a readable summary and priority result quickly after submitting a topic."
                 }
             ];
             const nextRequirement = candidates.find((candidate) =>
@@ -3218,6 +3908,60 @@ Do you want to start scaffold generation now?`;
                     summary: language === "zh"
                         ? `已按推荐补充非功能性需求“${nextRequirement.requirement}”。`
                         : `Added the recommended non-functional requirement: ${nextRequirement.requirement}.`,
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "guardrails.implementation_order") {
+            const nextImplementationOrder = mergeStringValues(guardrailChecklist.implementationOrder, defaultImplementationOrder);
+            if (nextImplementationOrder.length > guardrailChecklist.implementationOrder.length) {
+                return {
+                    architecturePack,
+                    guardrailChecklist: {
+                        ...guardrailChecklist,
+                        implementationOrder: nextImplementationOrder
+                    },
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐实现顺序。"
+                        : "Filled the implementation order using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "guardrails.acceptance_criteria") {
+            const nextAcceptanceCriteria = mergeStringValues(guardrailChecklist.acceptanceCriteria, defaultAcceptanceCriteria);
+            if (nextAcceptanceCriteria.length > guardrailChecklist.acceptanceCriteria.length) {
+                return {
+                    architecturePack,
+                    guardrailChecklist: {
+                        ...guardrailChecklist,
+                        acceptanceCriteria: nextAcceptanceCriteria
+                    },
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐验收标准。"
+                        : "Filled the acceptance criteria using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "guardrails.test_strategy") {
+            const nextTestStrategy = mergeStringValues(guardrailChecklist.testStrategy, defaultTestStrategy);
+            if (nextTestStrategy.length > guardrailChecklist.testStrategy.length) {
+                return {
+                    architecturePack,
+                    guardrailChecklist: {
+                        ...guardrailChecklist,
+                        testStrategy: nextTestStrategy
+                    },
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐测试策略。"
+                        : "Filled the test strategy using the recommended defaults.",
                     applied: true
                 };
             }
@@ -3266,6 +4010,51 @@ Do you want to start scaffold generation now?`;
                     : "Filled the key screen definitions using the recommended defaults.",
                 applied: true
             };
+        }
+
+        if (requirementKey === "ui.shared_components") {
+            const nextUiComponents = mergeStringValues(architecturePack.experienceConstraints.uiComponents, defaultUiComponents);
+            if (nextUiComponents.length > architecturePack.experienceConstraints.uiComponents.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        experienceConstraints: {
+                            ...architecturePack.experienceConstraints,
+                            uiComponents: nextUiComponents
+                        }
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐共享 UI 组件。"
+                        : "Filled the shared UI components using the recommended defaults.",
+                    applied: true
+                };
+            }
+        }
+
+        if (requirementKey === "ui.responsive_strategy") {
+            const nextResponsiveStrategy = mergeStringValues(
+                architecturePack.experienceConstraints.responsiveStrategy,
+                defaultResponsiveStrategy
+            );
+            if (nextResponsiveStrategy.length > architecturePack.experienceConstraints.responsiveStrategy.length) {
+                return {
+                    architecturePack: {
+                        ...architecturePack,
+                        experienceConstraints: {
+                            ...architecturePack.experienceConstraints,
+                            responsiveStrategy: nextResponsiveStrategy
+                        }
+                    },
+                    guardrailChecklist,
+                    readinessOverrides,
+                    summary: language === "zh"
+                        ? "已按推荐补齐响应式策略。"
+                        : "Filled the responsive strategy using the recommended defaults.",
+                    applied: true
+                };
+            }
         }
 
         return {
@@ -3317,18 +4106,22 @@ Do you want to start scaffold generation now?`;
 
         setHasUserEdited(true);
         setArchitecturePack(resolution.architecturePack);
+        if (resolution.decisionRecords) {
+            setDecisionRecords(resolution.decisionRecords);
+        }
         setGuardrailChecklist(resolution.guardrailChecklist);
         setReadinessOverrides(resolution.readinessOverrides);
+        const resolvedDecisions = resolution.decisionRecords ?? decisionRecords;
 
         const nextEligibility = computeScaffoldEligibility({
             architecturePack: resolution.architecturePack,
-            decisionRecords,
+            decisionRecords: resolvedDecisions,
             guardrailChecklist: resolution.guardrailChecklist,
             readinessOverrides: resolution.readinessOverrides
         });
         const nextStage = inferArchitectureStage(
             resolution.architecturePack,
-            decisionRecords,
+            resolvedDecisions,
             resolution.guardrailChecklist,
             resolution.readinessOverrides
         );
@@ -3338,6 +4131,7 @@ Do you want to start scaffold generation now?`;
             ? {
                 ...prev,
                 architecturePackDraft: resolution.architecturePack,
+                decisionDrafts: resolvedDecisions,
                 guardrailDrafts: resolution.guardrailChecklist,
                 readiness: nextEligibility.readiness,
                 stage: nextStage,
@@ -3348,15 +4142,22 @@ Do you want to start scaffold generation now?`;
         );
         setGenerateError(null);
 
+        const nextStackQuestion =
+            !nextEligibility.canGenerate &&
+            shouldPrioritizeStackQuestion(nextStage, resolution.architecturePack, resolvedDecisions)
+                ? buildStackRecommendationQuestion(language, resolution.architecturePack)
+                : null;
         const followUp = nextEligibility.canGenerate
             ? buildReadyToGenerateMessage(language)
-            : buildBlockedGenerateQuestion(
-                language,
-                nextStage,
-                nextEligibility.readiness,
-                resolution.architecturePack,
-                baseMessages
-            );
+            : nextStackQuestion
+                ? nextStackQuestion
+                : buildBlockedGenerateQuestion(
+                    language,
+                    nextStage,
+                    nextEligibility.readiness,
+                    resolution.architecturePack,
+                    baseMessages
+                );
         const combinedContent = `${resolution.summary}\n\n${followUp.content}`.trim();
         appendDeterministicAssistantResponse(
             baseMessages,
@@ -3398,11 +4199,32 @@ Do you want to start scaffold generation now?`;
             ? resolveOptionAction(selectedOption, contextualAction)
             : null;
         const typedAction = inferQuestionAction(textToSend);
+        const selectedRequirementAction =
+            !selectedOptionAction &&
+            selectedOption &&
+            contextualRequirementKey &&
+            AFFIRMATIVE_RESPONSE_PATTERN.test(selectedOption.value) &&
+            !DEFER_RESPONSE_PATTERN.test(`${selectedOption.label} ${selectedOption.value}`)
+                ? "fill_requirement" as const
+                : null;
         const contextualTriggeredAction =
             !selectedOptionAction && contextualAction && isAffirmativeForAction(textToSend, contextualAction)
                 ? contextualAction
                 : null;
-        const triggeredAction = selectedOptionAction ?? contextualTriggeredAction ?? typedAction;
+        const typedRequirementAction =
+            !selectedOption &&
+            !selectedOptionAction &&
+            contextualRequirementKey &&
+            AFFIRMATIVE_RESPONSE_PATTERN.test(textToSend) &&
+            !DEFER_RESPONSE_PATTERN.test(textToSend)
+                ? "fill_requirement" as const
+                : null;
+        const triggeredAction =
+            selectedOptionAction ??
+            contextualTriggeredAction ??
+            selectedRequirementAction ??
+            typedRequirementAction ??
+            typedAction;
         const preparedMessages = closeOpenAssistantQuestions(messages, answeredQuestionKey);
 
         // Optimistic UI Update
@@ -3640,14 +4462,24 @@ Do you want to start scaffold generation now?`;
                     }
                 }
 
+                const questionActionMatch = buffer.match(/<question_action>([\s\S]*?)<\/question_action>/i);
+                if (questionActionMatch?.[1]) {
+                    currentQuestionAction = normalizeMessageAction(questionActionMatch[1].trim()) ?? currentQuestionAction;
+                }
+
+                const questionRequirementKeyMatch = buffer.match(/<question_requirement_key>([\s\S]*?)<\/question_requirement_key>/i);
+                if (questionRequirementKeyMatch?.[1]) {
+                    currentQuestionRequirementKey = normalizeReadinessRequirementKey(questionRequirementKeyMatch[1].trim()) ?? currentQuestionRequirementKey;
+                }
+
                 const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
                 if (questionMatch && questionMatch[1]) {
                     const rawQuestion = questionMatch[1];
                     const q = normalizeSingleQuestion(rawQuestion);
                     if (q) {
                         currentQuestionKey = normalizeQuestionKey(q);
-                        currentQuestionAction = inferQuestionAction(rawQuestion);
-                        currentQuestionRequirementKey = null;
+                        const inferredQuestionAction = inferQuestionAction(rawQuestion);
+                        const nextQuestionAction = currentQuestionAction ?? inferredQuestionAction;
                         currentEval.next_step.question = q;
                         const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis, workspaceLanguage);
                         setMessages(prev => {
@@ -3659,7 +4491,7 @@ Do you want to start scaffold generation now?`;
                                 q,
                                 current.options ?? [],
                                 latestUserContext,
-                                currentQuestionAction,
+                                nextQuestionAction,
                                 currentQuestionKey,
                                 currentQuestionRequirementKey,
                                 workspaceLanguage
@@ -3670,7 +4502,7 @@ Do you want to start scaffold generation now?`;
                                 options: ensuredOptions,
                                 questionKey: currentQuestionKey,
                                 questionStatus: "pending",
-                                questionAction: currentQuestionAction ?? undefined,
+                                questionAction: nextQuestionAction ?? undefined,
                                 questionRequirementKey: currentQuestionRequirementKey ?? undefined
                             };
                             return updated;
@@ -3896,16 +4728,12 @@ Do you want to start scaffold generation now?`;
                     const nextQuestionKey = coercedQuestion
                         ? coercedQuestion.questionKey
                         : current.questionKey;
-                    const nextQuestionAction = coercedPlatformQuestion || coercedStackQuestion
-                        ? undefined
-                        : coercedGenerateQuestion && coercedQuestion === coercedGenerateQuestion
-                            ? coercedGenerateQuestion.questionAction
-                            : current.questionAction;
-                    const nextQuestionRequirementKey = coercedPlatformQuestion || coercedStackQuestion
-                        ? undefined
-                        : coercedGenerateQuestion && coercedQuestion === coercedGenerateQuestion
-                            ? coercedGenerateQuestion.questionRequirementKey
-                            : current.questionRequirementKey;
+                    const nextQuestionAction = coercedQuestion
+                        ? coercedQuestion.questionAction
+                        : current.questionAction;
+                    const nextQuestionRequirementKey = coercedQuestion
+                        ? coercedQuestion.questionRequirementKey
+                        : current.questionRequirementKey;
                     const nextQuestionStatus = coercedQuestion ? "pending" as const : current.questionStatus;
                     if (
                         nextContent === current.content &&
@@ -3972,6 +4800,7 @@ Do you want to start scaffold generation now?`;
     };
 
     const handleResizeStart = (e: React.PointerEvent) => {
+        if (isChatCollapsed) return;
         e.preventDefault();
         isResizingRef.current = true;
         document.body.style.cursor = "col-resize";
@@ -3999,82 +4828,112 @@ Do you want to start scaffold generation now?`;
             );
             const outputLanguage = workspaceLanguage;
             const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
-            const res = await fetch("/api/generate", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    projectId,
-                    versionId: currentVersion.id,
-                    summary: historyText,
-                    diagram: currentDiagram,
-                    projectName: project?.name,
-                    outputLanguage,
-                    outputMode: GENERATE_OUTPUT_MODE,
-                    oneClickMode: GENERATE_ONE_CLICK_MODE,
-                    ideProfile: GENERATE_IDE_PROFILE,
-                    templateKindHint,
-                    currentProjectTree: generation?.projectTree,
-                    architecturePack,
-                    decisionRecords,
-                    guardrailChecklist
-                })
-            });
+            const requestGeneration = async (outputMode: OutputMode, currentProjectTree?: FileNode[]) => {
+                const res = await fetch("/api/generate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        projectId,
+                        versionId: currentVersion.id,
+                        summary: historyText,
+                        diagram: currentDiagram,
+                        projectName: project?.name,
+                        outputLanguage,
+                        outputMode,
+                        oneClickMode: GENERATE_ONE_CLICK_MODE,
+                        ideProfile: GENERATE_IDE_PROFILE,
+                        templateKindHint,
+                        currentProjectTree,
+                        architecturePack,
+                        decisionRecords,
+                        guardrailChecklist
+                    })
+                });
 
-            const payload = await res.json().catch(() => null) as (
-                GenerationResponse & {
-                    error?: string;
-                    details?: string;
-                    code?: string;
-                    status?: number;
-                    blockingReasons?: string[];
-                }
-            ) | null;
-            const payloadHasError = Boolean(
-                payload &&
-                typeof payload === "object" &&
-                typeof payload.error === "string" &&
-                !Array.isArray(payload.projectTree)
-            );
+                const payload = await res.json().catch(() => null) as (
+                    GenerationResponse & {
+                        error?: string;
+                        details?: string;
+                        code?: string;
+                        status?: number;
+                        blockingReasons?: string[];
+                    }
+                ) | null;
+                const payloadHasError = Boolean(
+                    payload &&
+                    typeof payload === "object" &&
+                    typeof payload.error === "string" &&
+                    !Array.isArray(payload.projectTree)
+                );
 
-            if (!res.ok || payloadHasError) {
-                let errorMessage = uiText.failedToGenerate;
-                if (payload) {
-                    if (payload.error) {
-                        errorMessage = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
+                if (!res.ok || payloadHasError) {
+                    let errorMessage = uiText.failedToGenerate;
+                    if (payload) {
+                        if (payload.error) {
+                            errorMessage = payload.details ? `${payload.error}: ${payload.details}` : payload.error;
+                        }
+                        if (Array.isArray(payload.blockingReasons) && payload.blockingReasons.length > 0) {
+                            errorMessage = payload.blockingReasons[0];
+                        }
                     }
-                    if (Array.isArray(payload.blockingReasons) && payload.blockingReasons.length > 0) {
-                        errorMessage = payload.blockingReasons[0];
+                    const effectiveStatus = typeof payload?.status === "number" ? payload.status : res.status;
+                    if (effectiveStatus === 504 && !/timeout/i.test(errorMessage)) {
+                        errorMessage = `${errorMessage}. ${uiText.generateTimedOut}`;
+                    } else if (effectiveStatus === 524 && !/524/i.test(errorMessage)) {
+                        errorMessage = `${errorMessage}. ${uiText.gatewayTimedOut}`;
+                    }
+                    throw new Error(errorMessage);
+                }
+                if (!payload || !Array.isArray(payload.projectTree)) {
+                    throw new Error(uiText.scaffoldGenerationFailed);
+                }
+                if (payload.preflightReport && !payload.preflightReport.pass) {
+                    const codes = payload.preflightReport.issues.map((issue) => issue.code).join(", ");
+                    throw new Error(uiText.scaffoldPreflightFailed(codes || "unknown"));
+                }
+                return payload as GenerationResponse;
+            };
+
+            const nextArtifacts: GenerationArtifacts = {};
+            let partialFailure: Error | null = null;
+
+            for (const outputMode of GENERATE_OUTPUT_MODES) {
+                try {
+                    const artifact = await requestGeneration(
+                        outputMode,
+                        generationArtifacts[outputMode]?.projectTree ?? generation?.projectTree
+                    );
+                    nextArtifacts[outputMode] = artifact;
+                } catch (error) {
+                    if (!partialFailure) {
+                        partialFailure = error instanceof Error ? error : new Error(uiText.scaffoldGenerationFailed);
                     }
                 }
-                const effectiveStatus = typeof payload?.status === "number" ? payload.status : res.status;
-                if (effectiveStatus === 504 && !/timeout/i.test(errorMessage)) {
-                    errorMessage = `${errorMessage}. ${uiText.generateTimedOut}`;
-                } else if (effectiveStatus === 524 && !/524/i.test(errorMessage)) {
-                    errorMessage = `${errorMessage}. ${uiText.gatewayTimedOut}`;
-                }
-                throw new Error(errorMessage);
             }
-            if (!payload || !Array.isArray(payload.projectTree)) {
-                throw new Error(uiText.scaffoldGenerationFailed);
+
+            const primaryGeneration = resolvePrimaryGeneration(nextArtifacts);
+            if (!primaryGeneration) {
+                throw partialFailure || new Error(uiText.scaffoldGenerationFailed);
             }
-            const data: GenerationResponse = payload;
-            if (data.preflightReport && !data.preflightReport.pass) {
-                const codes = data.preflightReport.issues.map((issue) => issue.code).join(", ");
-                throw new Error(uiText.scaffoldPreflightFailed(codes || "unknown"));
-            }
-            setGeneration(data);
+
+            setGenerationArtifacts(nextArtifacts);
+            setGeneration(primaryGeneration);
             setCurrentVersion((prev) => prev ? { ...prev, status: "published" } : prev);
             setInput("");
             setPendingAttachments([]);
 
             // Auto switch tab
-            setActiveTab('files');
+            setActiveTab(getPreferredGeneratedTab(nextArtifacts));
 
             // Mock Task Generation
             setTasks([
                 { id: '1', title: uiText.setupProjectStructure, status: 'pending', description: uiText.setupProjectStructureDesc, source: 'scaffold' },
                 { id: '2', title: uiText.implementCoreFeatures, status: 'pending', description: uiText.implementCoreFeaturesDesc, source: 'scaffold' },
             ]);
+
+            if (partialFailure) {
+                console.warn("[generate] partial artifact generation failure", partialFailure.message);
+            }
 
         } catch (error) {
             console.error(error);
@@ -4118,6 +4977,7 @@ Do you want to start scaffold generation now?`;
                             messages,
                             evaluation,
                             generation,
+                            generationArtifacts,
                             currentDiagram,
                             diagramGovernance,
                             tasks,
@@ -4230,14 +5090,42 @@ Do you want to start scaffold generation now?`;
         ...guardrailChecklist.acceptanceCriteria,
         ...guardrailChecklist.testStrategy
     ].slice(0, 8);
+    const isShowingStaleProject = Boolean(projectId && project && project.id !== projectId);
+    const isShowingStaleVersion = Boolean(
+        versionId &&
+        projectId &&
+        project?.id === projectId &&
+        currentVersion &&
+        currentVersion.id !== versionId
+    );
+    const shouldMaskStaleWorkspace = isShowingStaleProject || isShowingStaleVersion;
 
-    if (!project || !currentVersion) return <WizardSkeleton />;
+    if (!project || !currentVersion || shouldMaskStaleWorkspace) return <WizardSkeleton />;
 
     return (
         <>
             <div className="relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.16),transparent_70%)]" />
                 {/* Project Sidebar + Chat (Left) */}
+                {isChatCollapsed ? (
+                    <aside className="relative z-10 flex h-full w-[76px] flex-shrink-0 flex-col items-center gap-4 border-r border-[color:var(--border)] bg-white/82 px-3 py-4 shadow-[var(--shadow-sm)] backdrop-blur-sm dark:bg-slate-900/72">
+                        <button
+                            type="button"
+                            onClick={() => setIsChatCollapsed(false)}
+                            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-[color:var(--border)] bg-white/90 text-slate-600 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-200"
+                            title={expandChatLabel}
+                            aria-label={expandChatLabel}
+                        >
+                            <PanelLeftOpen className="h-5 w-5" />
+                        </button>
+                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-500 text-sm font-bold text-white shadow-lg">
+                            {((project?.name || "P").trim().charAt(0) || "P").toUpperCase()}
+                        </div>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 [writing-mode:vertical-rl] dark:text-slate-500">
+                            {collapsedChatHint}
+                        </div>
+                    </aside>
+                ) : (
                 <VersionSidebar project={project} width={sidebarWidth} language={workspaceLanguage}>
                 <div className="relative z-10 flex h-full min-h-0 flex-col">
                     <div className="flex-1 min-h-0">
@@ -4251,7 +5139,18 @@ Do you want to start scaffold generation now?`;
                                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-400">{uiText.projectLabel}</p>
                                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</p>
                                 </div>
-                                <UserCenter signOutCallbackUrl="/" />
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsChatCollapsed(true)}
+                                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[color:var(--border)] bg-white/90 text-slate-500 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-200"
+                                        title={collapseChatLabel}
+                                        aria-label={collapseChatLabel}
+                                    >
+                                        <PanelLeftClose className="h-4 w-4" />
+                                    </button>
+                                    <UserCenter signOutCallbackUrl="/" />
+                                </div>
                             </div>
 
                             {/* Chat Area */}
@@ -4277,11 +5176,12 @@ Do you want to start scaffold generation now?`;
                                             message={msg}
                                             onOptionClick={handleOptionClick}
                                             disableOptions={isConversationLocked}
+                                            isStreaming={isAssistantStreaming && messageIndex === lastMessageIndex}
                                         />
                                     );
                                 })}
 
-                                {isLoading && (
+                                {isLoading && !isAssistantStreamingWithContent && (
                                     <div className="flex justify-start animate-pulse">
                                         <div className="rounded-xl rounded-tl-none bg-slate-100 px-4 py-2 text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                                             {uiText.thinking}
@@ -4301,7 +5201,7 @@ Do you want to start scaffold generation now?`;
                                     </div>
                                 </div>
                                 <div className="mb-4 flex flex-col gap-2">
-                                    {generation ? (
+                                    {isConversationLocked ? (
                                         <>
                                             <div className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-6 py-4 font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
                                                 <Check className="w-5 h-5" />
@@ -4466,20 +5366,23 @@ Do you want to start scaffold generation now?`;
                     </div>
                 </div>
             </VersionSidebar>
+                )}
 
-            <div
-                onPointerDown={handleResizeStart}
-                className="z-20 w-1.5 flex-shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-blue-200/60 dark:hover:bg-blue-800/50"
-                role="separator"
-                aria-orientation="vertical"
-                aria-label={uiText.resizeChatPanel}
-                style={{ touchAction: "none" }}
-            />
+            {!isChatCollapsed && (
+                <div
+                    onPointerDown={handleResizeStart}
+                    className="z-20 w-1.5 flex-shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-blue-200/60 dark:hover:bg-blue-800/50"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={uiText.resizeChatPanel}
+                    style={{ touchAction: "none" }}
+                />
+            )}
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
                 {/* Tabs */}
-                <div className="fc-surface mb-4 flex flex-shrink-0 space-x-1 overflow-x-auto rounded-2xl p-2">
+                <div className="fc-surface mb-4 grid flex-shrink-0 grid-cols-4 gap-2 rounded-2xl p-2">
                     <TabButton
                         active={activeTab === 'architecture'}
                         onClick={() => setActiveTab('architecture')}
@@ -4493,18 +5396,18 @@ Do you want to start scaffold generation now?`;
                         label={uiText.prdTab}
                     />
                     <TabButton
-                        active={activeTab === 'files'}
-                        onClick={() => setActiveTab('files')}
-                        icon={<FileCode className="w-4 h-4" />}
-                        label={uiText.scaffoldTab}
-                        disabled={!generation}
+                        active={activeTab === 'spec'}
+                        onClick={() => setActiveTab('spec')}
+                        icon={<FileText className="w-4 h-4" />}
+                        label="Spec Pack"
+                        disabled={!generationArtifacts.virtual_spec}
                     />
                     <TabButton
-                        active={activeTab === 'stack'}
-                        onClick={() => setActiveTab('stack')}
-                        icon={<Layers className="w-4 h-4" />}
-                        label={uiText.techStackTab}
-                        disabled={!generation}
+                        active={activeTab === 'runnable'}
+                        onClick={() => setActiveTab('runnable')}
+                        icon={<FileCode className="w-4 h-4" />}
+                        label="Runnable Scaffold"
+                        disabled={!generationArtifacts.runnable_scaffold}
                     />
                 </div>
 
@@ -4633,23 +5536,33 @@ Do you want to start scaffold generation now?`;
                         </div>
                     )}
 
-                    {/* Scaffold Tab */}
-                    {activeTab === 'files' && generation && (
+                    {/* Spec Pack Tab */}
+                    {activeTab === 'spec' && generationArtifacts.virtual_spec && (
                         <div className="absolute inset-0 p-4 overflow-hidden">
-                            <FileTreeDisplay content={generation.projectTree} projectName={project?.name} language={workspaceLanguage} />
+                            <FileTreeDisplay
+                                content={generationArtifacts.virtual_spec.projectTree}
+                                projectName={project?.name}
+                                language={workspaceLanguage}
+                                title={workspaceLanguage === "zh" ? "Spec Pack 文件预览" : "Spec Pack Preview"}
+                                downloadLabel={workspaceLanguage === "zh" ? "下载 Spec Pack ZIP" : "Download Spec Pack ZIP"}
+                                zipFileNameSuffix="spec-pack"
+                                emptyStateLabel={workspaceLanguage === "zh" ? "当前还没有生成 Spec Pack 文件。" : "No Spec Pack files generated yet."}
+                            />
                         </div>
                     )}
 
-                    {/* Stack Tab */}
-                    {activeTab === 'stack' && generation && (
-                        <div className="absolute inset-0 p-6 overflow-y-auto">
-                            <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                    <Layers className="h-5 w-5 text-orange-500" />
-                                    {uiText.technologyStack}
-                                </h3>
-                                <ToolStackTable content={generation.toolStack} language={workspaceLanguage} />
-                            </section>
+                    {/* Runnable Scaffold Tab */}
+                    {activeTab === 'runnable' && generationArtifacts.runnable_scaffold && (
+                        <div className="absolute inset-0 p-4 overflow-hidden">
+                            <FileTreeDisplay
+                                content={generationArtifacts.runnable_scaffold.projectTree}
+                                projectName={project?.name}
+                                language={workspaceLanguage}
+                                title={workspaceLanguage === "zh" ? "Runnable Scaffold 文件预览" : "Runnable Scaffold Preview"}
+                                downloadLabel={workspaceLanguage === "zh" ? "下载 Runnable Scaffold ZIP" : "Download Runnable Scaffold ZIP"}
+                                zipFileNameSuffix="runnable-scaffold"
+                                emptyStateLabel={workspaceLanguage === "zh" ? "当前还没有生成 Runnable Scaffold 文件。" : "No Runnable Scaffold files generated yet."}
+                            />
                         </div>
                     )}
 
@@ -4673,12 +5586,12 @@ function TabButton({ active, onClick, icon, label, disabled }: TabButtonProps) {
         <button
             onClick={onClick}
             disabled={disabled}
-            className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all ${active
+            className={`flex w-full min-w-0 items-center justify-center gap-2 rounded-xl px-3 py-2 text-[11px] font-semibold transition-all sm:text-xs ${active
                 ? 'border border-blue-200 bg-blue-50 text-blue-700 shadow-sm dark:border-blue-700/40 dark:bg-blue-900/20 dark:text-blue-200'
                 : 'text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/65'} ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}
         >
             {icon}
-            <span>{label}</span>
+            <span className="truncate">{label}</span>
         </button>
     );
 }

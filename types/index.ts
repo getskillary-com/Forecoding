@@ -466,6 +466,11 @@ export interface GenerationResponse {
     runtimeReadiness?: RuntimeReadiness;
 }
 
+export interface GenerationArtifacts {
+    virtual_spec?: GenerationResponse | null;
+    runnable_scaffold?: GenerationResponse | null;
+}
+
 export interface Attachment {
     type: 'image' | 'text' | 'pdf';
     mimeType: string;
@@ -500,6 +505,7 @@ export interface ProjectVersionData {
     messages: Message[];
     evaluation: EvaluationResponse | null;
     generation: GenerationResponse | null;
+    generationArtifacts?: GenerationArtifacts;
     currentDiagram: string;
     tasks: Task[];
     paymentStatus?: "paid" | "unpaid";

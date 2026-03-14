@@ -45,7 +45,11 @@ function collectProjectLanguageSignals(project: Partial<Project> | null | undefi
         .slice(-8)
         .map((message) => message.content || "")
         .join("\n");
-    const generationLanguage = latestVersion?.data?.generation?.generationManifest?.outputLanguage || "";
+    const generationLanguage =
+        latestVersion?.data?.generationArtifacts?.runnable_scaffold?.generationManifest?.outputLanguage ||
+        latestVersion?.data?.generationArtifacts?.virtual_spec?.generationManifest?.outputLanguage ||
+        latestVersion?.data?.generation?.generationManifest?.outputLanguage ||
+        "";
 
     return [
         project.name || "",
