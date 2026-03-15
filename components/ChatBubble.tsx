@@ -12,6 +12,18 @@ interface Props {
 }
 
 const markdownBodyClassName = "max-w-none text-[13px] leading-6 break-words text-inherit [&_ol]:my-3 [&_p]:my-0 [&_p+ol]:mt-3 [&_p+p]:mt-3 [&_p+ul]:mt-3 [&_pre]:overflow-x-auto [&_ul]:my-3 [&_li]:my-1";
+const STREAMING_ROW_CHAR_LIMIT = 44;
+const STREAMING_ROW_HEIGHT_REM = 1.5;
+
+function estimateStreamingRows(content: string) {
+    const normalized = content.replace(/\r\n/g, "\n");
+    const lines = normalized.length > 0 ? normalized.split("\n") : [""];
+
+    return Math.max(1, lines.reduce((total, line) => {
+        const visibleLength = Math.max(1, line.trimEnd().length);
+        return total + Math.max(1, Math.ceil(visibleLength / STREAMING_ROW_CHAR_LIMIT));
+    }, 0));
+}
 
 export const ChatBubble = memo(function ChatBubble({
     message,
@@ -24,6 +36,7 @@ export const ChatBubble = memo(function ChatBubble({
     const widthClassName = isUser
         ? "max-w-[80%]"
         : "w-full max-w-[calc(100%-2rem)] sm:max-w-[80%] xl:max-w-[48rem]";
+    const streamingRows = !isUser && isStreaming ? estimateStreamingRows(message.content) : 1;
     const [showOptions, setShowOptions] = useState(
         !isStreaming && Boolean(message.options && message.options.length > 0)
     );
@@ -80,7 +93,13 @@ export const ChatBubble = memo(function ChatBubble({
                     )}
 
                     {isStreaming && !isUser ? (
-                        <div className={`${markdownBodyClassName} whitespace-pre-wrap`}>
+                        <div
+                            className={`${markdownBodyClassName} overflow-hidden whitespace-pre-wrap transition-[max-height] duration-300 ease-out`}
+                            style={{
+                                minHeight: `${STREAMING_ROW_HEIGHT_REM}rem`,
+                                maxHeight: `${streamingRows * STREAMING_ROW_HEIGHT_REM + 0.35}rem`
+                            }}
+                        >
                             {message.content}
                             <span className="ml-1 inline-block h-5 w-0.5 animate-pulse rounded-full bg-blue-500 align-middle dark:bg-blue-300" />
                         </div>

@@ -70,6 +70,10 @@ You are responsible for:
 
 # Output Format (streamed XML tags):
 You MUST respond in this exact structure.
+Begin emitting <question> as early as possible in the stream, immediately after <density>.
+Inside <question>, write short complete lines and append the next line only after the previous line is ready.
+Do not wait for <diagram>, JSON blocks, or other analysis sections before starting <question>.
+Keep <options> as the final block after every other required block has finished streaming.
 
 <thinking>
 (Short internal reasoning summary)
@@ -82,6 +86,10 @@ You MUST respond in this exact structure.
 <density>
 (Integer 0-100 representing architecture completeness, not just feature clarity)
 </density>
+
+<question>
+(Start streaming this block early. First give a concise recommendation or default answer in 1-2 short sentences, then end with exactly one next architecture question or confirmation request. Prefer one short complete line at a time.)
+</question>
 
 <diagram>
 (Mermaid GRAPH TB code in a \`\`\`mermaid block. Keep node names stable when possible.)
@@ -199,12 +207,9 @@ Use empty arrays when unknown, never omit keys.)
 (true or false. True ONLY if the architecture pack is ready for scaffold generation.)
 </is_ready>
 
-<question>
-(First give a concise recommendation or default answer in 1-2 short sentences, then end with exactly one next architecture question or confirmation request.)
-</question>
-
 <options>
-(Usually include 3-4 options whenever <question> asks for confirmation or a choice.
+(Emit this block last, only after the <question> text is fully complete.
+Usually include 3-4 options whenever <question> asks for confirmation or a choice.
 The first option should be the recommended default.
 Include at least one broad fallback option such as "Proceed with your recommendation", "I will add more detail", "Show me common options", or "I'm not sure yet".
 One option per line in format: "Button Text::User Reply Text". Keep labels explicit.)

@@ -1197,6 +1197,22 @@ function buildAssistantDisplayContent(
     return parts.join("\n\n");
 }
 
+function buildAssistantStreamingContent(rawQuestion: string) {
+    const normalized = rawQuestion
+        .replace(/\r\n/g, "\n")
+        .replace(/\u00a0/g, " ")
+        .replace(/^\s+/, "")
+        .replace(/\n{3,}/g, "\n\n");
+
+    if (!normalized.trim()) return "";
+
+    return normalized
+        .split("\n")
+        .map((line, index) => index === 0 ? line.trimStart() : line.replace(/\s+$/g, ""))
+        .join("\n")
+        .trimStart();
+}
+
 function buildCommonFallbackOptions(
     language: "zh" | "en",
     questionAction: MessageAction | null = null
@@ -1964,13 +1980,31 @@ function ensureCommonQuestionOptions(
     return normalized.slice(0, 4);
 }
 
-function extractFallbackAssistantText(raw: string) {
+function extractCompletedAssistantText(
+    raw: string,
+    analysis?: EvaluationResponse["analysis"] | null,
+    forcedLanguage?: WorkspaceLanguage
+) {
+    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const questionMatch = normalized.match(/<question>([\s\S]*?)<\/question>/i);
+    if (!questionMatch?.[1]) return "";
+
+    return buildAssistantDisplayContent(questionMatch[1], analysis, forcedLanguage);
+}
+
+function extractFallbackAssistantText(
+    raw: string,
+    analysis?: EvaluationResponse["analysis"] | null,
+    forcedLanguage?: WorkspaceLanguage
+) {
     const normalized = raw.replace(/\r\n/g, "\n").trim();
     if (!normalized) return "";
 
     const questionMatch = normalized.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
     if (questionMatch && questionMatch[1]) {
-        const questionText = buildAssistantDisplayContent(questionMatch[1]);
+        const questionText = buildAssistantDisplayContent(questionMatch[1], analysis, forcedLanguage);
         if (questionText) return questionText;
     }
 
@@ -3666,7 +3700,7 @@ function WizardContent() {
                         const inferredQuestionAction = inferQuestionAction(rawQuestion);
                         const nextQuestionAction = currentQuestionAction ?? inferredQuestionAction;
                         currentEval.next_step.question = q;
-                        const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis, workspaceLanguage);
+                        const displayContent = buildAssistantStreamingContent(rawQuestion);
                         setMessages(prev => {
                             if (evalRequestIdRef.current !== requestId) return prev;
                             const updated = [...prev];
@@ -3883,7 +3917,16 @@ function WizardContent() {
                         requestMessages
                     )
                     : null;
-                const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
+                const completedQuestionText = extractCompletedAssistantText(
+                    buffer,
+                    currentEval.analysis,
+                    workspaceLanguage
+                );
+                const fallbackText = extractFallbackAssistantText(
+                    buffer,
+                    currentEval.analysis,
+                    workspaceLanguage
+                ) || "Model response format was invalid. Please retry.";
                 setMessages(prev => {
                     if (evalRequestIdRef.current !== requestId) return prev;
                     const updated = [...prev];
@@ -3901,7 +3944,9 @@ function WizardContent() {
                     const coercedQuestion = coercedPlatformQuestion ?? coercedStackQuestion ?? coercedGenerateQuestion;
                     const nextContent = coercedQuestion
                         ? coercedQuestion.content
-                        : current.content.trim().length > 0
+                        : completedQuestionText
+                            ? completedQuestionText
+                            : current.content.trim().length > 0
                             ? current.content
                             : fallbackText;
                     const nextOptions = coercedQuestion
