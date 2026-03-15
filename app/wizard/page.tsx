@@ -5382,7 +5382,7 @@ Do you want to start scaffold generation now?`;
             selectedRequirementAction ??
             typedRequirementAction ??
             typedAction;
-        const interactionMode: EvaluateInteractionMode = shouldUseArchitectureInteractionMode(triggeredAction)
+        const interactionMode: EvaluateInteractionMode = shouldUseArchitectureInteractionMode()
             ? "architecture"
             : "chat";
         const preparedMessages = closeOpenAssistantQuestions(messages, answeredQuestionKey);
