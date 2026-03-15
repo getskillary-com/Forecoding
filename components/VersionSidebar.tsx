@@ -2,7 +2,8 @@
 
 import { useState, type ReactNode } from "react";
 import { Project } from "@/types";
-import { Copy, Check } from "lucide-react";
+import { ArrowLeft, Copy, Check } from "lucide-react";
+import Link from "next/link";
 import type { WorkspaceLanguage } from "@/lib/project-language";
 
 interface VersionSidebarProps {
@@ -37,6 +38,14 @@ export function VersionSidebar({ project, children, width, language, headerActio
         >
             {/* Header */}
             <div className="flex items-start gap-3 border-b border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/75">
+                <Link
+                    href="/dashboard"
+                    className="rounded-lg p-1 transition-colors hover:bg-slate-200 dark:hover:bg-slate-800"
+                    aria-label={language === "zh" ? "返回 Dashboard" : "Back to dashboard"}
+                    title={language === "zh" ? "返回 Dashboard" : "Back to dashboard"}
+                >
+                    <ArrowLeft className="h-4 w-4 text-slate-500 dark:text-slate-300" />
+                </Link>
                 <div className="flex-1 min-w-0">
                     <h2 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</h2>
                     <p className="truncate text-xs text-slate-500 dark:text-slate-300">{language === "zh" ? "项目工作区" : "Project Workspace"}</p>
