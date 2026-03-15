@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Project } from "@/types";
 import { isAdminUser } from "@/lib/admin";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 import {
     getStripeCurrency,
     getStripeMaxUnitAmountCents,
@@ -48,7 +48,7 @@ async function loadProjectForUser(userId: string, projectId: string) {
 
 export async function POST(req: Request) {
     try {
-        const user = await getServerUser();
+        const user = await getServerSessionIdentity();
         if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }

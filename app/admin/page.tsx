@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 
 export default async function AdminPage() {
-    const user = await getServerUser();
+    const user = await getServerSessionIdentity();
     const email = user?.email || "admin";
 
     return (

@@ -16,6 +16,13 @@ export type ServerUser = {
     token: DecodedIdToken;
 };
 
+export type ServerSessionIdentity = {
+    uid: string;
+    email: string | null;
+    name: string | null;
+    token: DecodedIdToken;
+};
+
 function buildCookieOptions(maxAgeSeconds: number) {
     return {
         name: AUTH_SESSION_COOKIE_NAME,
@@ -49,7 +56,7 @@ export function clearSessionCookie(response: NextResponse) {
     });
 }
 
-export async function getServerUser(): Promise<ServerUser | null> {
+export async function getServerSessionIdentity(): Promise<ServerSessionIdentity | null> {
     const cookieStore = await cookies();
     const sessionCookie = cookieStore.get(AUTH_SESSION_COOKIE_NAME)?.value || "";
     if (!sessionCookie) return null;
@@ -64,26 +71,36 @@ export async function getServerUser(): Promise<ServerUser | null> {
     const uid = token.uid;
     if (!uid) return null;
 
-    const email = token.email || null;
-    const existing = await getUserProfileByUid(uid);
-    if (!existing && email) {
-        await upsertUserProfile({
-            uid,
-            email,
-            name: typeof token.name === "string" ? token.name : null,
-            emailVerified: token.email_verified ? new Date() : null,
+    return {
+        uid,
+        email: token.email || null,
+        name: typeof token.name === "string" ? token.name : null,
+        token
+    };
+}
+
+export async function getServerUser(): Promise<ServerUser | null> {
+    const session = await getServerSessionIdentity();
+    if (!session) return null;
+
+    let profile = await getUserProfileByUid(session.uid);
+    if (!profile && session.email) {
+        profile = await upsertUserProfile({
+            uid: session.uid,
+            email: session.email,
+            name: session.name,
+            emailVerified: session.token.email_verified ? new Date() : null,
             legacyPasswordResetRequired: false,
             sessionVersion: 0
         });
     }
-    const profile = (await getUserProfileByUid(uid)) || null;
 
     return {
-        uid,
-        email: profile?.email || email,
-        name: profile?.name || (typeof token.name === "string" ? token.name : null),
+        uid: session.uid,
+        email: profile?.email || session.email,
+        name: profile?.name || session.name,
         sessionVersion: profile?.sessionVersion ?? 0,
         legacyPasswordResetRequired: profile?.legacyPasswordResetRequired === true,
-        token
+        token: session.token
     };
 }

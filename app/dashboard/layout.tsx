@@ -1,12 +1,12 @@
 import { redirect } from "next/navigation";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 
 export default async function DashboardLayout({
     children
 }: {
     children: React.ReactNode;
 }) {
-    const user = await getServerUser();
+    const user = await getServerSessionIdentity();
 
     if (!user?.uid) {
         redirect("/login?callbackUrl=/dashboard");

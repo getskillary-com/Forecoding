@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 import { isAdminUser } from "@/lib/admin";
 
 export const runtime = "nodejs";
 
 export async function GET() {
     try {
-        const user = await getServerUser();
+        const user = await getServerSessionIdentity();
 
         if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

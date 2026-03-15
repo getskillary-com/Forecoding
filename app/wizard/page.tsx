@@ -54,6 +54,7 @@ import {
 } from "@/lib/workspace-i18n";
 import {
     getCachedProjectSnapshot,
+    prefetchWorkspaceRemote,
     readProjectsFromLocalStorage,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
@@ -85,10 +86,11 @@ import {
     resolvePrimaryPlatformCategory
 } from "@/lib/platforms";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
+import { loadAdminStatus } from "@/lib/admin-status-client";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
-const MESSAGE_WINDOW_SIZE = 60;
-const MESSAGE_WINDOW_STEP = 40;
+const MESSAGE_WINDOW_SIZE = 24;
+const MESSAGE_WINDOW_STEP = 24;
 const EVALUATE_MAX_HISTORY_MESSAGES = 24;
 const EVALUATE_MAX_MESSAGE_CONTENT_CHARS = 8000;
 const EVALUATE_MAX_TEXT_ATTACHMENT_CHARS = 20000;
@@ -2540,6 +2542,7 @@ function WizardContent() {
     const [isHydrating, setIsHydrating] = useState(false);
     const [loadedVersionId, setLoadedVersionId] = useState<string | null>(null);
     const [hasUserEdited, setHasUserEdited] = useState(false);
+    const hasUserEditedRef = useRef(false);
 
     const [messages, setMessages] = useState<Message[]>(initialNormalizedState.messages);
     const [input, setInput] = useState("");
@@ -2595,8 +2598,10 @@ function WizardContent() {
     const [activeTab, setActiveTab] = useState<StudioTab>(
         getPreferredGeneratedTab(initialGenerationArtifacts)
     );
+    const [shouldMountArchitectureViewer, setShouldMountArchitectureViewer] = useState(false);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const hasScrolledMessagesRef = useRef(false);
     const workspaceLanguage = getProjectWorkspaceLanguage(project);
     const uiText = getWorkspaceUiText(workspaceLanguage);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
@@ -2659,37 +2664,43 @@ function WizardContent() {
     useEffect(() => {
         let cancelled = false;
 
-        const loadAdminStatus = async () => {
+        const resolveAdminStatus = async () => {
             setIsAdminStatusLoaded(false);
-            try {
-                const res = await fetch("/api/admin/status", { cache: "no-store" });
-                if (!res.ok) {
-                    if (!cancelled) setIsAdmin(false);
-                    return;
-                }
-
-                const payload = (await res.json()) as { isAdmin?: boolean };
-                if (!cancelled) {
-                    setIsAdmin(payload.isAdmin === true);
-                }
-            } catch {
-                if (!cancelled) setIsAdmin(false);
-            } finally {
+            const nextIsAdmin = await loadAdminStatus();
+            if (!cancelled) {
+                setIsAdmin(nextIsAdmin);
                 if (!cancelled) setIsAdminStatusLoaded(true);
             }
         };
 
-        void loadAdminStatus();
+        void resolveAdminStatus();
         return () => {
             cancelled = true;
         };
     }, []);
+
+    useEffect(() => {
+        if (activeTab !== "architecture" || shouldMountArchitectureViewer) return;
+
+        const timer = window.setTimeout(() => {
+            setShouldMountArchitectureViewer(true);
+        }, 120);
+
+        return () => {
+            window.clearTimeout(timer);
+        };
+    }, [activeTab, shouldMountArchitectureViewer]);
+
+    useEffect(() => {
+        hasUserEditedRef.current = hasUserEdited;
+    }, [hasUserEdited]);
 
     // 1. Load Project & Version Data
     useEffect(() => {
         if (typeof window === "undefined" || !projectId) return;
 
         let cancelled = false;
+        let backgroundRefreshTimer: number | null = null;
 
         const hydrateFromProject = (foundProject: Project) => {
             if (cancelled) return;
@@ -2735,56 +2746,57 @@ function WizardContent() {
             }
         };
 
+        const refreshProjectFromRemote = async (localProjects: Project[], background = false) => {
+            try {
+                const remoteProjects = await prefetchWorkspaceRemote();
+                const nextProjects = remoteProjects ?? readProjectsFromLocalStorage();
+
+                if (nextProjects.length > 0 || localProjects.length === 0) {
+                    const remoteProject = nextProjects.find((p) => p.id === projectId);
+                    if (remoteProject && (!background || !hasUserEditedRef.current)) {
+                        hydrateFromProject(remoteProject);
+                    }
+                } else {
+                    void syncWorkspaceRemote(localProjects);
+                }
+            } catch (error) {
+                console.error("Failed to load remote workspace", error);
+            } finally {
+                if (!background && !cancelled) {
+                    setIsHydrating(false);
+                }
+            }
+        };
+
         const hydrate = async () => {
             setIsHydrating(true);
             setLoadedVersionId(null);
+            hasUserEditedRef.current = false;
             setHasUserEdited(false);
 
             const localProjects = readProjectsFromLocalStorage();
             const localProject = localProjects.find((p) => p.id === projectId);
             if (localProject) {
                 hydrateFromProject(localProject);
-            }
-            await yieldToBrowser();
-
-            try {
-                const url = projectId
-                    ? `/api/workspace?projectId=${encodeURIComponent(projectId)}`
-                    : "/api/workspace";
-                const res = await fetch(url, { cache: "no-store" });
-                if (res.ok) {
-                    const data = (await res.json()) as { projects?: Project[] };
-                    if (Array.isArray(data.projects)) {
-                        if (data.projects.length > 0 || localProjects.length === 0) {
-                            if (projectId) {
-                                const existing = readProjectsFromLocalStorage();
-                                const merged = data.projects.length > 0
-                                    ? existing.filter((p) => p.id !== projectId).concat(data.projects)
-                                    : existing;
-                                writeProjectsToLocalStorage(merged);
-                            } else {
-                                writeProjectsToLocalStorage(data.projects);
-                            }
-                            const remoteProject = data.projects.find((p) => p.id === projectId);
-                            if (remoteProject) hydrateFromProject(remoteProject);
-                        } else {
-                            void syncWorkspaceRemote(localProjects);
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error("Failed to load remote workspace", error);
-            } finally {
                 if (!cancelled) {
                     setIsHydrating(false);
                 }
+                backgroundRefreshTimer = window.setTimeout(() => {
+                    void refreshProjectFromRemote(localProjects, true);
+                }, 120);
+                return;
             }
+            await yieldToBrowser();
+            await refreshProjectFromRemote(localProjects);
         };
 
         void hydrate();
 
         return () => {
             cancelled = true;
+            if (backgroundRefreshTimer !== null) {
+                window.clearTimeout(backgroundRefreshTimer);
+            }
         };
     }, [projectId, versionId, router]);
 
@@ -3185,7 +3197,9 @@ function WizardContent() {
 
     // 4. Scroll to bottom
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: isLoading ? "auto" : "smooth" });
+        const behavior: ScrollBehavior = !hasScrolledMessagesRef.current || isLoading ? "auto" : "smooth";
+        messagesEndRef.current?.scrollIntoView({ behavior });
+        hasScrolledMessagesRef.current = true;
     }, [messages, isLoading]);
 
     // --- Handlers ---
@@ -5077,25 +5091,35 @@ Do you want to start scaffold generation now?`;
         setGenerateError(null);
     };
 
-    const prdSummaryLines = buildPrdSummaryLines(
-        workspaceLanguage,
-        evaluation,
-        architecturePack,
-        architectureReadiness
-    );
-    const prdConversationSignals = buildPrdConversationSignals(workspaceLanguage, messages);
-    const prdArchitectureSnapshot = buildPrdArchitectureSnapshot(
-        workspaceLanguage,
-        architecturePack,
-        architectureReadiness
-    );
-    const prdClarifiedItems = normalizeAnalysis(evaluation?.analysis).clarified;
-    const prdOpenQuestions = normalizeAnalysis(evaluation?.analysis).missing;
-    const prdGuardrailItems = [
-        ...guardrailChecklist.implementationOrder,
-        ...guardrailChecklist.acceptanceCriteria,
-        ...guardrailChecklist.testStrategy
-    ].slice(0, 8);
+    const isPrdTabActive = activeTab === "prd";
+    const prdAnalysis = isPrdTabActive ? normalizeAnalysis(evaluation?.analysis) : null;
+    const prdSummaryLines = isPrdTabActive
+        ? buildPrdSummaryLines(
+            workspaceLanguage,
+            evaluation,
+            architecturePack,
+            architectureReadiness
+        )
+        : [];
+    const prdConversationSignals = isPrdTabActive
+        ? buildPrdConversationSignals(workspaceLanguage, messages)
+        : [];
+    const prdArchitectureSnapshot = isPrdTabActive
+        ? buildPrdArchitectureSnapshot(
+            workspaceLanguage,
+            architecturePack,
+            architectureReadiness
+        )
+        : [];
+    const prdClarifiedItems = prdAnalysis?.clarified ?? [];
+    const prdOpenQuestions = prdAnalysis?.missing ?? [];
+    const prdGuardrailItems = isPrdTabActive
+        ? [
+            ...guardrailChecklist.implementationOrder,
+            ...guardrailChecklist.acceptanceCriteria,
+            ...guardrailChecklist.testStrategy
+        ].slice(0, 8)
+        : [];
     const isShowingStaleProject = Boolean(projectId && project && project.id !== projectId);
     const isShowingStaleVersion = Boolean(
         versionId &&
@@ -5425,7 +5449,11 @@ Do you want to start scaffold generation now?`;
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
                             <section className="h-full rounded-2xl border border-[color:var(--border)] bg-slate-50/70 p-4 dark:bg-black/25">
                                 <div className="relative h-full min-h-[520px] overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} language={workspaceLanguage} />
+                                    {shouldMountArchitectureViewer ? (
+                                        <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} language={workspaceLanguage} />
+                                    ) : (
+                                        <ArchitecturePanelPlaceholder />
+                                    )}
                                 </div>
                             </section>
                         </div>
@@ -5602,6 +5630,22 @@ function TabButton({ active, onClick, icon, label, disabled }: TabButtonProps) {
     );
 }
 
+function ArchitecturePanelPlaceholder() {
+    return (
+        <div className="flex h-full min-h-[520px] items-center justify-center p-6">
+            <div className="w-full max-w-3xl space-y-4">
+                <div className="mx-auto h-4 w-44 animate-pulse rounded bg-slate-200/80 dark:bg-slate-800/80" />
+                <div className="h-24 animate-pulse rounded-2xl bg-slate-200/70 dark:bg-slate-800/70" />
+                <div className="grid gap-4 md:grid-cols-2">
+                    <div className="h-48 animate-pulse rounded-2xl bg-slate-100/90 dark:bg-slate-800/60" />
+                    <div className="h-48 animate-pulse rounded-2xl bg-slate-100/90 dark:bg-slate-800/60" />
+                </div>
+                <div className="h-32 animate-pulse rounded-2xl bg-slate-100/90 dark:bg-slate-800/60" />
+            </div>
+        </div>
+    );
+}
+
 function WizardSkeleton() {
     return (
         <div className="relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
@@ -5642,7 +5686,7 @@ function WizardSkeleton() {
 
 export default function WizardPage() {
     return (
-        <Suspense fallback={<div className="flex h-screen items-center justify-center" />}>
+        <Suspense fallback={<WizardSkeleton />}>
             <WizardContent />
         </Suspense>
     );

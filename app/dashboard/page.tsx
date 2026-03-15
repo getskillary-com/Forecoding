@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { Plus, Folder, Clock, Trash2, Edit2, X, Copy, Check } from "lucide-react";
 import { DiagramGovernance, Project, ProjectVersion, UiDesignState } from "@/types";
@@ -13,6 +13,7 @@ import {
     readProjectsFromLocalStorage,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
+import { scheduleWizardWarmup } from "@/lib/wizard-prefetch";
 import {
     getProjectWorkspaceLanguage,
     getWorkspaceLanguageLabel,
@@ -103,6 +104,7 @@ export default function DashboardPage() {
     const router = useRouter();
     const [projects, setProjects] = useState<Project[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const hasLocalProjectMutationsRef = useRef(false);
 
     // Modal State
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -127,19 +129,17 @@ export default function DashboardPage() {
     useEffect(() => {
         if (typeof window === 'undefined') return;
         let cancelled = false;
+        let backgroundRefreshTimer: number | null = null;
 
-        const loadRemoteWorkspace = async (localProjects: Project[]) => {
+        const loadRemoteWorkspace = async (localProjects: Project[], background = false) => {
             try {
-                const res = await fetch("/api/workspace", { cache: "no-store" });
-                if (!res.ok) return;
+                const remoteProjects = await prefetchWorkspaceRemote();
+                const nextProjects = remoteProjects ?? readProjectsFromLocalStorage();
 
-                const data = (await res.json()) as { projects?: Project[] };
-                if (!Array.isArray(data.projects)) return;
-
-                if (data.projects.length > 0 || localProjects.length === 0) {
+                if (nextProjects.length > 0 || localProjects.length === 0) {
                     if (cancelled) return;
-                    setProjects(data.projects);
-                    writeProjectsToLocalStorage(data.projects);
+                    if (background && hasLocalProjectMutationsRef.current) return;
+                    setProjects(nextProjects);
                 } else {
                     void syncWorkspaceRemote(localProjects);
                 }
@@ -149,11 +149,17 @@ export default function DashboardPage() {
         };
 
         const hydrate = async () => {
+            hasLocalProjectMutationsRef.current = false;
             setIsLoading(true);
             await yieldToBrowser();
             const localProjects = readProjectsFromLocalStorage();
             if (!cancelled && localProjects.length > 0) {
                 setProjects(localProjects);
+                setIsLoading(false);
+                backgroundRefreshTimer = window.setTimeout(() => {
+                    void loadRemoteWorkspace(localProjects, true);
+                }, 120);
+                return;
             }
             await loadRemoteWorkspace(localProjects);
             if (!cancelled) setIsLoading(false);
@@ -162,12 +168,16 @@ export default function DashboardPage() {
         void hydrate();
         return () => {
             cancelled = true;
+            if (backgroundRefreshTimer !== null) {
+                window.clearTimeout(backgroundRefreshTimer);
+            }
         };
     }, []);
 
     // Prefetch top projects to reduce wizard load latency
     useEffect(() => {
         if (!projects.length) return;
+        scheduleWizardWarmup();
         projects.slice(0, 3).forEach((project) => {
             const latestVersion = project.versions[project.versions.length - 1];
             if (!latestVersion) return;
@@ -176,6 +186,7 @@ export default function DashboardPage() {
     }, [projects, router]);
 
     const saveProjects = (newProjects: Project[]) => {
+        hasLocalProjectMutationsRef.current = true;
         setProjects(newProjects);
         writeProjectsToLocalStorage(newProjects);
         void syncWorkspaceRemote(newProjects);
@@ -184,6 +195,7 @@ export default function DashboardPage() {
     const prefetchWizard = (projectId: string, versionId: string) => {
         primeWorkspaceCache(projectId);
         void prefetchWorkspaceRemote();
+        scheduleWizardWarmup();
         router.prefetch(`/wizard?projectId=${projectId}&versionId=${versionId}`);
     };
 
@@ -264,6 +276,7 @@ export default function DashboardPage() {
             // Optional: Redirect immediately or stay on dashboard? 
             // Better to stay and let user see the new project, or redirect?
             // "Start Building" usually implies immediate action.
+            scheduleWizardWarmup();
             router.push(`/wizard?projectId=${projectId}&versionId=${initialVersionId}`);
 
         } else {

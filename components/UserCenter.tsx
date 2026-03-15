@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Home, LayoutDashboard, LogIn, LogOut, Settings, Shield, UserPlus } from "lucide-react";
 import { useAuth } from "@/lib/auth-client";
+import { getCachedAdminStatus, loadAdminStatus } from "@/lib/admin-status-client";
 
 type UserCenterProps = {
     className?: string;
@@ -20,7 +21,7 @@ function getInitials(value: string) {
 export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterProps) {
     const { user, loading, signOutUser } = useAuth();
     const [isOpen, setIsOpen] = useState(false);
-    const [isAdmin, setIsAdmin] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(() => getCachedAdminStatus() ?? false);
     const rootRef = useRef<HTMLDivElement>(null);
 
     const displayName = user?.displayName || user?.email || "User";
@@ -59,24 +60,20 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
             };
         }
 
-        const loadAdminStatus = async () => {
-            try {
-                const res = await fetch("/api/admin/status", { cache: "no-store" });
-                if (!res.ok) {
-                    if (!cancelled) setIsAdmin(false);
-                    return;
-                }
+        if (getCachedAdminStatus() !== null) {
+            return () => {
+                cancelled = true;
+            };
+        }
 
-                const payload = (await res.json()) as { isAdmin?: boolean };
-                if (!cancelled) {
-                    setIsAdmin(payload.isAdmin === true);
-                }
-            } catch {
-                if (!cancelled) setIsAdmin(false);
+        const resolveAdminStatus = async () => {
+            const nextIsAdmin = await loadAdminStatus();
+            if (!cancelled) {
+                setIsAdmin(nextIsAdmin);
             }
         };
 
-        void loadAdminStatus();
+        void resolveAdminStatus();
         return () => {
             cancelled = true;
         };

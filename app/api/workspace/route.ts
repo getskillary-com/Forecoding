@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 import { getWorkspaceByUserId, saveWorkspaceByUserId } from "@/lib/data/workspaces";
 import { normalizeProjects } from "@/lib/project-language";
 import type { Project } from "@/types";
@@ -9,7 +9,7 @@ function parseProjects(raw: unknown): Project[] {
 }
 
 async function requireUserId() {
-    const user = await getServerUser();
+    const user = await getServerSessionIdentity();
     return user?.uid ?? null;
 }
 

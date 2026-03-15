@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 import { isAdminUser } from "@/lib/admin";
 
 export default async function AdminLayout({
@@ -7,7 +7,7 @@ export default async function AdminLayout({
 }: {
     children: React.ReactNode;
 }) {
-    const user = await getServerUser();
+    const user = await getServerSessionIdentity();
 
     if (!user?.uid) {
         redirect("/login?callbackUrl=/admin");

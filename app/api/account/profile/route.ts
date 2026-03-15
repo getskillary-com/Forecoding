@@ -1,16 +1,16 @@
 import { NextResponse } from "next/server";
-import { getServerUser } from "@/lib/server-auth";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 import { adminAuth } from "@/lib/firebase-admin";
 import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 
 async function getUserId() {
-    const user = await getServerUser();
+    const user = await getServerSessionIdentity();
     return user?.uid ?? null;
 }
 
 export async function GET() {
     try {
-        const serverUser = await getServerUser();
+        const serverUser = await getServerSessionIdentity();
         const userId = serverUser?.uid ?? null;
         if (!userId) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
