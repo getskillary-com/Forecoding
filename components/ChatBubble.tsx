@@ -11,9 +11,9 @@ interface Props {
     isStreaming?: boolean;
 }
 
-const markdownBodyClassName = "max-w-none text-[13px] leading-6 break-words text-inherit [&_ol]:my-3 [&_p]:my-0 [&_p+ol]:mt-3 [&_p+p]:mt-3 [&_p+ul]:mt-3 [&_pre]:overflow-x-auto [&_ul]:my-3 [&_li]:my-1";
+const markdownBodyClassName = "max-w-none text-[13px] leading-5 break-words text-inherit [&_ol]:my-2 [&_p]:my-0 [&_p+ol]:mt-2 [&_p+p]:mt-2 [&_p+ul]:mt-2 [&_pre]:overflow-x-auto [&_ul]:my-2 [&_li]:my-0.5";
 const STREAMING_ROW_CHAR_LIMIT = 44;
-const STREAMING_ROW_HEIGHT_REM = 1.5;
+const STREAMING_ROW_HEIGHT_REM = 1.3;
 
 function estimateStreamingRows(content: string) {
     const normalized = content.replace(/\r\n/g, "\n");
