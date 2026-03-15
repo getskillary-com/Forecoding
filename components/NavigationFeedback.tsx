@@ -8,7 +8,6 @@ import {
     useMemo,
     useRef
 } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
 
 type NavigationFeedbackContextValue = {
     beginNavigation: (href?: string) => void;
@@ -88,9 +87,12 @@ function resolveLoadingDocumentTitle(href?: string) {
     }
 }
 
+function applyStableDocumentTitle() {
+    if (typeof document === "undefined" || typeof window === "undefined") return;
+    document.title = resolveStableDocumentTitle(window.location.pathname);
+}
+
 export function NavigationFeedbackProvider({ children }: { children: React.ReactNode }) {
-    const pathname = usePathname();
-    const searchParams = useSearchParams();
     const resetTimerRef = useRef<number | null>(null);
     const activeLoadingTitleRef = useRef<string | null>(null);
 
@@ -119,18 +121,46 @@ export function NavigationFeedbackProvider({ children }: { children: React.React
         resetTimerRef.current = window.setTimeout(() => {
             if (activeLoadingTitleRef.current !== loadingTitle) return;
             activeLoadingTitleRef.current = null;
-            document.title = resolveStableDocumentTitle(window.location.pathname);
+            applyStableDocumentTitle();
             resetTimerRef.current = null;
         }, LOADING_RESET_MS);
     }, [clearPendingReset]);
 
     useEffect(() => {
-        if (typeof document === "undefined") return;
+        if (typeof document === "undefined" || typeof window === "undefined") return;
 
-        clearPendingReset();
-        activeLoadingTitleRef.current = null;
-        document.title = resolveStableDocumentTitle(pathname);
-    }, [pathname, searchParams, clearPendingReset]);
+        const syncTitleAfterNavigation = () => {
+            clearPendingReset();
+            activeLoadingTitleRef.current = null;
+            applyStableDocumentTitle();
+        };
+
+        const originalPushState = window.history.pushState.bind(window.history);
+        const originalReplaceState = window.history.replaceState.bind(window.history);
+
+        window.history.pushState = function pushState(...args) {
+            const result = originalPushState(...args);
+            window.setTimeout(syncTitleAfterNavigation, 0);
+            return result;
+        };
+
+        window.history.replaceState = function replaceState(...args) {
+            const result = originalReplaceState(...args);
+            window.setTimeout(syncTitleAfterNavigation, 0);
+            return result;
+        };
+
+        syncTitleAfterNavigation();
+        window.addEventListener("popstate", syncTitleAfterNavigation);
+
+        return () => {
+            window.history.pushState = originalPushState;
+            window.history.replaceState = originalReplaceState;
+            window.removeEventListener("popstate", syncTitleAfterNavigation);
+            clearPendingReset();
+            activeLoadingTitleRef.current = null;
+        };
+    }, [clearPendingReset]);
 
     useEffect(() => {
         if (typeof document === "undefined") return;
