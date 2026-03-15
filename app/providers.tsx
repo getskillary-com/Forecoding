@@ -1,7 +1,12 @@
 "use client";
 
 import { AuthProvider } from "@/lib/auth-client";
+import { NavigationFeedbackProvider } from "@/components/NavigationFeedback";
 
 export function Providers({ children }: { children: React.ReactNode }) {
-    return <AuthProvider>{children}</AuthProvider>;
+    return (
+        <NavigationFeedbackProvider>
+            <AuthProvider>{children}</AuthProvider>
+        </NavigationFeedbackProvider>
+    );
 }

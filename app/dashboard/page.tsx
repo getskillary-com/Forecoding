@@ -7,6 +7,7 @@ import { DiagramGovernance, Project, ProjectVersion, UiDesignState } from "@/typ
 import { useRouter } from "next/navigation";
 import { BrandLogo } from "@/components/BrandLogo";
 import { UserCenter } from "@/components/UserCenter";
+import { useNavigationFeedback } from "@/components/NavigationFeedback";
 import {
     prefetchWorkspaceRemote,
     primeWorkspaceCache,
@@ -102,6 +103,7 @@ function buildInitialDiagram(language: WorkspaceLanguage) {
 
 export default function DashboardPage() {
     const router = useRouter();
+    const { beginNavigation } = useNavigationFeedback();
     const [projects, setProjects] = useState<Project[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const hasLocalProjectMutationsRef = useRef(false);
@@ -277,6 +279,7 @@ export default function DashboardPage() {
             // Better to stay and let user see the new project, or redirect?
             // "Start Building" usually implies immediate action.
             scheduleWizardWarmup();
+            beginNavigation(`/wizard?projectId=${projectId}&versionId=${initialVersionId}`);
             router.push(`/wizard?projectId=${projectId}&versionId=${initialVersionId}`);
 
         } else {
@@ -564,7 +567,7 @@ export default function DashboardPage() {
 
 function DashboardSkeleton() {
     return (
-        <div className="relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
+        <div className="fc-delayed-fallback relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
             <div className="mx-auto max-w-6xl space-y-8">
                 <header className="fc-surface relative z-40 rounded-[var(--radius-2xl)] p-5 sm:p-7">
                     <div className="flex items-center justify-between">

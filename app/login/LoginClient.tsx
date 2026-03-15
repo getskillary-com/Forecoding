@@ -9,6 +9,7 @@ import {
 } from "firebase/auth";
 import { ArrowLeft, Loader2, Mail, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
+import { useNavigationFeedback } from "@/components/NavigationFeedback";
 import { getFirebaseAuth } from "@/lib/firebase-client";
 
 type AuthFlow = "login" | "register" | "forgot";
@@ -31,6 +32,7 @@ const segmentedButtonBase =
 export default function LoginClient({ initialMode }: { initialMode?: "login" | "register" }) {
     const searchParams = useSearchParams();
     const router = useRouter();
+    const { beginNavigation } = useNavigationFeedback();
 
     const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
     const queryFlow = readFlow(searchParams.get("mode"));
@@ -132,6 +134,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         try {
             await signInWithEmailAndPassword(auth, email, password);
             await establishSessionFromCurrentUser();
+            beginNavigation(callbackUrl);
             router.push(callbackUrl);
         } catch {
             setError("Invalid email or password.");
@@ -154,6 +157,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
 
             await signInWithCustomToken(auth, data.customToken);
             await establishSessionFromCurrentUser();
+            beginNavigation(callbackUrl);
             router.push(callbackUrl);
         } catch {
             setError("Failed to sign in with verification code.");
@@ -190,9 +194,11 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
             const auth = getFirebaseAuth();
             await signInWithEmailAndPassword(auth, email, newPassword);
             await establishSessionFromCurrentUser();
+            beginNavigation(callbackUrl);
             router.push(callbackUrl);
         } catch {
             setError("Password reset succeeded, but auto sign-in failed. Please sign in manually.");
+            beginNavigation(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
             router.push(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
         }
     };
@@ -213,6 +219,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
 
             await signInWithCustomToken(auth, data.customToken);
             await establishSessionFromCurrentUser();
+            beginNavigation(callbackUrl);
             router.push(callbackUrl);
         } catch {
             setError("Dev login is unavailable.");

@@ -33,6 +33,7 @@ import {
     FileNode
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
+import { useNavigationFeedback } from "@/components/NavigationFeedback";
 import dynamic from "next/dynamic";
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
@@ -2514,6 +2515,7 @@ function resolveProjectVersionForWizard(sourceProject: Project, versionId: strin
 
 function WizardContent() {
     const router = useRouter();
+    const { beginNavigation } = useNavigationFeedback();
     const searchParams = useSearchParams();
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
@@ -5017,6 +5019,7 @@ Do you want to start scaffold generation now?`;
             });
 
             if (res.status === 401) {
+                beginNavigation("/login");
                 router.push("/login");
                 return;
             }
@@ -5648,7 +5651,7 @@ function ArchitecturePanelPlaceholder() {
 
 function WizardSkeleton() {
     return (
-        <div className="relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
+        <div className="fc-delayed-fallback relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.16),transparent_70%)]" />
             <div className="relative z-10 flex h-full w-[420px] min-w-[320px] max-w-[720px] flex-col border-r border-[color:var(--border)] bg-white/85 backdrop-blur-sm dark:bg-slate-900/75">
                 <div className="border-b border-[color:var(--border)] bg-white/60 p-4 dark:bg-slate-900/75">

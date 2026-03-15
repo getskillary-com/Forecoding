@@ -2,7 +2,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 
 export default function Loading() {
     return (
-        <div className="relative min-h-screen overflow-hidden px-4 py-6 text-slate-900 dark:text-slate-100 sm:px-6">
+        <div className="fc-delayed-fallback relative min-h-screen overflow-hidden px-4 py-6 text-slate-900 dark:text-slate-100 sm:px-6">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.18),transparent_68%)]" />
             <div className="pointer-events-none absolute -top-24 -left-16 h-72 w-72 rounded-full bg-blue-500/12 blur-3xl" />
             <div className="pointer-events-none absolute right-0 top-1/3 h-80 w-80 rounded-full bg-cyan-400/12 blur-3xl" />

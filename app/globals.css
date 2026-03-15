@@ -145,6 +145,24 @@ body::before {
   animation: fcFloat 8s ease-in-out infinite;
 }
 
+@keyframes fcDelayedFallback {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+.fc-delayed-fallback {
+  opacity: 0;
+  visibility: hidden;
+  animation: fcDelayedFallback 0.18s linear 0.18s forwards;
+}
+
 @keyframes fcFadeUp {
   from {
     opacity: 0;

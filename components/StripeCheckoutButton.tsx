@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Loader2, CreditCard } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useNavigationFeedback } from "@/components/NavigationFeedback";
 
 type StripeCheckoutButtonProps = {
     className?: string;
@@ -23,6 +24,7 @@ export function StripeCheckoutButton({
     projectName = "Project Credit"
 }: StripeCheckoutButtonProps) {
     const router = useRouter();
+    const { beginNavigation } = useNavigationFeedback();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -42,6 +44,7 @@ export function StripeCheckoutButton({
             });
 
             if (res.status === 401) {
+                beginNavigation("/login");
                 router.push("/login");
                 return;
             }
