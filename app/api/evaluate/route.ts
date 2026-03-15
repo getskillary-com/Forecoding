@@ -1,7 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
-import type { Message, Attachment } from "@/types";
+import type { Message, Attachment, ReadinessRequirementKey } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
 const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 10_000, 5_000, 20_000);
@@ -107,6 +107,8 @@ function parseMissingItems(raw: string) {
         .filter(Boolean);
 }
 
+// Legacy fallback kept while the structured fallback flow rolls out.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function buildFallbackQuestion(output: string, language: "zh" | "en") {
     const missingRaw = extractTaggedSection(output, "analysis_missing");
     const missingItems = parseMissingItems(missingRaw);
@@ -122,6 +124,8 @@ function buildFallbackQuestion(output: string, language: "zh" | "en") {
         : "Could you confirm this direction so I can proceed?";
 }
 
+// Legacy fallback kept while the structured fallback flow rolls out.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function buildFallbackOptions(language: "zh" | "en") {
     if (language === "zh") {
         return [
@@ -137,6 +141,200 @@ function buildFallbackOptions(language: "zh" | "en") {
         "I will add more detail::I will add more detail.",
         "Show me common options::Show me common options.",
         "I am not sure yet::I am not sure yet. Please use the default approach."
+    ];
+}
+
+type FallbackQuestionPayload = {
+    message: string;
+    questionAction?: "fill_requirement";
+    questionRequirementKey?: ReadinessRequirementKey | null;
+};
+
+function parseFallbackMissingItems(raw: string) {
+    return raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/^[-*]\s*/, ""))
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/[?？]+$/g, ""))
+        .filter(Boolean);
+}
+
+function inferFallbackRequirementKey(item: string): ReadinessRequirementKey | null {
+    const normalized = item.toLowerCase();
+    const rules: Array<{ key: ReadinessRequirementKey; patterns: RegExp[] }> = [
+        {
+            key: "business_context.platforms",
+            patterns: [
+                /platform/,
+                /runtime/,
+                /launch platform/,
+                /platform strategy/,
+                /平台/,
+                /首发平台/,
+                /运行时/,
+                /浏览器/,
+                /ios/,
+                /android/,
+                /desktop/,
+                /mobile app/,
+                /web 应用/
+            ]
+        },
+        {
+            key: "business_context.target_users",
+            patterns: [/target user/, /audience/, /目标用户/]
+        },
+        {
+            key: "business_context.user_journeys",
+            patterns: [/user journey/, /workflow/, /journey step/, /用户旅程/, /流程步骤/]
+        },
+        {
+            key: "business_context.constraints_or_risks",
+            patterns: [/constraint/, /risk/, /约束/, /风险/]
+        },
+        {
+            key: "boundaries.bounded_contexts",
+            patterns: [/bounded context/, /限界上下文/]
+        },
+        {
+            key: "boundaries.module_responsibilities",
+            patterns: [/module/, /responsibilit/, /模块职责/, /服务模块/]
+        },
+        {
+            key: "boundaries.data_ownership",
+            patterns: [/data ownership/, /ownership/, /retention/, /保留期/, /数据归属/, /数据所有权/, /主权/]
+        },
+        {
+            key: "decisions.decision_records",
+            patterns: [/stack/, /framework/, /hosting/, /backend/, /deploy/, /技术栈/, /框架/, /托管/, /后端/]
+        },
+        {
+            key: "decisions.integration_contracts",
+            patterns: [/integration contract/, /api contract/, /接口契约/, /集成契约/, /contract/]
+        },
+        {
+            key: "decisions.non_functional_requirements",
+            patterns: [/non-functional/, /performance/, /privacy/, /availability/, /latency/, /sla/, /性能/, /隐私/, /可用性/, /响应时间/, /并发/]
+        },
+        {
+            key: "guardrails.implementation_order",
+            patterns: [/implementation order/, /phase/, /milestone/, /实现顺序/, /阶段计划/]
+        },
+        {
+            key: "guardrails.acceptance_criteria",
+            patterns: [/acceptance criteria/, /definition of done/, /验收标准/]
+        },
+        {
+            key: "guardrails.test_strategy",
+            patterns: [/test strategy/, /testing/, /测试策略/]
+        },
+        {
+            key: "ui.key_screens",
+            patterns: [/key screen/, /screen/, /关键界面/, /页面/]
+        },
+        {
+            key: "ui.shared_components",
+            patterns: [/shared ui/, /shared component/, /共享 ui/, /共享组件/]
+        },
+        {
+            key: "ui.responsive_strategy",
+            patterns: [/responsive/, /breakpoint/, /响应式/]
+        }
+    ];
+
+    for (const rule of rules) {
+        if (rule.patterns.some((pattern) => pattern.test(normalized))) {
+            return rule.key;
+        }
+    }
+
+    return null;
+}
+
+function getFallbackRequirementLabel(
+    requirementKey: ReadinessRequirementKey,
+    language: "zh" | "en"
+) {
+    const labels: Record<ReadinessRequirementKey, { zh: string; en: string }> = {
+        "business_context.product_goal": { zh: "产品目标", en: "the product goal" },
+        "business_context.platforms": { zh: "平台策略", en: "the platform strategy" },
+        "business_context.target_users": { zh: "目标用户", en: "the target users" },
+        "business_context.user_journeys": { zh: "用户旅程", en: "the user journey" },
+        "business_context.constraints_or_risks": { zh: "约束与风险", en: "the constraints and risks" },
+        "boundaries.bounded_contexts": { zh: "限界上下文", en: "the bounded contexts" },
+        "boundaries.module_responsibilities": { zh: "模块职责", en: "the module responsibilities" },
+        "boundaries.data_ownership": { zh: "数据归属", en: "the data ownership policy" },
+        "decisions.decision_records": { zh: "技术决策基线", en: "the architecture decision baseline" },
+        "decisions.integration_contracts": { zh: "集成契约", en: "the integration contract" },
+        "decisions.non_functional_requirements": { zh: "非功能性需求", en: "the non-functional requirement" },
+        "guardrails.implementation_order": { zh: "实现顺序", en: "the implementation order" },
+        "guardrails.acceptance_criteria": { zh: "验收标准", en: "the acceptance criteria" },
+        "guardrails.test_strategy": { zh: "测试策略", en: "the test strategy" },
+        "ui.key_screens": { zh: "关键界面", en: "the key screens" },
+        "ui.shared_components": { zh: "共享组件", en: "the shared UI components" },
+        "ui.responsive_strategy": { zh: "响应式策略", en: "the responsive strategy" }
+    };
+
+    return labels[requirementKey][language];
+}
+
+function buildStructuredFallbackQuestion(output: string, language: "zh" | "en"): FallbackQuestionPayload {
+    const missingRaw = extractTaggedSection(output, "analysis_missing");
+    const missingItems = parseFallbackMissingItems(missingRaw);
+
+    if (missingItems.length > 0) {
+        const primaryItem = missingItems[0];
+        const requirementKey = inferFallbackRequirementKey(primaryItem);
+
+        if (requirementKey) {
+            const label = getFallbackRequirementLabel(requirementKey, language);
+            return {
+                message: clipText(
+                    language === "zh"
+                        ? `我建议先按默认方案补齐“${label}”。是否现在先处理这一项？`
+                        : `I recommend resolving ${label} next using the default approach. Should I do that now?`,
+                    EVALUATE_FALLBACK_QUESTION_MAX_CHARS
+                ),
+                questionAction: "fill_requirement",
+                questionRequirementKey: requirementKey
+            };
+        }
+
+        return {
+            message: clipText(
+                language === "zh"
+                    ? `我建议先澄清这一项：${clipText(primaryItem, 180)}。是否先处理它？`
+                    : `I recommend resolving this gap first: ${clipText(primaryItem, 180)}. Should we handle it now?`,
+                EVALUATE_FALLBACK_QUESTION_MAX_CHARS
+            )
+        };
+    }
+
+    return {
+        message: language === "zh"
+            ? "请先确认这个方向，我再继续推进。"
+            : "Could you confirm this direction so I can proceed?"
+    };
+}
+
+function buildStructuredFallbackOptions(language: "zh" | "en") {
+    if (language === "zh") {
+        return [
+            "\u6309\u4f60\u7684\u5efa\u8bae\u7ee7\u7eed::\u6309\u4f60\u63a8\u8350\u7684\u9ed8\u8ba4\u65b9\u6848\u7ee7\u7eed\u3002",
+            "\u6211\u6765\u8865\u5145\u7ec6\u8282::\u6211\u6765\u8865\u5145\u66f4\u591a\u5173\u952e\u4fe1\u606f\u3002",
+            "\u7ed9\u6211\u5e38\u89c1\u9009\u9879::\u8bf7\u7ed9\u6211 2 \u5230 3 \u4e2a\u5e38\u89c1\u65b9\u6848\u5e76\u8bf4\u660e\u53d6\u820d\u3002",
+            "\u6211\u6682\u65f6\u4e0d\u786e\u5b9a::\u6211\u6682\u65f6\u4e0d\u786e\u5b9a\uff0c\u8bf7\u6309\u6700\u7a33\u59a5\u7684\u9ed8\u8ba4\u65b9\u6848\u63a8\u8fdb\u3002"
+        ];
+    }
+
+    return [
+        "Proceed with your recommendation::Proceed with your recommendation.",
+        "I will add more detail::I will add more detail.",
+        "Show me common options::Show me 2 or 3 common options and explain the tradeoffs.",
+        "I am not sure yet::I am not sure yet. Please use the safest default approach."
     ];
 }
 
@@ -372,10 +570,19 @@ export async function POST(req: Request) {
                     }
                 };
 
-                const enqueueQuestionFallback = (message: string) => {
-                    const optionsBlock = buildFallbackOptions(responseLanguage).join("\n");
+                const enqueueQuestionFallback = (payload: string | FallbackQuestionPayload) => {
+                    const normalizedPayload = typeof payload === "string"
+                        ? { message: payload }
+                        : payload;
+                    const optionsBlock = buildStructuredFallbackOptions(responseLanguage).join("\n");
+                    const actionTag = normalizedPayload.questionAction
+                        ? `\n<question_action>${normalizedPayload.questionAction}</question_action>`
+                        : "";
+                    const requirementTag = normalizedPayload.questionRequirementKey
+                        ? `\n<question_requirement_key>${normalizedPayload.questionRequirementKey}</question_requirement_key>`
+                        : "";
                     safeEnqueue(
-                        `<question>${message} (ref: ${requestId})</question>\n<options>${optionsBlock}</options>`
+                        `<question>${normalizedPayload.message} (ref: ${requestId})</question>${actionTag}${requirementTag}\n<options>${optionsBlock}</options>`
                     );
                     fallbackQuestionInjected = true;
                     sawQuestionTag = true;
@@ -506,7 +713,7 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] missingQuestionTag injectingFallback streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        enqueueQuestionFallback(buildFallbackQuestion(fullOutput, responseLanguage));
+                        enqueueQuestionFallback(buildStructuredFallbackQuestion(fullOutput, responseLanguage));
                     }
                     if (!closed) {
                         closed = true;
