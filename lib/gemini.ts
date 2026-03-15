@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { CTO_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
+import { CTO_SYSTEM_PROMPT, GENERAL_CHAT_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
 import type {
     GenerationManifest,
     GenerationTask,
@@ -1267,6 +1267,7 @@ type EvaluateRuntimeOptions = {
     designMemory?: string;
     diagramPolicy?: string;
     outputLanguage?: OutputLanguage;
+    interactionMode?: "chat" | "architecture";
 };
 
 export async function* streamEvaluateInput(
@@ -1275,6 +1276,7 @@ export async function* streamEvaluateInput(
     options?: EvaluateRuntimeOptions
 ) {
     const activeProvider = getActiveAiProvider();
+    const interactionMode = options?.interactionMode === "chat" ? "chat" : "architecture";
     const maxContextChars = 12000;
     const maxSourceContextChars = 6000;
     const maxDesignMemoryChars = 14000;
@@ -1309,10 +1311,15 @@ export async function* streamEvaluateInput(
         ? `\n\n# Strict Response Language\nAll human-readable output must be in Simplified Chinese. Keep XML tags in English, but every question, summary, option label, note, and explanation must remain in Chinese. Do not switch back to English unless quoting code, file paths, package names, or API identifiers.`
         : `\n\n# Strict Response Language\nAll human-readable output must be in English. Keep XML tags in English, and do not switch to Chinese unless quoting user-provided content.`;
     const providerOutputContractBlock = activeProvider === "openai"
-        ? `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing. You MUST always include one complete <question> block and one complete <options> block before ending the response.\n- Start <question> early in the stream. Do not wait for <diagram>, JSON blocks, or later analysis sections before opening it.\n- Inside <question>, emit short complete lines and let the visible answer grow progressively line by line.\n- Never omit <question>, even if architecture is already clear.\n- If no clarification is strictly required, use <question> to state the recommended next step and ask the user for a light confirmation.\n- Keep <options> as the final block, after the visible <question> text and every other required block are complete.\n- If options are uncertain, still include 3-4 concise options in the required "Label::Reply" format.\n- Do not stop after <readiness> or summary sections. The response is incomplete until <question> and <options> are both present.`
+        ? interactionMode === "chat"
+            ? `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing.\n- Always include one complete <question> block before ending the response.\n- Start <question> early in the stream and let it grow line by line.\n- Only include <options> when they are genuinely useful for the next action.\n- Do not turn a normal conversation into an architecture-readiness checklist unless the user explicitly asked for that flow.`
+            : `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing. You MUST always include one complete <question> block and one complete <options> block before ending the response.\n- Start <question> early in the stream. Do not wait for <diagram>, JSON blocks, or later analysis sections before opening it.\n- Inside <question>, emit short complete lines and let the visible answer grow progressively line by line.\n- Never omit <question>, even if architecture is already clear.\n- If no clarification is strictly required, use <question> to state the recommended next step and ask the user for a light confirmation.\n- Keep <options> as the final block, after the visible <question> text and every other required block are complete.\n- If options are uncertain, still include 3-4 concise options in the required "Label::Reply" format.\n- Do not stop after <readiness> or summary sections. The response is incomplete until <question> and <options> are both present.`
         : "";
 
-    const systemInstructionText = `${CTO_SYSTEM_PROMPT}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}${responseLanguageBlock}${providerOutputContractBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
+    const basePrompt = interactionMode === "chat"
+        ? GENERAL_CHAT_SYSTEM_PROMPT
+        : CTO_SYSTEM_PROMPT;
+    const systemInstructionText = `${basePrompt}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}${responseLanguageBlock}${providerOutputContractBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {
         const forceGeminiBackup = options?.preferBackupModel === true && hasGeminiKey();

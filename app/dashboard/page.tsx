@@ -90,6 +90,11 @@ function createEmptyFormData(): ProjectFormData {
 
 function buildInitialAssistantMessage(formData: ProjectFormData) {
     if (formData.workspaceLanguage === "zh") {
+        return `你好，我是你的 AI 联合创始人。我们可以先一起聊 **${formData.name}**。${formData.description ? `\n\n我看到你想做的是：“${formData.description}”。` : ""}\n\n你可以直接告诉我你现在想讨论什么；如果你想梳理产品、补齐架构，或者直接推进生成，我也可以切到对应流程。`;
+    }
+
+    return `Hello! I'm your AI Co-Founder. We can start with **${formData.name}** together.${formData.description ? `\n\nI see you want to build: "${formData.description}".` : ""}\n\nTell me what you want to work on right now. If you want product discovery, architecture guidance, or scaffold generation, I can switch into that flow when you ask.`;
+    if (formData.workspaceLanguage === "zh") {
         return `你好，我是你的 AI 联合创始人。我们先一起梳理 **${formData.name}**。${formData.description ? `\n\n我看到你想做的是：“${formData.description}”。` : ""}\n\n先告诉我你的产品目标、核心用户和最关键的使用流程。`;
     }
 

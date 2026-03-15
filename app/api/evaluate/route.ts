@@ -1,7 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
-import type { Message, Attachment, ReadinessRequirementKey } from "@/types";
+import type { Message, Attachment, EvaluateInteractionMode, ReadinessRequirementKey } from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
 const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 10_000, 5_000, 20_000);
@@ -25,6 +25,7 @@ type EvaluateRequestBody = {
     context?: unknown;
     sourceContext?: unknown;
     generationReady?: unknown;
+    interactionMode?: unknown;
     designMemory?: unknown;
     diagramPolicy?: unknown;
     outputLanguage?: unknown;
@@ -465,6 +466,7 @@ async function* streamWithTimeGuards(
         designMemory?: string;
         diagramPolicy?: string;
         outputLanguage?: "zh" | "en";
+        interactionMode?: EvaluateInteractionMode;
     }
 ) {
     const iterator = streamEvaluateInput(messages, contextText, {
@@ -473,7 +475,8 @@ async function* streamWithTimeGuards(
         sourceContext: options?.sourceContext,
         designMemory: options?.designMemory,
         diagramPolicy: options?.diagramPolicy,
-        outputLanguage: options?.outputLanguage
+        outputLanguage: options?.outputLanguage,
+        interactionMode: options?.interactionMode
     })[Symbol.asyncIterator]();
     try {
         while (true) {
@@ -521,8 +524,9 @@ export async function POST(req: Request) {
     const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).slice(0, 12);
     const requestStartedAt = Date.now();
     try {
-        const { messages, context, sourceContext, generationReady, designMemory, diagramPolicy, outputLanguage } = await parseEvaluateRequest(req);
+        const { messages, context, sourceContext, generationReady, interactionMode, designMemory, diagramPolicy, outputLanguage } = await parseEvaluateRequest(req);
         const responseLanguage = outputLanguage === "zh" ? "zh" : "en";
+        const normalizedInteractionMode: EvaluateInteractionMode = interactionMode === "chat" ? "chat" : "architecture";
         const contextText = typeof context === "string" ? context : undefined;
         const sourceContextText =
             typeof sourceContext === "string" && sourceContext.trim()
@@ -546,7 +550,7 @@ export async function POST(req: Request) {
         const provider = getActiveAiProvider();
         const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} sourceContextChars=${sourceContextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
+            `[evaluate][${requestId}] start provider=${provider} mode=${normalizedInteractionMode} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} sourceContextChars=${sourceContextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
         );
 
         const stream = new ReadableStream({
@@ -574,15 +578,17 @@ export async function POST(req: Request) {
                     const normalizedPayload = typeof payload === "string"
                         ? { message: payload }
                         : payload;
-                    const optionsBlock = buildStructuredFallbackOptions(responseLanguage).join("\n");
                     const actionTag = normalizedPayload.questionAction
                         ? `\n<question_action>${normalizedPayload.questionAction}</question_action>`
                         : "";
                     const requirementTag = normalizedPayload.questionRequirementKey
                         ? `\n<question_requirement_key>${normalizedPayload.questionRequirementKey}</question_requirement_key>`
                         : "";
+                    const optionsBlock = normalizedInteractionMode === "architecture"
+                        ? `\n<options>${buildStructuredFallbackOptions(responseLanguage).join("\n")}</options>`
+                        : "";
                     safeEnqueue(
-                        `<question>${normalizedPayload.message} (ref: ${requestId})</question>${actionTag}${requirementTag}\n<options>${optionsBlock}</options>`
+                        `<question>${normalizedPayload.message} (ref: ${requestId})</question>${actionTag}${requirementTag}${optionsBlock}`
                     );
                     fallbackQuestionInjected = true;
                     sawQuestionTag = true;
@@ -604,7 +610,8 @@ export async function POST(req: Request) {
                             sourceContext: sourceContextText,
                             designMemory: designMemoryText,
                             diagramPolicy: normalizedDiagramPolicy,
-                            outputLanguage: responseLanguage
+                            outputLanguage: responseLanguage,
+                            interactionMode: normalizedInteractionMode
                         }
                     )) {
                         if (chunk) {
@@ -659,7 +666,8 @@ export async function POST(req: Request) {
                                     sourceContext: retrySourceContext,
                                     designMemory: retryDesignMemory,
                                     diagramPolicy: normalizedDiagramPolicy,
-                                    outputLanguage: responseLanguage
+                                    outputLanguage: responseLanguage,
+                                    interactionMode: normalizedInteractionMode
                                 }
                             )) {
                                 if (retryChunk.trim().length > 0) {
@@ -713,7 +721,11 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] missingQuestionTag injectingFallback streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
-                        enqueueQuestionFallback(buildStructuredFallbackQuestion(fullOutput, responseLanguage));
+                        enqueueQuestionFallback(
+                            normalizedInteractionMode === "architecture"
+                                ? buildStructuredFallbackQuestion(fullOutput, responseLanguage)
+                                : getEvaluateFallbackMessage(responseLanguage, "no_output")
+                        );
                     }
                     if (!closed) {
                         closed = true;

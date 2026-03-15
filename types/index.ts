@@ -318,6 +318,10 @@ export type MessageQuestionStatus =
     | "answered"
     | "stale";
 
+export type EvaluateInteractionMode =
+    | "chat"
+    | "architecture";
+
 export type MessageKind =
     | "chat"
     | "system";
@@ -510,6 +514,7 @@ export interface PendingEvaluation {
     requestMessages: Message[];
     startedAt: number;
     assistantContent?: string;
+    interactionMode?: EvaluateInteractionMode;
 }
 
 // Represents the "Content" of a specific version

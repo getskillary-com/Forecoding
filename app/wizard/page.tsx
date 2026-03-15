@@ -8,6 +8,7 @@ import {
     DecisionRecord,
     Message,
     MessageAction,
+    EvaluateInteractionMode,
     MessageOption,
     MessageQuestionStatus,
     EvaluationResponse,
@@ -222,6 +223,10 @@ function normalizeMessageQuestionStatus(value: unknown): MessageQuestionStatus |
         : null;
 }
 
+function normalizeEvaluateInteractionMode(value: unknown): EvaluateInteractionMode {
+    return value === "chat" ? "chat" : "architecture";
+}
+
 function normalizeQuestionKey(value: string) {
     return value
         .replace(/\(ref:[^)]+\)/gi, " ")
@@ -290,25 +295,38 @@ function normalizeMessageValue(value: unknown): Message | null {
     const content = typeof candidate.content === "string" ? candidate.content : "";
     if (!role) return null;
 
-    const looksLikeTrackedQuestion =
-        role === "assistant" &&
-        (
-            /[?？]/.test(content) ||
-            /需要确认：|please confirm:/i.test(content) ||
-            Array.isArray(candidate.options)
-        );
-    const inferredQuestionKey =
+    const explicitKind = candidate.kind === "system" || candidate.kind === "chat"
+        ? "chat"
+        : undefined;
+    const explicitQuestionKey =
         typeof candidate.questionKey === "string" && candidate.questionKey.trim()
             ? normalizeQuestionKey(candidate.questionKey)
+            : undefined;
+    const explicitQuestionAction = normalizeMessageAction(candidate.questionAction) ?? undefined;
+    const explicitQuestionRequirementKey = normalizeReadinessRequirementKey(candidate.questionRequirementKey) ?? undefined;
+    const explicitQuestionStatus = normalizeMessageQuestionStatus(candidate.questionStatus) ?? undefined;
+    const hasExplicitTrackedMetadata =
+        role === "assistant" &&
+        Boolean(
+            explicitQuestionKey ||
+            explicitQuestionAction ||
+            explicitQuestionRequirementKey ||
+            explicitQuestionStatus ||
+            Array.isArray(candidate.options)
+        );
+    const looksLikeTrackedQuestion =
+        role === "assistant" && hasExplicitTrackedMetadata;
+    const inferredQuestionKey =
+        explicitQuestionKey
+            ? explicitQuestionKey
             : looksLikeTrackedQuestion && content.trim()
                 ? normalizeQuestionKey(normalizeSingleQuestion(content))
                 : undefined;
     const inferredQuestionAction =
-        normalizeMessageAction(candidate.questionAction) ??
+        explicitQuestionAction ??
         (looksLikeTrackedQuestion && content.trim() ? inferQuestionAction(content) ?? undefined : undefined);
     const inferredQuestionRequirementKey =
-        normalizeReadinessRequirementKey(candidate.questionRequirementKey) ??
-        undefined;
+        explicitQuestionRequirementKey;
     const options = Array.isArray(candidate.options)
         ? candidate.options.reduce<MessageOption[]>((acc, option) => {
             const normalizedOption = normalizeMessageOptionValue(option);
@@ -324,12 +342,13 @@ function normalizeMessageValue(value: unknown): Message | null {
         }, [])
         : undefined;
     const inferredQuestionStatus =
-        normalizeMessageQuestionStatus(candidate.questionStatus) ??
+        explicitQuestionStatus ??
         (looksLikeTrackedQuestion && inferredQuestionKey ? "pending" : undefined);
 
     return {
         role,
         content,
+        kind: explicitKind,
         options: options && options.length > 0 ? options : undefined,
         attachments: normalizeAttachments(candidate.attachments),
         questionKey: inferredQuestionKey,
@@ -354,6 +373,13 @@ function inferQuestionAction(questionText: string): MessageAction | null {
     if (GENERATE_SCAFFOLD_PATTERN.test(questionText)) return "generate_scaffold";
     if (OPEN_PRD_PATTERN.test(questionText)) return "open_prd";
     return null;
+}
+
+function shouldUseArchitectureInteractionMode(action: MessageAction | null) {
+    return action === "generate_scaffold" ||
+        action === "focus_requirement" ||
+        action === "fill_requirement" ||
+        action === "show_blockers";
 }
 
 function isAffirmativeForAction(value: string, action: MessageAction | null) {
@@ -788,7 +814,8 @@ function normalizePendingEvaluation(value: unknown): PendingEvaluation | null {
         requestId,
         requestMessages,
         startedAt: typeof candidate.startedAt === "number" ? candidate.startedAt : Date.now(),
-        assistantContent: typeof candidate.assistantContent === "string" ? candidate.assistantContent : ""
+        assistantContent: typeof candidate.assistantContent === "string" ? candidate.assistantContent : "",
+        interactionMode: normalizeEvaluateInteractionMode(candidate.interactionMode)
     };
 }
 
@@ -1211,6 +1238,19 @@ function buildAssistantStreamingContent(rawQuestion: string) {
         .map((line, index) => index === 0 ? line.trimStart() : line.replace(/\s+$/g, ""))
         .join("\n")
         .trimStart();
+}
+
+function buildAssistantFinalContent(
+    rawQuestion: string,
+    interactionMode: EvaluateInteractionMode,
+    analysis?: EvaluationResponse["analysis"] | null,
+    forcedLanguage?: WorkspaceLanguage
+) {
+    if (interactionMode === "chat") {
+        return buildAssistantStreamingContent(rawQuestion);
+    }
+
+    return buildAssistantDisplayContent(rawQuestion, analysis, forcedLanguage);
 }
 
 function buildCommonFallbackOptions(
@@ -1982,6 +2022,7 @@ function ensureCommonQuestionOptions(
 
 function extractCompletedAssistantText(
     raw: string,
+    interactionMode: EvaluateInteractionMode,
     analysis?: EvaluationResponse["analysis"] | null,
     forcedLanguage?: WorkspaceLanguage
 ) {
@@ -1991,11 +2032,12 @@ function extractCompletedAssistantText(
     const questionMatch = normalized.match(/<question>([\s\S]*?)<\/question>/i);
     if (!questionMatch?.[1]) return "";
 
-    return buildAssistantDisplayContent(questionMatch[1], analysis, forcedLanguage);
+    return buildAssistantFinalContent(questionMatch[1], interactionMode, analysis, forcedLanguage);
 }
 
 function extractFallbackAssistantText(
     raw: string,
+    interactionMode: EvaluateInteractionMode,
     analysis?: EvaluationResponse["analysis"] | null,
     forcedLanguage?: WorkspaceLanguage
 ) {
@@ -2004,7 +2046,7 @@ function extractFallbackAssistantText(
 
     const questionMatch = normalized.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
     if (questionMatch && questionMatch[1]) {
-        const questionText = buildAssistantDisplayContent(questionMatch[1], analysis, forcedLanguage);
+        const questionText = buildAssistantFinalContent(questionMatch[1], interactionMode, analysis, forcedLanguage);
         if (questionText) return questionText;
     }
 
@@ -2386,6 +2428,7 @@ function buildEvaluateRequestBody(
     structureContext: string | null,
     sourceContext: string | null,
     generationReady: boolean,
+    interactionMode: EvaluateInteractionMode,
     compactMode: boolean,
     designMemory: string | null,
     diagramPolicy: string,
@@ -2424,6 +2467,7 @@ function buildEvaluateRequestBody(
         context,
         sourceContext: sourceContextText,
         generationReady,
+        interactionMode,
         designMemory: designMemoryText,
         diagramPolicy,
         outputLanguage
@@ -3469,17 +3513,20 @@ function WizardContent() {
     const continueEvaluation = async (input: {
         requestMessages: Message[];
         latestUserContext: string;
+        interactionMode: EvaluateInteractionMode;
         resumePending?: PendingEvaluation | null;
         assistantContent?: string;
     }) => {
         const requestMessages = input.requestMessages;
         const latestUserContext = input.latestUserContext;
+        const interactionMode = input.resumePending?.interactionMode ?? input.interactionMode;
         const assistantIndex = requestMessages.length;
         const activePendingEvaluation: PendingEvaluation = input.resumePending ?? {
             requestId: createPendingEvaluationId(),
             requestMessages,
             startedAt: Date.now(),
-            assistantContent: input.assistantContent ?? ""
+            assistantContent: input.assistantContent ?? "",
+            interactionMode
         };
         const assistantPlaceholder: Message = {
             role: "assistant",
@@ -3521,6 +3568,7 @@ function WizardContent() {
                 structureContext,
                 sourceContext,
                 Boolean(generation),
+                interactionMode,
                 false,
                 designMemory,
                 DIAGRAM_POLICY,
@@ -3560,6 +3608,7 @@ function WizardContent() {
                     structureContext,
                     sourceContext,
                     Boolean(generation),
+                    interactionMode,
                     true,
                     designMemory,
                     DIAGRAM_POLICY,
@@ -3625,6 +3674,7 @@ function WizardContent() {
             let currentQuestionKey: string | null = null;
             let currentQuestionAction: MessageAction | null = null;
             let currentQuestionRequirementKey: ReadinessRequirementKey | null = null;
+            let latestQuestionText = "";
             const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
@@ -3696,9 +3746,14 @@ function WizardContent() {
                     const rawQuestion = questionMatch[1];
                     const q = normalizeSingleQuestion(rawQuestion);
                     if (q) {
+                        latestQuestionText = q;
                         currentQuestionKey = normalizeQuestionKey(q);
                         const inferredQuestionAction = inferQuestionAction(rawQuestion);
                         const nextQuestionAction = currentQuestionAction ?? inferredQuestionAction;
+                        const shouldTrackQuestion =
+                            interactionMode === "architecture" ||
+                            nextQuestionAction !== null ||
+                            currentQuestionRequirementKey !== null;
                         currentEval.next_step.question = q;
                         const displayContent = buildAssistantStreamingContent(rawQuestion);
                         setMessages(prev => {
@@ -3706,23 +3761,24 @@ function WizardContent() {
                             const updated = [...prev];
                             const current = updated[assistantIndex];
                             if (!current || current.role !== "assistant") return prev;
-                            const ensuredOptions = ensureCommonQuestionOptions(
-                                q,
-                                current.options ?? [],
-                                latestUserContext,
-                                nextQuestionAction,
-                                currentQuestionKey,
-                                currentQuestionRequirementKey,
-                                workspaceLanguage
-                            );
                             updated[assistantIndex] = {
                                 ...current,
                                 content: displayContent || q,
-                                options: ensuredOptions,
-                                questionKey: currentQuestionKey,
-                                questionStatus: "pending",
-                                questionAction: nextQuestionAction ?? undefined,
-                                questionRequirementKey: currentQuestionRequirementKey ?? undefined
+                                options: shouldTrackQuestion
+                                    ? ensureCommonQuestionOptions(
+                                        q,
+                                        current.options ?? [],
+                                        latestUserContext,
+                                        nextQuestionAction,
+                                        currentQuestionKey,
+                                        currentQuestionRequirementKey,
+                                        workspaceLanguage
+                                    )
+                                    : current.options,
+                                questionKey: shouldTrackQuestion ? currentQuestionKey : undefined,
+                                questionStatus: shouldTrackQuestion ? "pending" : undefined,
+                                questionAction: shouldTrackQuestion ? nextQuestionAction ?? undefined : undefined,
+                                questionRequirementKey: shouldTrackQuestion ? currentQuestionRequirementKey ?? undefined : undefined
                             };
                             return updated;
                         });
@@ -3846,21 +3902,46 @@ function WizardContent() {
 
                 const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
                 if (optionsMatch) {
-                    const options = ensureCommonQuestionOptions(
-                        currentEval.next_step.question || "",
-                        parseOptionsBlock(optionsMatch[1]),
-                        latestUserContext,
-                        currentQuestionAction,
-                        currentQuestionKey,
-                        currentQuestionRequirementKey,
-                        workspaceLanguage
-                    );
+                    const parsedOptions = parseOptionsBlock(optionsMatch[1]);
+                    const options = interactionMode === "architecture"
+                        ? ensureCommonQuestionOptions(
+                            currentEval.next_step.question || latestQuestionText,
+                            parsedOptions,
+                            latestUserContext,
+                            currentQuestionAction,
+                            currentQuestionKey,
+                            currentQuestionRequirementKey,
+                            workspaceLanguage
+                        )
+                        : parsedOptions.map((option) => ({
+                            ...option,
+                            action: resolveOptionAction(option, currentQuestionAction) ?? undefined,
+                            questionKey: currentQuestionKey ?? option.questionKey ?? undefined,
+                            requirementKey: currentQuestionRequirementKey ?? option.requirementKey ?? undefined
+                        }));
+                    const normalizedOptions = options.length > 0 ? options : undefined;
                     setMessages(prev => {
                         if (evalRequestIdRef.current !== requestId) return prev;
                         const updated = [...prev];
                         const current = updated[assistantIndex];
                         if (!current || current.role !== "assistant") return prev;
-                        updated[assistantIndex] = { ...current, options };
+                        const shouldTrackQuestion =
+                            interactionMode === "architecture" ||
+                            currentQuestionAction !== null ||
+                            currentQuestionRequirementKey !== null ||
+                            options.length > 0;
+                        updated[assistantIndex] = {
+                            ...current,
+                            options: normalizedOptions,
+                            questionKey: shouldTrackQuestion ? currentQuestionKey ?? current.questionKey ?? undefined : undefined,
+                            questionStatus: shouldTrackQuestion
+                                ? current.questionKey || currentQuestionKey
+                                    ? "pending"
+                                    : current.questionStatus
+                                : undefined,
+                            questionAction: shouldTrackQuestion ? currentQuestionAction ?? current.questionAction : undefined,
+                            questionRequirementKey: shouldTrackQuestion ? currentQuestionRequirementKey ?? current.questionRequirementKey : undefined
+                        };
                         return updated;
                     });
                 }
@@ -3900,15 +3981,16 @@ function WizardContent() {
                     guardrailChecklist: resolvedGuardrails,
                     readinessOverrides
                 });
-                const coercedPlatformQuestion = shouldPrioritizePlatformQuestion(resolvedPack)
+                const coercedPlatformQuestion = interactionMode === "architecture" && shouldPrioritizePlatformQuestion(resolvedPack)
                     ? buildPlatformDiscoveryQuestion(workspaceLanguage)
                     : null;
                 const coercedStackQuestion =
+                    interactionMode === "architecture" &&
                     !coercedPlatformQuestion &&
                     shouldPrioritizeStackQuestion(resolvedStage, resolvedPack, resolvedDecisions)
                         ? buildStackRecommendationQuestion(workspaceLanguage, resolvedPack)
                         : null;
-                const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
+                const coercedGenerateQuestion = interactionMode === "architecture" && currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
                     ? buildBlockedGenerateQuestion(
                         workspaceLanguage,
                         resolvedStage,
@@ -3919,11 +4001,13 @@ function WizardContent() {
                     : null;
                 const completedQuestionText = extractCompletedAssistantText(
                     buffer,
+                    interactionMode,
                     currentEval.analysis,
                     workspaceLanguage
                 );
                 const fallbackText = extractFallbackAssistantText(
                     buffer,
+                    interactionMode,
                     currentEval.analysis,
                     workspaceLanguage
                 ) || "Model response format was invalid. Please retry.";
@@ -3932,16 +4016,25 @@ function WizardContent() {
                     const updated = [...prev];
                     const current = updated[assistantIndex];
                     if (!current || current.role !== "assistant") return prev;
-                    const fallbackOptions = ensureCommonQuestionOptions(
-                        currentEval.next_step.question || fallbackText,
-                        current.options ?? [],
-                        latestUserContext,
-                        currentQuestionAction,
-                        currentQuestionKey,
-                        currentQuestionRequirementKey,
-                        workspaceLanguage
-                    );
+                    const fallbackOptions = interactionMode === "architecture"
+                        ? ensureCommonQuestionOptions(
+                            currentEval.next_step.question || fallbackText,
+                            current.options ?? [],
+                            latestUserContext,
+                            currentQuestionAction,
+                            currentQuestionKey,
+                            currentQuestionRequirementKey,
+                            workspaceLanguage
+                        )
+                        : current.options ?? [];
                     const coercedQuestion = coercedPlatformQuestion ?? coercedStackQuestion ?? coercedGenerateQuestion;
+                    const shouldRetainTrackedQuestion =
+                        interactionMode === "architecture" ||
+                        Boolean(
+                            (current.options?.length ?? 0) > 0 ||
+                            current.questionAction ||
+                            current.questionRequirementKey
+                        );
                     const nextContent = coercedQuestion
                         ? coercedQuestion.content
                         : completedQuestionText
@@ -3954,19 +4047,30 @@ function WizardContent() {
                         : current.options && current.options.length > 0
                             ? current.options
                             : fallbackOptions;
+                    const normalizedNextOptions = nextOptions && nextOptions.length > 0 ? nextOptions : undefined;
                     const nextQuestionKey = coercedQuestion
                         ? coercedQuestion.questionKey
-                        : current.questionKey;
+                        : shouldRetainTrackedQuestion
+                            ? current.questionKey
+                            : undefined;
                     const nextQuestionAction = coercedQuestion
                         ? coercedQuestion.questionAction
-                        : current.questionAction;
+                        : shouldRetainTrackedQuestion
+                            ? current.questionAction
+                            : undefined;
                     const nextQuestionRequirementKey = coercedQuestion
                         ? coercedQuestion.questionRequirementKey
-                        : current.questionRequirementKey;
-                    const nextQuestionStatus = coercedQuestion ? "pending" as const : current.questionStatus;
+                        : shouldRetainTrackedQuestion
+                            ? current.questionRequirementKey
+                            : undefined;
+                    const nextQuestionStatus = coercedQuestion
+                        ? "pending" as const
+                        : shouldRetainTrackedQuestion
+                            ? current.questionStatus
+                            : undefined;
                     if (
                         nextContent === current.content &&
-                        nextOptions === current.options &&
+                        normalizedNextOptions === current.options &&
                         nextQuestionKey === current.questionKey &&
                         nextQuestionAction === current.questionAction &&
                         nextQuestionRequirementKey === current.questionRequirementKey &&
@@ -3977,7 +4081,7 @@ function WizardContent() {
                     updated[assistantIndex] = {
                         ...current,
                         content: nextContent,
-                        options: nextOptions,
+                        options: normalizedNextOptions,
                         questionKey: nextQuestionKey,
                         questionAction: nextQuestionAction,
                         questionRequirementKey: nextQuestionRequirementKey,
@@ -4029,7 +4133,7 @@ function WizardContent() {
         questionRequirementKey?: ReadinessRequirementKey | null;
     }): Message => ({
         role: "assistant",
-        kind: "system",
+        kind: "chat",
         content: input.content,
         options: input.options,
         questionKey: input.questionKey ?? undefined,
@@ -4954,6 +5058,9 @@ Do you want to start scaffold generation now?`;
             selectedRequirementAction ??
             typedRequirementAction ??
             typedAction;
+        const interactionMode: EvaluateInteractionMode = shouldUseArchitectureInteractionMode(triggeredAction)
+            ? "architecture"
+            : "chat";
         const preparedMessages = closeOpenAssistantQuestions(messages, answeredQuestionKey);
 
         // Optimistic UI Update
@@ -5000,7 +5107,8 @@ Do you want to start scaffold generation now?`;
 
         await continueEvaluation({
             requestMessages: newMessages,
-            latestUserContext
+            latestUserContext,
+            interactionMode
         });
     };
 
@@ -5028,6 +5136,7 @@ Do you want to start scaffold generation now?`;
         void continueEvaluationRef.current({
             requestMessages: pendingEvaluation.requestMessages,
             latestUserContext,
+            interactionMode: pendingEvaluation.interactionMode ?? "architecture",
             resumePending: pendingEvaluation,
             assistantContent: existingAssistantContent
         });
