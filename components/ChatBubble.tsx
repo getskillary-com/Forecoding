@@ -94,14 +94,8 @@ export const ChatBubble = memo(function ChatBubble({
                     )}
                 </div>
 
-                {message.options && message.options.length > 0 && (
-                    <div
-                        className={`mt-3 transition-[opacity,transform] duration-500 ${
-                            showOptions
-                                ? 'translate-y-0 opacity-100'
-                                : 'pointer-events-none translate-y-3 opacity-0'
-                        }`}
-                    >
+                {showOptions && message.options && message.options.length > 0 && (
+                    <div className="mt-3">
                         <div className={`relative overflow-hidden rounded-2xl p-3 shadow-sm ${
                             isSystem
                                 ? 'border border-amber-200/80 bg-gradient-to-b from-amber-50/95 via-white to-white dark:border-amber-700/40 dark:from-amber-900/15 dark:via-slate-900 dark:to-slate-900'

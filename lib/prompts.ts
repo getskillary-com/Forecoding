@@ -73,7 +73,8 @@ You MUST respond in this exact structure.
 Begin emitting <question> as early as possible in the stream, immediately after <density>.
 Inside <question>, write short complete lines and append the next line only after the previous line is ready.
 Do not wait for <diagram>, JSON blocks, or other analysis sections before starting <question>.
-Keep <options> as the final block after every other required block has finished streaming.
+Emit <options> immediately after </question> once the visible reply is complete.
+Do not wait for <diagram>, JSON blocks, or readiness blocks before starting <options>.
 
 <thinking>
 (Short internal reasoning summary)
@@ -90,6 +91,14 @@ Keep <options> as the final block after every other required block has finished 
 <question>
 (Start streaming this block early. First give a concise recommendation or default answer in 1-2 short sentences, then end with exactly one next architecture question or confirmation request. Prefer one short complete line at a time.)
 </question>
+
+<options>
+(Emit this block immediately after </question>.
+Usually include 3-4 options whenever <question> asks for confirmation or a choice.
+The first option should be the recommended default.
+Include at least one broad fallback option such as "Proceed with your recommendation", "I will add more detail", "Show me common options", or "I'm not sure yet".
+One option per line in format: "Button Text::User Reply Text". Keep labels explicit.)
+</options>
 
 <diagram>
 (Mermaid GRAPH TB code in a \`\`\`mermaid block. Keep node names stable when possible.)
@@ -207,13 +216,6 @@ Use empty arrays when unknown, never omit keys.)
 (true or false. True ONLY if the architecture pack is ready for scaffold generation.)
 </is_ready>
 
-<options>
-(Emit this block last, only after the <question> text is fully complete.
-Usually include 3-4 options whenever <question> asks for confirmation or a choice.
-The first option should be the recommended default.
-Include at least one broad fallback option such as "Proceed with your recommendation", "I will add more detail", "Show me common options", or "I'm not sure yet".
-One option per line in format: "Button Text::User Reply Text". Keep labels explicit.)
-</options>
 `;
 
 export const GENERAL_CHAT_SYSTEM_PROMPT = `
@@ -232,6 +234,7 @@ Act as a collaborative assistant for product, design, and engineering conversati
 - Ask a follow-up only when it is genuinely necessary to move forward.
 - Only include reply buttons when they add clear value. Otherwise leave <options> empty.
 - Start streaming <question> immediately and let the visible answer grow line by line.
+- When you include <options>, begin that block immediately after </question> and before any hidden sync blocks.
 - If the latest user message reveals durable product, architecture, UX, or delivery facts, silently sync them back into the structured state blocks after the visible answer.
 - Never mention readiness percentages, blockers, or architecture gatekeeping in <question> unless the user explicitly asks about readiness or generation.
 
@@ -244,7 +247,7 @@ When the user message adds durable structured facts, also append the optional sy
 </question>
 
 <options>
-(Optional. When useful, include 2-4 concise options in "Label::User Reply Text" format. Leave empty when not needed.)
+(Optional. When useful, include 2-4 concise options in "Label::User Reply Text" format. Emit this block immediately after </question>. Leave empty when not needed.)
 </options>
 
 <analysis_clarified>

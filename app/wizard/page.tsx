@@ -2129,6 +2129,25 @@ function parseOptionsBlock(raw: string): MessageOption[] {
         });
 }
 
+function extractStreamingOptionsBlock(raw: string): string | null {
+    const match = raw.match(
+        /<options>([\s\S]*?)(<\/options>|(?=\r?\n\s*<(?!\/?options\b)[a-z_][\w-]*>)|$)/i
+    );
+    if (!match) return null;
+
+    let content = match[1] ?? "";
+    const terminator = match[2] ?? "";
+    const hasClosedOptions = /^<\/options>$/i.test(terminator.trim());
+
+    // Hold back the last partial option line until the model finishes that line.
+    if (!hasClosedOptions && !/[\r\n]\s*$/.test(content)) {
+        const lastLineBreak = Math.max(content.lastIndexOf("\n"), content.lastIndexOf("\r"));
+        content = lastLineBreak >= 0 ? content.slice(0, lastLineBreak) : "";
+    }
+
+    return content;
+}
+
 type CheckoutQuote = {
     unitAmountCents: number;
     currency: string;
@@ -3908,9 +3927,9 @@ function WizardContent() {
                     );
                 }
 
-                const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
-                if (optionsMatch) {
-                    const parsedOptions = parseOptionsBlock(optionsMatch[1]);
+                const streamingOptionsBlock = extractStreamingOptionsBlock(buffer);
+                if (streamingOptionsBlock !== null) {
+                    const parsedOptions = parseOptionsBlock(streamingOptionsBlock);
                     const options = interactionMode === "architecture"
                         ? ensureCommonQuestionOptions(
                             currentEval.next_step.question || latestQuestionText,
