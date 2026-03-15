@@ -4677,6 +4677,7 @@ function WizardContent() {
                     currentEval.analysis,
                     workspaceLanguage
                 ) || "Model response format was invalid. Please retry.";
+                const hasCompletedVisibleQuestion = Boolean(completedQuestionText && completedQuestionText.trim().length > 0);
                 setMessages(prev => {
                     if (evalRequestIdRef.current !== requestId) return prev;
                     const updated = [...prev];
@@ -4693,7 +4694,8 @@ function WizardContent() {
                             workspaceLanguage
                         )
                         : current.options ?? [];
-                    const coercedQuestion = coercedPlatformQuestion ?? coercedStackQuestion ?? coercedGenerateQuestion;
+                    const coercedQuestion = coercedGenerateQuestion ??
+                        (!hasCompletedVisibleQuestion ? (coercedPlatformQuestion ?? coercedStackQuestion) : null);
                     const shouldRetainTrackedQuestion =
                         interactionMode === "architecture" ||
                         Boolean(
