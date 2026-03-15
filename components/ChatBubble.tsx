@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useState } from 'react';
+import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { FileText, Sparkles } from "lucide-react";
@@ -37,23 +37,7 @@ export const ChatBubble = memo(function ChatBubble({
         ? "max-w-[80%]"
         : "w-full max-w-[calc(100%-2rem)] sm:max-w-[80%] xl:max-w-[48rem]";
     const streamingRows = !isUser && isStreaming ? estimateStreamingRows(message.content) : 1;
-    const [showOptions, setShowOptions] = useState(
-        !isStreaming && Boolean(message.options && message.options.length > 0)
-    );
-
-    useEffect(() => {
-        if (!message.options || message.options.length === 0 || isStreaming || showOptions) {
-            return;
-        }
-
-        const timer = window.setTimeout(() => {
-            setShowOptions(true);
-        }, 180);
-
-        return () => {
-            window.clearTimeout(timer);
-        };
-    }, [isStreaming, message.options, showOptions]);
+    const showOptions = !isStreaming && Boolean(message.options && message.options.length > 0);
 
     return (
         <div className={`flex flex-col w-full ${isUser ? 'items-end' : 'items-start'}`}>

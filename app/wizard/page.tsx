@@ -2722,9 +2722,17 @@ function WizardContent() {
         isLoading &&
         lastMessageIndex >= 0 &&
         messages[lastMessageIndex]?.role === "assistant";
-    const isAssistantStreamingWithContent =
-        isAssistantStreaming &&
+    const lastAssistantHasVisibleContent =
+        lastMessageIndex >= 0 &&
+        messages[lastMessageIndex]?.role === "assistant" &&
         messages[lastMessageIndex]?.content.trim().length > 0;
+    const lastAssistantHasReadyOptions =
+        lastMessageIndex >= 0 &&
+        messages[lastMessageIndex]?.role === "assistant" &&
+        Boolean(messages[lastMessageIndex]?.options && messages[lastMessageIndex]?.options.length > 0);
+    const isAssistantStreamingVisible =
+        isAssistantStreaming &&
+        !lastAssistantHasReadyOptions;
     const hasPaid = currentVersion?.data.paymentStatus === "paid";
     const requiresPayment = !hasPaid && !isAdmin;
     const scaffoldEligibility = computeScaffoldEligibility({
@@ -5538,12 +5546,12 @@ Do you want to start scaffold generation now?`;
                                             message={msg}
                                             onOptionClick={handleOptionClick}
                                             disableOptions={isConversationLocked}
-                                            isStreaming={isAssistantStreaming && messageIndex === lastMessageIndex}
+                                            isStreaming={isAssistantStreamingVisible && messageIndex === lastMessageIndex}
                                         />
                                     );
                                 })}
 
-                                {isLoading && !isAssistantStreamingWithContent && (
+                                {isLoading && !lastAssistantHasVisibleContent && (
                                     <div className="flex justify-start animate-pulse">
                                         <div className="rounded-xl rounded-tl-none bg-slate-100 px-4 py-2 text-[13px] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                                             {uiText.thinking}
