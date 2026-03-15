@@ -86,7 +86,6 @@ import {
 import {
     buildPlatformSummaryLine,
     hasConfirmedPlatformStrategy,
-    hasRecordedStackDecision,
     resolvePrimaryPlatformCategory
 } from "@/lib/platforms";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
@@ -1493,22 +1492,6 @@ function shouldPrioritizePlatformQuestion(architecturePack: ArchitecturePack) {
     return !hasConfirmedPlatformStrategy(architecturePack.platformStrategy);
 }
 
-function shouldPrioritizeStackQuestion(
-    stage: ArchitectureStage,
-    architecturePack: ArchitecturePack,
-    decisionRecords: DecisionRecord[]
-) {
-    if (!hasConfirmedPlatformStrategy(architecturePack.platformStrategy)) return false;
-    if (hasRecordedStackDecision(decisionRecords)) return false;
-    if (stage !== "decisions") return false;
-
-    return Boolean(
-        architecturePack.businessContext.productGoal.trim() ||
-        architecturePack.businessContext.userJourneys.length > 0 ||
-        architecturePack.businessContext.constraints.length > 0
-    );
-}
-
 function getReadinessRequirementLabel(
     requirementKey: ReadinessRequirementKey,
     language: "zh" | "en"
@@ -1556,7 +1539,6 @@ function buildFocusedRequirementQuestion(
     language: "zh" | "en",
     requirementKey: ReadinessRequirementKey,
     architecturePack: ArchitecturePack,
-    decisionRecords: DecisionRecord[],
     messages: Message[]
 ) {
     if (requirementKey === "business_context.platforms") {
@@ -1703,20 +1685,6 @@ ${questionText}`,
         };
     }
 
-    if (
-        requirementKey === "decisions.decision_records" &&
-        hasConfirmedPlatformStrategy(architecturePack.platformStrategy) &&
-        !hasRecordedStackDecision(decisionRecords)
-    ) {
-        const stackQuestion = buildStackRecommendationQuestion(language, architecturePack);
-        if (stackQuestion) {
-            return {
-                ...stackQuestion,
-                questionRequirementKey: requirementKey
-            };
-        }
-    }
-
     if (requirementKey === "boundaries.bounded_contexts") {
         const questionText = language === "zh"
             ? "你希望先把哪一块定义成独立限界上下文？"
@@ -1781,15 +1749,15 @@ ${questionText}`,
 
     if (requirementKey === "decisions.decision_records") {
         const questionText = language === "zh"
-            ? "除了技术栈，还要再锁一条高影响架构决策。是否先按推荐把“工作区 / 编辑层”和“生成编排层”拆开？"
-            : "Beyond the stack choice, we still need one more high-impact architecture decision. Should we separate the workspace or editor layer from the generation-orchestration layer?";
+            ? "这一步需要锁定关键架构决策。是否先按推荐把“工作区 / 编辑层”和“生成编排层”拆开？"
+            : "We need to lock a key architecture decision at this stage. Should we separate the workspace or editor layer from the generation-orchestration layer?";
         return {
             content: language === "zh"
-                ? `技术栈之外，还要再补一条高影响架构决策。
+                ? `接下来先锁一条高影响架构决策。
 我建议先确认“工作区 / 编辑交互”和“生成编排 / 模型调用”是否解耦，这会直接影响后续边界和扩展性。
 
 ${questionText}`
-                : `Beyond the stack, we still need one more high-impact architecture decision.
+                : `Next, let's lock one high-impact architecture decision.
 I recommend deciding whether the workspace or editor interaction layer should stay separate from the generation-orchestration and model-calling layer because that choice will shape the downstream boundaries.
 
 ${questionText}`,
@@ -2500,16 +2468,10 @@ function buildNextArchitectureFollowUpQuestion(
     architectureStage: ArchitectureStage,
     readiness: ReadinessChecklist,
     architecturePack: ArchitecturePack,
-    decisionRecords: DecisionRecord[],
     messages: Message[]
 ) {
     if (shouldPrioritizePlatformQuestion(architecturePack)) {
         return buildPlatformDiscoveryQuestion(language);
-    }
-
-    if (shouldPrioritizeStackQuestion(architectureStage, architecturePack, decisionRecords)) {
-        const stackQuestion = buildStackRecommendationQuestion(language, architecturePack);
-        if (stackQuestion) return stackQuestion;
     }
 
     const primaryRequirement = getPrimaryIncompleteReadinessRequirement(readiness);
@@ -2518,7 +2480,6 @@ function buildNextArchitectureFollowUpQuestion(
             language,
             primaryRequirement.key,
             architecturePack,
-            decisionRecords,
             messages
         );
     }
@@ -4650,12 +4611,6 @@ function WizardContent() {
                 const coercedPlatformQuestion = interactionMode === "architecture" && shouldPrioritizePlatformQuestion(resolvedPack)
                     ? buildPlatformDiscoveryQuestion(workspaceLanguage)
                     : null;
-                const coercedStackQuestion =
-                    interactionMode === "architecture" &&
-                    !coercedPlatformQuestion &&
-                    shouldPrioritizeStackQuestion(resolvedStage, resolvedPack, resolvedDecisions)
-                        ? buildStackRecommendationQuestion(workspaceLanguage, resolvedPack)
-                        : null;
                 const coercedGenerateQuestion = interactionMode === "architecture" && currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
                     ? buildBlockedGenerateQuestion(
                         workspaceLanguage,
@@ -4695,7 +4650,7 @@ function WizardContent() {
                         )
                         : current.options ?? [];
                     const coercedQuestion = coercedGenerateQuestion ??
-                        (!hasCompletedVisibleQuestion ? (coercedPlatformQuestion ?? coercedStackQuestion) : null);
+                        (!hasCompletedVisibleQuestion ? coercedPlatformQuestion : null);
                     const shouldRetainTrackedQuestion =
                         interactionMode === "architecture" ||
                         Boolean(
@@ -5633,7 +5588,6 @@ Do you want to start scaffold generation now?`;
                 language,
                 requirementKey,
                 architecturePack,
-                decisionRecords,
                 baseMessages
             );
             appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
@@ -5654,7 +5608,6 @@ Do you want to start scaffold generation now?`;
                 language,
                 requirementKey,
                 architecturePack,
-                decisionRecords,
                 baseMessages
             );
             appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
@@ -5706,7 +5659,6 @@ Do you want to start scaffold generation now?`;
                 nextStage,
                 nextEligibility.readiness,
                 resolution.architecturePack,
-                resolvedDecisions,
                 baseMessages
             );
         const combinedContent = `${resolution.summary}\n\n${followUp.content}`.trim();
