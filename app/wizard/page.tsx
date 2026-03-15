@@ -1556,6 +1556,7 @@ function buildFocusedRequirementQuestion(
     language: "zh" | "en",
     requirementKey: ReadinessRequirementKey,
     architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
     messages: Message[]
 ) {
     if (requirementKey === "business_context.platforms") {
@@ -1607,7 +1608,106 @@ Should I apply this default data ownership rule now?`;
         };
     }
 
-    if (requirementKey === "decisions.decision_records" && hasConfirmedPlatformStrategy(architecturePack.platformStrategy)) {
+    if (
+        requirementKey === "business_context.target_users"
+    ) {
+        const questionText = language === "zh"
+            ? "这一版最核心的目标用户是谁？"
+            : "Who is the core target user for v1?";
+        return {
+            content: language === "zh"
+                ? `我们先把目标用户说具体一点。
+我建议第一版先锁定一类高频使用者，避免范围一开始就过散。
+
+${questionText}`
+                : `Let's make the target user more specific.
+I recommend locking one high-frequency user group first so the scope does not drift too early.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐先补齐目标用户。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动描述目标用户。" },
+                    { label: "给我示例", value: "先给我 2 个具体的目标用户示例。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Use your recommended default target users.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will describe the target users myself." },
+                    { label: "Show examples", value: "Show me 2 concrete target-user examples first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "business_context.user_journeys") {
+        const questionText = language === "zh"
+            ? "请先给我两条最关键的用户流程。"
+            : "Please give me the two most important user journeys first.";
+        return {
+            content: language === "zh"
+                ? `接下来把用户旅程说清楚。
+我建议至少覆盖“如何开始一次任务”和“结果产出后如何继续处理”这两条主流程。
+
+${questionText}`
+                : `Next, let's make the user journeys explicit.
+I recommend covering at least how a user starts a task and what they do after the result is produced.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐关键用户旅程。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己描述", value: "我来手动描述两条关键用户旅程。" },
+                    { label: "给我示例", value: "先给我两条参考用户旅程。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the key user journeys using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will describe them", value: "I will describe the two key user journeys myself." },
+                    { label: "Show examples", value: "Show me two reference user journeys first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "business_context.constraints_or_risks") {
+        const questionText = language === "zh"
+            ? "这版产品最需要提前防住的两个约束或风险是什么？"
+            : "What are the two most important constraints or risks to account for now?";
+        return {
+            content: language === "zh"
+                ? `我们再把约束和风险补上。
+我建议优先说清交付边界、成本/性能压力，或者质量可信度这类会直接影响方案的因素。
+
+${questionText}`
+                : `Let's add the constraints and risks next.
+I recommend prioritizing delivery boundaries, cost or performance pressure, or quality-confidence risks that directly shape the design.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐约束与风险。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动描述约束与风险。" },
+                    { label: "给我示例", value: "先给我两个常见约束与风险示例。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the constraints and risks using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define them", value: "I will describe the constraints and risks myself." },
+                    { label: "Show examples", value: "Show me two common constraint and risk examples first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (
+        requirementKey === "decisions.decision_records" &&
+        hasConfirmedPlatformStrategy(architecturePack.platformStrategy) &&
+        !hasRecordedStackDecision(decisionRecords)
+    ) {
         const stackQuestion = buildStackRecommendationQuestion(language, architecturePack);
         if (stackQuestion) {
             return {
@@ -1617,24 +1717,144 @@ Should I apply this default data ownership rule now?`;
         }
     }
 
+    if (requirementKey === "boundaries.bounded_contexts") {
+        const questionText = language === "zh"
+            ? "你希望先把哪一块定义成独立限界上下文？"
+            : "Which part should we define as its own bounded context first?";
+        return {
+            content: language === "zh"
+                ? `现在先把系统边界切开，避免后面所有职责混在一起。
+我建议至少先定一个独立上下文，比如工作区、生成引擎、素材管理或账号/计费中的一块。
+
+${questionText}`
+                : `Let's separate the system boundary now so responsibilities do not collapse into one blob later.
+I recommend locking at least one bounded context such as workspace, generation engine, asset management, or account/billing.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐限界上下文。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己拆分", value: "我来手动定义限界上下文。" },
+                    { label: "给我示例", value: "先给我 2 到 3 个常见的限界上下文示例。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the bounded contexts using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will define the bounded contexts myself." },
+                    { label: "Show examples", value: "Show me 2 or 3 common bounded-context examples first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "boundaries.module_responsibilities") {
+        const questionText = language === "zh"
+            ? "第一版必须有的两个核心模块分别负责什么？"
+            : "What should the two must-have core modules for v1 each be responsible for?";
+        return {
+            content: language === "zh"
+                ? `接下来把模块职责钉住。
+我建议至少先把“输入 / 工作区”和“生成 / 处理”这两类职责拆开，不要后面边做边猜。
+
+${questionText}`
+                : `Next, let's pin down the module responsibilities.
+I recommend separating input or workspace concerns from generation or processing concerns early instead of discovering that boundary during implementation.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐模块职责。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动描述模块职责。" },
+                    { label: "给我示例", value: "先给我两个参考模块职责。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the module responsibilities using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define them", value: "I will describe the module responsibilities myself." },
+                    { label: "Show examples", value: "Show me two reference module responsibilities first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "decisions.decision_records") {
+        const questionText = language === "zh"
+            ? "除了技术栈，还要再锁一条高影响架构决策。是否先按推荐把“工作区 / 编辑层”和“生成编排层”拆开？"
+            : "Beyond the stack choice, we still need one more high-impact architecture decision. Should we separate the workspace or editor layer from the generation-orchestration layer?";
+        return {
+            content: language === "zh"
+                ? `技术栈之外，还要再补一条高影响架构决策。
+我建议先确认“工作区 / 编辑交互”和“生成编排 / 模型调用”是否解耦，这会直接影响后续边界和扩展性。
+
+${questionText}`
+                : `Beyond the stack, we still need one more high-impact architecture decision.
+I recommend deciding whether the workspace or editor interaction layer should stay separate from the generation-orchestration and model-calling layer because that choice will shape the downstream boundaries.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐记录", value: "请按推荐补齐这条架构决策。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动描述这条架构决策。" },
+                    { label: "给我 2 个方向", value: "先给我两条常见的第二架构决策方向。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Add the recommended second architecture decision.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will describe the architecture decision myself." },
+                    { label: "Show options", value: "Show me two common directions for the second architecture decision first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "decisions.integration_contracts") {
+        const questionText = language === "zh"
+            ? "要不要先按默认方式记一条关键输入输出契约？"
+            : "Should I record a default key input-output contract now?";
+        return {
+            content: language === "zh"
+                ? `再补一条关键集成契约，这样后面的模块边界才不会发散。
+我建议先定义“提交请求 -> 返回草稿 / 结果”的输入输出边界。
+
+${questionText}`
+                : `Let's add one key integration contract so the module boundary stays concrete.
+I recommend defining the input-output contract for submitting a request and receiving a draft or result.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐集成契约。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动描述关键集成契约。" },
+                    { label: "给我示例", value: "先给我一个参考契约示例。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the integration contract using your recommended default.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will describe the key integration contract myself." },
+                    { label: "Show example", value: "Show me a reference integration contract first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
     if (requirementKey === "decisions.non_functional_requirements") {
         const content = language === "zh"
-            ? `当前判断：
-- 现在只缺一个额外的非功能性需求就能通过当前门槛。
-- 对这个计算器类产品，我推荐补充“准确性”，因为它直接决定计算结果是否可靠。
+            ? `再补齐非功能性要求，这样第一版的质量边界才清楚。
+我建议优先把“响应速度”和“结果稳定性 / 可信度”这类会直接影响体验的要求写进去。
 
-需要确认：
-是否按推荐把“准确性”加入架构包？`
-            : `Current view:
-- You only need one more non-functional requirement to clear the current gate.
-- For a calculator-style product, I recommend adding accuracy because reliable results are core to the product.
+是否按推荐补齐这项非功能性要求？`
+            : `Let's finish the non-functional requirements so the v1 quality bar is explicit.
+I recommend prioritizing response speed and output stability or confidence because they directly shape the user experience.
 
-Please confirm:
-Should I add accuracy to the architecture pack now?`;
+Should I add the recommended non-functional requirement now?`;
 
         const questionText = language === "zh"
-            ? "是否按推荐把“准确性”加入架构包？"
-            : "Should I add accuracy to the architecture pack now?";
+            ? "是否按推荐补齐这项非功能性要求？"
+            : "Should I add the recommended non-functional requirement now?";
 
         return {
             content,
@@ -1648,6 +1868,99 @@ Should I add accuracy to the architecture pack now?`;
                     { label: "Add accuracy", value: "Add accuracy as recommended.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will specify another one", value: "I will specify a different non-functional requirement." },
                     { label: "List blockers", value: "List the current blockers.", action: "show_blockers" as const, requirementKey }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "guardrails.implementation_order") {
+        const questionText = language === "zh"
+            ? "要不要先按默认实施顺序把第一版拆出来？"
+            : "Should I break v1 down using the default implementation order now?";
+        return {
+            content: language === "zh"
+                ? `接下来把实施顺序钉住，避免大家同时开工却没有主线。
+我建议先做核心主流程，再补结果呈现和打磨项。
+
+${questionText}`
+                : `Next, let's lock the implementation order so the team has one clear path instead of parallel guesswork.
+I recommend building the core flow first and then layering in result presentation and polish.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐实现顺序。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动定义实施顺序。" },
+                    { label: "给我示例", value: "先给我一个参考实施顺序。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the implementation order using your recommended default.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will describe the implementation order myself." },
+                    { label: "Show example", value: "Show me a reference implementation order first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "guardrails.acceptance_criteria") {
+        const questionText = language === "zh"
+            ? "要不要先按默认方式补齐验收标准？"
+            : "Should I add the default acceptance criteria now?";
+        return {
+            content: language === "zh"
+                ? `我们还需要一组可验收标准，避免后面只能靠“感觉差不多”来收尾。
+我建议先围绕“能否完成一次完整主流程”和“结果是否可复查”来写。
+
+${questionText}`
+                : `We still need acceptance criteria so the handoff is not based on vague gut feel.
+I recommend anchoring them around whether one full core flow works and whether the result can be reviewed again.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐验收标准。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动定义验收标准。" },
+                    { label: "给我示例", value: "先给我 4 条参考验收标准。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the acceptance criteria using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define them", value: "I will describe the acceptance criteria myself." },
+                    { label: "Show examples", value: "Show me 4 reference acceptance criteria first." }
+                ],
+            questionKey: normalizeQuestionKey(questionText),
+            questionAction: "fill_requirement" as const,
+            questionRequirementKey: requirementKey
+        };
+    }
+
+    if (requirementKey === "guardrails.test_strategy") {
+        const questionText = language === "zh"
+            ? "要不要先按默认方式补齐测试策略？"
+            : "Should I add the default test strategy now?";
+        return {
+            content: language === "zh"
+                ? `最后把测试策略补上，后面实现时就不容易漏掉关键验证。
+我建议至少覆盖一次主链路端到端验证，再补关键逻辑的单元测试。
+
+${questionText}`
+                : `Let's finish the test strategy so implementation does not miss the most important validation work.
+I recommend covering one end-to-end happy path and then adding unit tests for the key logic.
+
+${questionText}`,
+            options: language === "zh"
+                ? [
+                    { label: "按推荐补齐", value: "请按推荐补齐测试策略。", action: "fill_requirement" as const, requirementKey },
+                    { label: "我来自己定义", value: "我来手动定义测试策略。" },
+                    { label: "给我示例", value: "先给我两条参考测试策略。" }
+                ]
+                : [
+                    { label: "Use your default", value: "Fill the test strategy using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "I will define it", value: "I will describe the test strategy myself." },
+                    { label: "Show examples", value: "Show me two reference test-strategy items first." }
                 ],
             questionKey: normalizeQuestionKey(questionText),
             questionAction: "fill_requirement" as const,
@@ -1695,19 +2008,11 @@ Should I apply the single-screen exception and waive this UI threshold?`;
 
     const label = getReadinessRequirementLabel(requirementKey, language);
     const content = language === "zh"
-        ? `当前判断：
-- 当前主要缺口是“${label}”。
-- 我建议先把这一项补齐，因为它是现在最直接的阻塞项。
-
-需要确认：
-是否先集中补齐这个缺口？`
-        : `Current view:
-- The primary gap right now is ${label}.
-- I recommend fixing this first because it is the most direct blocker.
-
-Please confirm:
-Should we focus on this gap first?`;
-    const questionText = language === "zh" ? "是否先集中补齐这个缺口？" : "Should we focus on this gap first?";
+        ? `现在最该补的是“${label}”。
+我建议先把这一项补齐，然后我直接带你进入下一条真正的缺口。`
+        : `The most useful thing to fix next is ${label}.
+I recommend filling it now, and then I will move us straight to the next real gap.`;
+    const questionText = language === "zh" ? `是否先补齐“${label}”？` : `Should we fill ${label} first?`;
 
     return {
         content,
@@ -2188,6 +2493,43 @@ Do you want to start scaffold generation now?`;
         questionAction: "generate_scaffold" as const,
         questionRequirementKey: undefined
     };
+}
+
+function buildNextArchitectureFollowUpQuestion(
+    language: "zh" | "en",
+    architectureStage: ArchitectureStage,
+    readiness: ReadinessChecklist,
+    architecturePack: ArchitecturePack,
+    decisionRecords: DecisionRecord[],
+    messages: Message[]
+) {
+    if (shouldPrioritizePlatformQuestion(architecturePack)) {
+        return buildPlatformDiscoveryQuestion(language);
+    }
+
+    if (shouldPrioritizeStackQuestion(architectureStage, architecturePack, decisionRecords)) {
+        const stackQuestion = buildStackRecommendationQuestion(language, architecturePack);
+        if (stackQuestion) return stackQuestion;
+    }
+
+    const primaryRequirement = getPrimaryIncompleteReadinessRequirement(readiness);
+    if (primaryRequirement) {
+        return buildFocusedRequirementQuestion(
+            language,
+            primaryRequirement.key,
+            architecturePack,
+            decisionRecords,
+            messages
+        );
+    }
+
+    return buildBlockedGenerateQuestion(
+        language,
+        architectureStage,
+        readiness,
+        architecturePack,
+        messages
+    );
 }
 
 function ensureCommonQuestionOptions(
@@ -4982,10 +5324,16 @@ Do you want to start scaffold generation now?`;
                 const value = option.value.toLowerCase();
                 return latestAnswerLower.includes(label) || latestAnswerLower.includes(value);
             }) ?? candidateOptions[0];
+            const normalizedExistingDecisions = decisionRecords.map((record) =>
+                `${record.title} ${record.decision} ${record.rationale}`.toLowerCase()
+            );
+            const nextDecisionRecords = [...decisionRecords];
+            const summaryParts: string[] = [];
 
             if (selectedOption) {
-                const alreadyRecorded = decisionRecords.some((record) =>
-                    record.decision.trim().toLowerCase() === selectedOption.value.trim().toLowerCase()
+                const alreadyRecorded = normalizedExistingDecisions.some((record) =>
+                    record.includes(selectedOption.value.trim().toLowerCase()) ||
+                    record.includes(selectedOption.label.trim().toLowerCase())
                 );
 
                 if (!alreadyRecorded) {
@@ -4994,36 +5342,74 @@ Do you want to start scaffold generation now?`;
                         .slice(0, 3)
                         .map((option) => option.label);
 
-                    return {
-                        architecturePack,
-                        guardrailChecklist,
-                        readinessOverrides,
-                        decisionRecords: normalizeDecisionRecords([
-                            ...decisionRecords,
-                            {
-                                title: language === "zh" ? "采用首发技术栈基线" : "Adopt the initial stack baseline",
-                                decision: selectedOption.value,
-                                rationale: language === "zh"
-                                    ? "基于当前已确认的平台策略与产品范围，先锁定这条默认技术栈基线，以减少后续实现分歧并继续完善架构包。"
-                                    : "Based on the confirmed platform strategy and current product scope, lock this default stack baseline now to reduce downstream implementation drift.",
-                                alternativesRejected,
-                                consequences: language === "zh"
-                                    ? [
-                                        "后续模块职责、集成契约和交付 guardrails 将以这条技术栈为基线展开。",
-                                        "如果范围变化明显，再重新评估替代技术栈。"
-                                    ]
-                                    : [
-                                        "The next module boundaries, integration contracts, and delivery guardrails will assume this stack baseline.",
-                                        "If the scope changes materially, revisit the stack choice later."
-                                    ]
-                            }
-                        ]),
-                        summary: language === "zh"
-                            ? `已按推荐记录技术决策：${selectedOption.label}。`
-                            : `Recorded the recommended architecture decision: ${selectedOption.label}.`,
-                        applied: true
-                    };
+                    nextDecisionRecords.push({
+                        title: language === "zh" ? "采用首发技术栈基线" : "Adopt the initial stack baseline",
+                        decision: selectedOption.value,
+                        rationale: language === "zh"
+                            ? "基于当前已确认的平台策略与产品范围，先锁定这条默认技术栈基线，以减少后续实现分歧并继续完善架构包。"
+                            : "Based on the confirmed platform strategy and current product scope, lock this default stack baseline now to reduce downstream implementation drift.",
+                        alternativesRejected,
+                        consequences: language === "zh"
+                            ? [
+                                "后续模块职责、集成契约和交付 guardrails 将以这条技术栈为基线展开。",
+                                "如果范围变化明显，再重新评估替代技术栈。"
+                            ]
+                            : [
+                                "The next module boundaries, integration contracts, and delivery guardrails will assume this stack baseline.",
+                                "If the scope changes materially, revisit the stack choice later."
+                            ]
+                    });
+                    summaryParts.push(language === "zh"
+                        ? `技术栈基线已记录为 ${selectedOption.label}`
+                        : `Recorded the stack baseline: ${selectedOption.label}`);
                 }
+            }
+
+            const hasBoundaryDecision = [...normalizedExistingDecisions, ...nextDecisionRecords.slice(decisionRecords.length).map((record) =>
+                `${record.title} ${record.decision} ${record.rationale}`.toLowerCase()
+            )].some((record) =>
+                /工作区|编辑|编排|workspace|editor|orchestration|model call|模型调用/.test(record)
+            );
+
+            if (!hasBoundaryDecision) {
+                nextDecisionRecords.push({
+                    title: language === "zh" ? "分离工作区与生成编排" : "Separate workspace and generation orchestration",
+                    decision: language === "zh"
+                        ? "将工作区 / 编辑交互层与生成编排 / 模型调用层解耦，前者负责输入、编辑与结果管理，后者负责提示组装、模型调用和输出归档。"
+                        : "Decouple the workspace or editing interaction layer from the generation-orchestration and model-calling layer. The first owns input, editing, and result management, while the second owns prompt assembly, model execution, and output persistence.",
+                    rationale: language === "zh"
+                        ? "这样可以在不影响编辑体验的前提下独立演进生成链路，并让失败重试、模型替换和质量治理落在更清晰的边界上。"
+                        : "This keeps the editing experience stable while the generation pipeline evolves independently, and it gives retries, provider swaps, and quality controls a clearer boundary.",
+                    alternativesRejected: language === "zh"
+                        ? ["将编辑交互与生成调用揉进同一模块"]
+                        : ["Keep editing interaction and generation calls inside the same module"],
+                    consequences: language === "zh"
+                        ? [
+                            "前端工作区可以更稳定地管理草稿、状态与用户操作。",
+                            "生成链路后续可以独立增加队列、缓存或多模型策略。"
+                        ]
+                        : [
+                            "The workspace can manage drafts, state, and user actions with less coupling.",
+                            "The generation pipeline can later add queues, caching, or multi-model policies independently."
+                        ]
+                });
+                summaryParts.push(language === "zh"
+                    ? "已补上工作区与生成编排的边界决策"
+                    : "Added the boundary decision between workspace and generation orchestration");
+            }
+
+            const normalizedDecisionRecords = normalizeDecisionRecords(nextDecisionRecords);
+            if (normalizedDecisionRecords.length > decisionRecords.length) {
+                return {
+                    architecturePack,
+                    guardrailChecklist,
+                    readinessOverrides,
+                    decisionRecords: normalizedDecisionRecords,
+                    summary: language === "zh"
+                        ? `已按推荐补齐架构决策：${summaryParts.join("；")}。`
+                        : `Filled the architecture decisions using the recommended defaults: ${summaryParts.join("; ")}.`,
+                    applied: true
+                };
             }
         }
 
@@ -5050,21 +5436,21 @@ Do you want to start scaffold generation now?`;
                         : "Let users see a readable summary and priority result quickly after submitting a topic."
                 }
             ];
-            const nextRequirement = candidates.find((candidate) =>
+            const nextRequirements = candidates.filter((candidate) =>
                 !existing.has(`${candidate.category} ${candidate.requirement} ${candidate.rationale}`.toLowerCase()) &&
                 !existingText.some((item) => item.includes(candidate.requirement.toLowerCase()))
-            );
-            if (nextRequirement) {
+            ).slice(0, Math.max(1, 2 - architecturePack.nonFunctionalRequirements.length));
+            if (nextRequirements.length > 0) {
                 return {
                     architecturePack: {
                         ...architecturePack,
-                        nonFunctionalRequirements: [...architecturePack.nonFunctionalRequirements, nextRequirement]
+                        nonFunctionalRequirements: [...architecturePack.nonFunctionalRequirements, ...nextRequirements]
                     },
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? `已按推荐补充非功能性需求“${nextRequirement.requirement}”。`
-                        : `Added the recommended non-functional requirement: ${nextRequirement.requirement}.`,
+                        ? `已按推荐补充非功能性需求：${nextRequirements.map((item) => item.requirement).join("、")}。`
+                        : `Added the recommended non-functional requirements: ${nextRequirements.map((item) => item.requirement).join(", ")}.`,
                     applied: true
                 };
             }
@@ -5241,7 +5627,13 @@ Do you want to start scaffold generation now?`;
         const language = workspaceLanguage;
 
         if (action === "focus_requirement") {
-            const focused = buildFocusedRequirementQuestion(language, requirementKey, architecturePack, baseMessages);
+            const focused = buildFocusedRequirementQuestion(
+                language,
+                requirementKey,
+                architecturePack,
+                decisionRecords,
+                baseMessages
+            );
             appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
             return true;
         }
@@ -5256,7 +5648,13 @@ Do you want to start scaffold generation now?`;
 
         const resolution = applyDefaultRequirementResolution(requirementKey, language, baseMessages);
         if (!resolution.applied) {
-            const focused = buildFocusedRequirementQuestion(language, requirementKey, architecturePack, baseMessages);
+            const focused = buildFocusedRequirementQuestion(
+                language,
+                requirementKey,
+                architecturePack,
+                decisionRecords,
+                baseMessages
+            );
             appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
             return true;
         }
@@ -5299,22 +5697,16 @@ Do you want to start scaffold generation now?`;
         );
         setGenerateError(null);
 
-        const nextStackQuestion =
-            !nextEligibility.canGenerate &&
-            shouldPrioritizeStackQuestion(nextStage, resolution.architecturePack, resolvedDecisions)
-                ? buildStackRecommendationQuestion(language, resolution.architecturePack)
-                : null;
         const followUp = nextEligibility.canGenerate
             ? buildReadyToGenerateMessage(language)
-            : nextStackQuestion
-                ? nextStackQuestion
-                : buildBlockedGenerateQuestion(
-                    language,
-                    nextStage,
-                    nextEligibility.readiness,
-                    resolution.architecturePack,
-                    baseMessages
-                );
+            : buildNextArchitectureFollowUpQuestion(
+                language,
+                nextStage,
+                nextEligibility.readiness,
+                resolution.architecturePack,
+                resolvedDecisions,
+                baseMessages
+            );
         const combinedContent = `${resolution.summary}\n\n${followUp.content}`.trim();
         appendDeterministicAssistantResponse(
             baseMessages,
