@@ -12,9 +12,10 @@ interface VersionSidebarProps {
     children?: ReactNode;
     width?: number;
     language: WorkspaceLanguage;
+    headerActions?: ReactNode;
 }
 
-export function VersionSidebar({ project, children, width, language }: VersionSidebarProps) {
+export function VersionSidebar({ project, children, width, language, headerActions }: VersionSidebarProps) {
     const [isCopied, setIsCopied] = useState(false);
 
     const handleCopyProjectId = async () => {
@@ -37,7 +38,7 @@ export function VersionSidebar({ project, children, width, language }: VersionSi
             }}
         >
             {/* Header */}
-            <div className="flex items-center gap-2 border-b border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/75">
+            <div className="flex items-start gap-3 border-b border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/75">
                 <Link href="/dashboard" className="rounded-lg p-1 transition-colors hover:bg-slate-200 dark:hover:bg-slate-800">
                     <ArrowLeft className="h-4 w-4 text-slate-500 dark:text-slate-300" />
                 </Link>
@@ -63,6 +64,11 @@ export function VersionSidebar({ project, children, width, language }: VersionSi
                         </button>
                     </div>
                 </div>
+                {headerActions ? (
+                    <div className="ml-auto flex flex-shrink-0 items-center self-start">
+                        {headerActions}
+                    </div>
+                ) : null}
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col">

@@ -46,7 +46,6 @@ const FileTreeDisplay = dynamic(() => import("@/components/FileTreeDisplay").the
     loading: () => <div className="h-full w-full" />
 });
 import { VersionSidebar } from "@/components/VersionSidebar";
-import { UserCenter } from "@/components/UserCenter";
 import { useSearchParams, useRouter } from "next/navigation";
 import { getProjectWorkspaceLanguage, type WorkspaceLanguage } from "@/lib/project-language";
 import {
@@ -5339,18 +5338,29 @@ Do you want to start scaffold generation now?`;
                         </div>
                     </aside>
                 ) : (
-                <VersionSidebar project={project} width={sidebarWidth} language={workspaceLanguage}>
+                <VersionSidebar
+                    project={project}
+                    width={sidebarWidth}
+                    language={workspaceLanguage}
+                    headerActions={(
+                        <button
+                            type="button"
+                            onClick={() => setIsChatCollapsed(true)}
+                            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[color:var(--border)] bg-white/90 px-3 text-[13px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-200"
+                            title={collapseChatLabel}
+                            aria-label={collapseChatLabel}
+                        >
+                            <PanelLeftClose className="h-4 w-4" />
+                            <span>{collapseChatLabel}</span>
+                        </button>
+                    )}
+                >
                 <div className="relative z-10 flex h-full min-h-0 flex-col">
                     <div className="flex-1 min-h-0">
                         <div
                             className="relative z-10 flex h-full flex-col border-l border-[color:var(--border)] bg-white/82 shadow-[var(--shadow-sm)] backdrop-blur-sm dark:bg-slate-900/72"
                             onPaste={handlePaste}
                         >
-                            {/* Header */}
-                            <div className="flex items-center justify-end border-b border-[color:var(--border)] bg-white/70 px-4 py-3 backdrop-blur-sm dark:bg-slate-900/75">
-                                <UserCenter signOutCallbackUrl="/" />
-                            </div>
-
                             {/* Chat Area */}
                             <div className="flex-1 space-y-6 overflow-y-auto bg-gradient-to-b from-white/55 to-transparent p-4 scrollbar-hide dark:from-slate-900/30">
                                 {hiddenMessageCount > 0 && (
@@ -5579,20 +5589,6 @@ Do you want to start scaffold generation now?`;
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
-                {!isChatCollapsed && (
-                    <div className="mb-4 flex flex-shrink-0 justify-end">
-                        <button
-                            type="button"
-                            onClick={() => setIsChatCollapsed(true)}
-                            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[color:var(--border)] bg-white/90 px-3 text-[13px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-200"
-                            title={collapseChatLabel}
-                            aria-label={collapseChatLabel}
-                        >
-                            <PanelLeftClose className="h-4 w-4" />
-                            <span>{collapseChatLabel}</span>
-                        </button>
-                    </div>
-                )}
                 {/* Tabs */}
                 <div className="fc-surface mb-4 grid flex-shrink-0 grid-cols-4 gap-2 rounded-2xl p-2">
                     <TabButton
