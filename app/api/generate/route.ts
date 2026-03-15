@@ -68,7 +68,7 @@ function parseOutputLanguage(value: unknown): OutputLanguage | undefined {
 }
 
 function parseOutputMode(value: unknown): OutputMode | undefined {
-    if (value === "virtual_spec" || value === "runnable_scaffold") return value;
+    if (value === "virtual_spec") return value;
     return undefined;
 }
 
@@ -199,7 +199,7 @@ export async function POST(req: Request) {
         }
 
         const { project, version } = resolved;
-        const parsedOutputMode = parseOutputMode(body.outputMode) || "runnable_scaffold";
+        const parsedOutputMode = parseOutputMode(body.outputMode) || "virtual_spec";
         const eligibility = computeVersionScaffoldEligibility(version.data, parsedOutputMode);
         if (!eligibility.canGenerate) {
             return NextResponse.json(

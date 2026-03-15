@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
-import { Send, Sparkles, Loader2, FileCode, BrainCircuit, Check, Paperclip, X, FileText, Square, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Send, Sparkles, Loader2, BrainCircuit, Check, Paperclip, X, FileText, Square, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import {
     ArchitecturePack,
     ArchitectureStage,
@@ -32,7 +32,8 @@ import {
     ProjectVersion,
     PendingEvaluation,
     Attachment,
-    FileNode
+    FileNode,
+    MinimumViableLoopChecklist
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
 import { useNavigationFeedback } from "@/components/NavigationFeedback";
@@ -116,7 +117,7 @@ const GENERATE_MAX_SUMMARY_CHARS = 50_000;
 const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
-const GENERATE_OUTPUT_MODES: readonly OutputMode[] = ["virtual_spec", "runnable_scaffold"] as const;
+const GENERATE_OUTPUT_MODES: readonly OutputMode[] = ["virtual_spec"] as const;
 const SOURCE_CONTEXT_ITEM_EXCERPT_CHARS = 700;
 const SOURCE_CONTEXT_MAX_ITEMS = 6;
 const SOURCE_SEARCH_TERM_MAX_COUNT = 24;
@@ -164,7 +165,7 @@ const UI_REQUIREMENT_LABELS: Record<UiRequirementKey, string> = {
     statesAndFeedback: "States and feedback"
 };
 
-type StudioTab = "architecture" | "prd" | "spec" | "runnable";
+type StudioTab = "architecture" | "prd" | "spec";
 
 function normalizeStringList(value: unknown, maxItems: number = 80): string[] {
     if (!Array.isArray(value)) return [];
@@ -375,11 +376,8 @@ function inferQuestionAction(questionText: string): MessageAction | null {
     return null;
 }
 
-function shouldUseArchitectureInteractionMode(action: MessageAction | null) {
-    return action === "generate_scaffold" ||
-        action === "focus_requirement" ||
-        action === "fill_requirement" ||
-        action === "show_blockers";
+function shouldUseArchitectureInteractionMode() {
+    return true;
 }
 
 function isAffirmativeForAction(value: string, action: MessageAction | null) {
@@ -758,7 +756,7 @@ function isGenerationResponse(value: unknown): value is GenerationResponse {
 }
 
 function inferGenerationOutputMode(generation: GenerationResponse): OutputMode {
-    return generation.outputMode === "virtual_spec" ? "virtual_spec" : "runnable_scaffold";
+    return generation.outputMode === "virtual_spec" ? "virtual_spec" : "virtual_spec";
 }
 
 function normalizeGenerationArtifacts(
@@ -772,12 +770,12 @@ function normalizeGenerationArtifacts(
         if (isGenerationResponse(candidate.virtual_spec)) {
             artifacts.virtual_spec = candidate.virtual_spec;
         }
-        if (isGenerationResponse(candidate.runnable_scaffold)) {
-            artifacts.runnable_scaffold = candidate.runnable_scaffold;
+        if (!artifacts.virtual_spec && isGenerationResponse(candidate.runnable_scaffold)) {
+            artifacts.virtual_spec = candidate.runnable_scaffold;
         }
     }
 
-    if (!artifacts.virtual_spec && !artifacts.runnable_scaffold && isGenerationResponse(fallbackGeneration)) {
+    if (!artifacts.virtual_spec && isGenerationResponse(fallbackGeneration)) {
         artifacts[inferGenerationOutputMode(fallbackGeneration)] = fallbackGeneration;
     }
 
@@ -788,14 +786,12 @@ function resolvePrimaryGeneration(
     artifacts: GenerationArtifacts,
     fallbackGeneration?: GenerationResponse | null
 ): GenerationResponse | null {
-    if (artifacts.runnable_scaffold) return artifacts.runnable_scaffold;
     if (artifacts.virtual_spec) return artifacts.virtual_spec;
     return isGenerationResponse(fallbackGeneration) ? fallbackGeneration : null;
 }
 
 function getPreferredGeneratedTab(artifacts: GenerationArtifacts): StudioTab {
     if (artifacts.virtual_spec) return "spec";
-    if (artifacts.runnable_scaffold) return "runnable";
     return "architecture";
 }
 
@@ -1754,38 +1750,6 @@ function buildBlockersSummary(
     ].join("\n");
 }
 
-function buildPrdSummaryLines(
-    language: "zh" | "en",
-    evaluation: EvaluationResponse | null,
-    architecturePack: ArchitecturePack,
-    readiness: ReadinessChecklist
-) {
-    const lines: string[] = [];
-    const platformSummary = buildPlatformSummaryLine(architecturePack.platformStrategy);
-
-    if (architecturePack.businessContext.productGoal.trim()) {
-        lines.push(architecturePack.businessContext.productGoal.trim());
-    }
-
-    if (platformSummary) {
-        lines.push(platformSummary);
-    }
-
-    if (evaluation?.analysis?.clarified?.length) {
-        lines.push(...evaluation.analysis.clarified.slice(0, 3).map((item) => clipText(item, 180)));
-    }
-
-    if (lines.length === 0) {
-        lines.push(
-            language === "zh"
-                ? `当前 Readiness ${Math.round(readiness.score)}%，请继续补充产品目标与关键流程。`
-                : `Current readiness is ${Math.round(readiness.score)}%. Continue clarifying the product goal and key flows.`
-        );
-    }
-
-    return lines.slice(0, 4);
-}
-
 function buildPrdConversationSignals(
     language: "zh" | "en",
     messages: Message[]
@@ -1808,57 +1772,311 @@ function buildPrdConversationSignals(
     return [...confirmations, ...recentUserNotes].slice(0, 6);
 }
 
-function buildPrdArchitectureSnapshot(
+type PrdDecisionLogItem = {
+    title: string;
+    detail: string;
+};
+
+type CanonicalPrdViewModel = {
+    summaryLines: string[];
+    clarifiedItems: string[];
+    openQuestions: string[];
+    architectureSnapshot: string[];
+    decisionLog: PrdDecisionLogItem[];
+    guardrailItems: string[];
+};
+
+function appendUniquePrdLine(target: string[], line: string | null | undefined, maxChars: number = 220) {
+    const normalized = clipText((line || "").trim(), maxChars);
+    if (!normalized) return;
+    if (target.some((item) => item.toLowerCase() === normalized.toLowerCase())) return;
+    target.push(normalized);
+}
+
+function joinPrdItems(language: "zh" | "en", items: string[], maxItems: number = 3) {
+    const normalized = items
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, maxItems);
+    if (normalized.length === 0) return "";
+    return normalized.join(language === "zh" ? "、" : ", ");
+}
+
+function buildPrdProgressLine(
+    language: "zh" | "en",
+    readiness: ReadinessChecklist,
+    minimumViableLoop: MinimumViableLoopChecklist
+) {
+    const readinessText = `${Math.round(readiness.score)}%`;
+    const mvlText = minimumViableLoop.ready
+        ? (language === "zh" ? "已就绪" : "ready")
+        : `${Math.round(minimumViableLoop.score)}%`;
+    const nextMilestone = clipText(
+        minimumViableLoop.nextMilestone || readiness.nextMilestone || "",
+        96
+    );
+    return language === "zh"
+        ? `当前完成度 ${readinessText} | MVL ${mvlText}${nextMilestone ? ` | 下一步：${nextMilestone}` : ""}`
+        : `Readiness ${readinessText} | MVL ${mvlText}${nextMilestone ? ` | Next: ${nextMilestone}` : ""}`;
+}
+
+function buildCanonicalPrdViewModel(
     language: "zh" | "en",
     architecturePack: ArchitecturePack,
-    readiness: ReadinessChecklist
-) {
-    const items: string[] = [];
+    decisionRecords: DecisionRecord[],
+    guardrailChecklist: GuardrailChecklist,
+    readiness: ReadinessChecklist,
+    minimumViableLoop: MinimumViableLoopChecklist
+): CanonicalPrdViewModel {
+    const summaryLines: string[] = [];
+    const clarifiedItems: string[] = [];
+    const openQuestions: string[] = [];
+    const architectureSnapshot: string[] = [];
+    const decisionLog: PrdDecisionLogItem[] = [];
+    const guardrailItems: string[] = [];
     const platformSummary = buildPlatformSummaryLine(architecturePack.platformStrategy);
+    const progressLine = buildPrdProgressLine(language, readiness, minimumViableLoop);
+    const targetUsers = joinPrdItems(language, architecturePack.businessContext.targetUsers);
+    const userJourneys = joinPrdItems(language, architecturePack.businessContext.userJourneys);
+    const constraints = joinPrdItems(language, architecturePack.businessContext.constraints);
+    const risks = joinPrdItems(language, architecturePack.businessContext.risks);
+    const boundedContexts = joinPrdItems(language, architecturePack.boundedContexts.map((item) => item.name));
+    const modules = joinPrdItems(language, architecturePack.moduleResponsibilities.map((item) => item.module));
+    const dataOwnership = joinPrdItems(language, architecturePack.dataOwnership.map((item) => `${item.data} -> ${item.owner}`));
+    const integrationContracts = joinPrdItems(language, architecturePack.integrationContracts.map((item) => item.name));
+    const nonFunctionalRequirements = joinPrdItems(language, architecturePack.nonFunctionalRequirements.map((item) => item.requirement));
+    const keyScreens = joinPrdItems(language, architecturePack.experienceConstraints.keyScreens);
+    const sharedComponents = joinPrdItems(language, architecturePack.experienceConstraints.uiComponents);
+    const responsiveStrategy = joinPrdItems(language, architecturePack.experienceConstraints.responsiveStrategy);
 
-    if (platformSummary) {
-        items.push(platformSummary);
-    }
+    appendUniquePrdLine(summaryLines, architecturePack.businessContext.productGoal.trim(), 180);
+    appendUniquePrdLine(summaryLines, platformSummary, 180);
+    appendUniquePrdLine(
+        summaryLines,
+        targetUsers
+            ? language === "zh"
+                ? `目标用户：${targetUsers}`
+                : `Target users: ${targetUsers}`
+            : null
+    );
+    appendUniquePrdLine(
+        summaryLines,
+        userJourneys
+            ? language === "zh"
+                ? `关键流程：${userJourneys}`
+                : `Key journeys: ${userJourneys}`
+            : null
+    );
+    appendUniquePrdLine(summaryLines, progressLine, 180);
 
-    if (architecturePack.businessContext.targetUsers.length > 0) {
-        items.push(
+    if (summaryLines.length === 0) {
+        appendUniquePrdLine(
+            summaryLines,
             language === "zh"
-                ? `目标用户：${architecturePack.businessContext.targetUsers.slice(0, 3).join("、")}`
-                : `Target users: ${architecturePack.businessContext.targetUsers.slice(0, 3).join(", ")}`
+                ? `当前完成度 ${Math.round(readiness.score)}%，请继续补充产品目标与关键流程。`
+                : `Current readiness is ${Math.round(readiness.score)}%. Continue clarifying the product goal and key flows.`
         );
     }
 
-    if (architecturePack.businessContext.userJourneys.length > 0) {
-        items.push(
-            language === "zh"
-                ? `关键流程：${architecturePack.businessContext.userJourneys.slice(0, 3).join("；")}`
-                : `Key journeys: ${architecturePack.businessContext.userJourneys.slice(0, 3).join("; ")}`
-        );
-    }
-
-    if (architecturePack.boundedContexts.length > 0) {
-        items.push(
-            language === "zh"
-                ? `限界上下文：${architecturePack.boundedContexts.slice(0, 3).map((item) => item.name).join("、")}`
-                : `Bounded contexts: ${architecturePack.boundedContexts.slice(0, 3).map((item) => item.name).join(", ")}`
-        );
-    }
-
-    if (architecturePack.experienceConstraints.keyScreens.length > 0) {
-        items.push(
-            language === "zh"
-                ? `关键界面：${architecturePack.experienceConstraints.keyScreens.slice(0, 3).join("、")}`
-                : `Key screens: ${architecturePack.experienceConstraints.keyScreens.slice(0, 3).join(", ")}`
-        );
-    }
-
-    items.push(
-        language === "zh"
-            ? `当前 Readiness：${Math.round(readiness.score)}%`
-            : `Current readiness: ${Math.round(readiness.score)}%`
+    appendUniquePrdLine(
+        clarifiedItems,
+        architecturePack.businessContext.productGoal.trim()
+            ? language === "zh"
+                ? `产品目标：${architecturePack.businessContext.productGoal.trim()}`
+                : `Product goal: ${architecturePack.businessContext.productGoal.trim()}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        targetUsers
+            ? language === "zh"
+                ? `目标用户：${targetUsers}`
+                : `Target users: ${targetUsers}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        userJourneys
+            ? language === "zh"
+                ? `关键流程：${userJourneys}`
+                : `Key journeys: ${userJourneys}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        constraints
+            ? language === "zh"
+                ? `约束条件：${constraints}`
+                : `Constraints: ${constraints}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        risks
+            ? language === "zh"
+                ? `主要风险：${risks}`
+                : `Risks: ${risks}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        boundedContexts
+            ? language === "zh"
+                ? `限界上下文：${boundedContexts}`
+                : `Bounded contexts: ${boundedContexts}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        modules
+            ? language === "zh"
+                ? `核心模块：${modules}`
+                : `Core modules: ${modules}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        dataOwnership
+            ? language === "zh"
+                ? `数据归属：${dataOwnership}`
+                : `Data ownership: ${dataOwnership}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        integrationContracts
+            ? language === "zh"
+                ? `集成契约：${integrationContracts}`
+                : `Integration contracts: ${integrationContracts}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        nonFunctionalRequirements
+            ? language === "zh"
+                ? `非功能性需求：${nonFunctionalRequirements}`
+                : `Non-functional requirements: ${nonFunctionalRequirements}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        keyScreens
+            ? language === "zh"
+                ? `关键界面：${keyScreens}`
+                : `Key screens: ${keyScreens}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        sharedComponents
+            ? language === "zh"
+                ? `共享组件：${sharedComponents}`
+                : `Shared components: ${sharedComponents}`
+            : null
+    );
+    appendUniquePrdLine(
+        clarifiedItems,
+        responsiveStrategy
+            ? language === "zh"
+                ? `响应式策略：${responsiveStrategy}`
+                : `Responsive strategy: ${responsiveStrategy}`
+            : null
     );
 
-    return items;
+    const incompleteRequirements = readiness.criteria.flatMap((criterion) =>
+        criterion.requirements.filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
+    );
+    for (const requirement of incompleteRequirements.slice(0, 8)) {
+        const label = getReadinessRequirementLabel(requirement.key, language);
+        const missingDetail = translateReadinessText(
+            language,
+            requirement.missing[0] || (
+                language === "zh"
+                    ? `请继续补齐${label}。`
+                    : `Please clarify ${label}.`
+            )
+        );
+        appendUniquePrdLine(
+            openQuestions,
+            language === "zh"
+                ? `${label}：${missingDetail}`
+                : `${label}: ${missingDetail}`,
+            180
+        );
+    }
+
+    appendUniquePrdLine(architectureSnapshot, platformSummary, 180);
+    appendUniquePrdLine(
+        architectureSnapshot,
+        boundedContexts
+            ? language === "zh"
+                ? `限界上下文：${boundedContexts}`
+                : `Bounded contexts: ${boundedContexts}`
+            : null
+    );
+    appendUniquePrdLine(
+        architectureSnapshot,
+        modules
+            ? language === "zh"
+                ? `核心模块：${modules}`
+                : `Core modules: ${modules}`
+            : null
+    );
+    appendUniquePrdLine(
+        architectureSnapshot,
+        integrationContracts
+            ? language === "zh"
+                ? `集成契约：${integrationContracts}`
+                : `Integration contracts: ${integrationContracts}`
+            : null
+    );
+    appendUniquePrdLine(
+        architectureSnapshot,
+        keyScreens
+            ? language === "zh"
+                ? `关键界面：${keyScreens}`
+                : `Key screens: ${keyScreens}`
+            : null
+    );
+    appendUniquePrdLine(architectureSnapshot, progressLine, 180);
+
+    for (const record of decisionRecords.slice(0, 5)) {
+        const title = clipText((record.title || record.decision || "").trim(), 120);
+        const detail = clipText((record.rationale || record.decision || "").trim(), 180);
+        if (!title && !detail) continue;
+        decisionLog.push({
+            title: title || detail,
+            detail: detail || title
+        });
+    }
+
+    for (const item of guardrailChecklist.implementationOrder.slice(0, 3)) {
+        appendUniquePrdLine(
+            guardrailItems,
+            language === "zh" ? `实现顺序：${item}` : `Implementation order: ${item}`
+        );
+    }
+    for (const item of guardrailChecklist.acceptanceCriteria.slice(0, 3)) {
+        appendUniquePrdLine(
+            guardrailItems,
+            language === "zh" ? `验收标准：${item}` : `Acceptance criteria: ${item}`
+        );
+    }
+    for (const item of guardrailChecklist.testStrategy.slice(0, 2)) {
+        appendUniquePrdLine(
+            guardrailItems,
+            language === "zh" ? `测试策略：${item}` : `Test strategy: ${item}`
+        );
+    }
+
+    return {
+        summaryLines: summaryLines.slice(0, 5),
+        clarifiedItems: clarifiedItems.slice(0, 10),
+        openQuestions: openQuestions.slice(0, 8),
+        architectureSnapshot: architectureSnapshot.slice(0, 6),
+        decisionLog,
+        guardrailItems: guardrailItems.slice(0, 8)
+    };
 }
 
 function buildBlockedGenerateQuestion(
@@ -2557,8 +2775,7 @@ function compactGenerationForStorage(generation: GenerationResponse | null): Gen
 
 function compactGenerationArtifactsForStorage(artifacts: GenerationArtifacts): GenerationArtifacts {
     return {
-        virtual_spec: compactGenerationForStorage(artifacts.virtual_spec ?? null),
-        runnable_scaffold: compactGenerationForStorage(artifacts.runnable_scaffold ?? null)
+        virtual_spec: compactGenerationForStorage(artifacts.virtual_spec ?? null)
     };
 }
 
@@ -2793,8 +3010,8 @@ function WizardContent() {
     const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
     const architectureViewerCode = currentDiagram;
     const isConversationLocked = Boolean(
-        (generationArtifacts.virtual_spec && generationArtifacts.runnable_scaffold) ||
-        (generation && !generationArtifacts.virtual_spec && !generationArtifacts.runnable_scaffold)
+        generationArtifacts.virtual_spec ||
+        generation
     );
     const lockedChatDescription = workspaceLanguage === "zh"
         ? "当前版本的脚手架已生成，聊天输入现已关闭。"
@@ -5535,34 +5752,25 @@ Do you want to start scaffold generation now?`;
     };
 
     const isPrdTabActive = activeTab === "prd";
-    const prdAnalysis = isPrdTabActive ? normalizeAnalysis(evaluation?.analysis) : null;
-    const prdSummaryLines = isPrdTabActive
-        ? buildPrdSummaryLines(
+    const canonicalPrdView = isPrdTabActive
+        ? buildCanonicalPrdViewModel(
             workspaceLanguage,
-            evaluation,
             architecturePack,
-            architectureReadiness
+            decisionRecords,
+            guardrailChecklist,
+            architectureReadiness,
+            minimumViableLoop
         )
-        : [];
+        : null;
+    const prdSummaryLines = canonicalPrdView?.summaryLines ?? [];
     const prdConversationSignals = isPrdTabActive
         ? buildPrdConversationSignals(workspaceLanguage, messages)
         : [];
-    const prdArchitectureSnapshot = isPrdTabActive
-        ? buildPrdArchitectureSnapshot(
-            workspaceLanguage,
-            architecturePack,
-            architectureReadiness
-        )
-        : [];
-    const prdClarifiedItems = prdAnalysis?.clarified ?? [];
-    const prdOpenQuestions = prdAnalysis?.missing ?? [];
-    const prdGuardrailItems = isPrdTabActive
-        ? [
-            ...guardrailChecklist.implementationOrder,
-            ...guardrailChecklist.acceptanceCriteria,
-            ...guardrailChecklist.testStrategy
-        ].slice(0, 8)
-        : [];
+    const prdArchitectureSnapshot = canonicalPrdView?.architectureSnapshot ?? [];
+    const prdClarifiedItems = canonicalPrdView?.clarifiedItems ?? [];
+    const prdOpenQuestions = canonicalPrdView?.openQuestions ?? [];
+    const prdDecisionLog = canonicalPrdView?.decisionLog ?? [];
+    const prdGuardrailItems = canonicalPrdView?.guardrailItems ?? [];
     const isShowingStaleProject = Boolean(projectId && project && project.id !== projectId);
     const isShowingStaleVersion = Boolean(
         versionId &&
@@ -5851,7 +6059,7 @@ Do you want to start scaffold generation now?`;
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
                 {/* Tabs */}
-                <div className="fc-surface mb-4 grid flex-shrink-0 grid-cols-4 gap-2 rounded-2xl p-2">
+                <div className="fc-surface mb-4 grid flex-shrink-0 grid-cols-3 gap-2 rounded-2xl p-2">
                     <TabButton
                         active={activeTab === 'architecture'}
                         onClick={() => setActiveTab('architecture')}
@@ -5870,13 +6078,6 @@ Do you want to start scaffold generation now?`;
                         icon={<FileText className="w-4 h-4" />}
                         label="Spec Pack"
                         disabled={!generationArtifacts.virtual_spec}
-                    />
-                    <TabButton
-                        active={activeTab === 'runnable'}
-                        onClick={() => setActiveTab('runnable')}
-                        icon={<FileCode className="w-4 h-4" />}
-                        label="Runnable Scaffold"
-                        disabled={!generationArtifacts.runnable_scaffold}
                     />
                 </div>
 
@@ -5979,10 +6180,10 @@ Do you want to start scaffold generation now?`;
                                     <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
                                         <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdDecisionLog}</h4>
                                         <div className="mt-3 space-y-2">
-                                            {decisionRecords.length > 0 ? decisionRecords.slice(0, 5).map((record, index) => (
+                                            {prdDecisionLog.length > 0 ? prdDecisionLog.map((record, index) => (
                                                 <div key={`prd-decision-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
-                                                    <p className="font-semibold text-slate-900 dark:text-slate-100">{record.title || record.decision}</p>
-                                                    <p className="mt-1">{record.decision}</p>
+                                                    <p className="font-semibold text-slate-900 dark:text-slate-100">{record.title}</p>
+                                                    <p className="mt-1">{record.detail}</p>
                                                 </div>
                                             )) : (
                                                 <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoDecisionLog}</p>
@@ -6021,22 +6222,6 @@ Do you want to start scaffold generation now?`;
                             />
                         </div>
                     )}
-
-                    {/* Runnable Scaffold Tab */}
-                    {activeTab === 'runnable' && generationArtifacts.runnable_scaffold && (
-                        <div className="absolute inset-0 p-4 overflow-hidden">
-                            <FileTreeDisplay
-                                content={generationArtifacts.runnable_scaffold.projectTree}
-                                projectName={project?.name}
-                                language={workspaceLanguage}
-                                title={workspaceLanguage === "zh" ? "Runnable Scaffold 文件预览" : "Runnable Scaffold Preview"}
-                                downloadLabel={workspaceLanguage === "zh" ? "下载 Runnable Scaffold ZIP" : "Download Runnable Scaffold ZIP"}
-                                zipFileNameSuffix="runnable-scaffold"
-                                emptyStateLabel={workspaceLanguage === "zh" ? "当前还没有生成 Runnable Scaffold 文件。" : "No Runnable Scaffold files generated yet."}
-                            />
-                        </div>
-                    )}
-
                 </div>
                 </main>
             </div>

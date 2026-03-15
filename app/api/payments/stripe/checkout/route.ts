@@ -110,12 +110,12 @@ export async function POST(req: Request) {
                 { status: 404 }
             );
         }
-        const eligibility = computeProjectScaffoldEligibility(project, "runnable_scaffold");
+        const eligibility = computeProjectScaffoldEligibility(project, "virtual_spec");
         if (!eligibility?.canCheckout) {
             return NextResponse.json(
                 {
                     error: buildScaffoldEligibilityErrorMessage(
-                        eligibility || { code: "ARCHITECTURE_NOT_READY", targetOutputMode: "runnable_scaffold" }
+                        eligibility || { code: "ARCHITECTURE_NOT_READY", targetOutputMode: "virtual_spec" }
                     ),
                     code: eligibility?.code || "ARCHITECTURE_NOT_READY",
                     blockingReasons: eligibility?.blockingReasons || ["Architecture pack is not ready for scaffold generation."],

@@ -46,7 +46,6 @@ function collectProjectLanguageSignals(project: Partial<Project> | null | undefi
         .map((message) => message.content || "")
         .join("\n");
     const generationLanguage =
-        latestVersion?.data?.generationArtifacts?.runnable_scaffold?.generationManifest?.outputLanguage ||
         latestVersion?.data?.generationArtifacts?.virtual_spec?.generationManifest?.outputLanguage ||
         latestVersion?.data?.generation?.generationManifest?.outputLanguage ||
         "";

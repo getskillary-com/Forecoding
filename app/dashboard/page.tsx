@@ -101,6 +101,16 @@ function buildInitialAssistantMessage(formData: ProjectFormData) {
     return `Hello! I'm your AI Co-Founder. Let's shape **${formData.name}** together.${formData.description ? `\n\nI see you want to build: "${formData.description}".` : ""}\n\nStart with the product goal, core users, and the most important workflow.`;
 }
 
+void buildInitialAssistantMessage;
+
+function buildForcedArchitectureAssistantMessage(formData: ProjectFormData) {
+    if (formData.workspaceLanguage === "zh") {
+        return `\u4f60\u597d\uff0c\u6211\u662f\u4f60\u7684 AI \u8054\u5408\u521b\u59cb\u4eba\u3002\u6211\u4eec\u5148\u4e00\u8d77\u68b3\u7406 **${formData.name}**\u3002${formData.description ? `\n\n\u6211\u770b\u5230\u4f60\u60f3\u505a\u7684\u662f\uff1a\u201c${formData.description}\u201d\u3002` : ""}\n\n\u5148\u544a\u8bc9\u6211\u4f60\u7684\u4ea7\u54c1\u76ee\u6807\u3001\u6838\u5fc3\u7528\u6237\u548c\u6700\u5173\u952e\u7684\u4f7f\u7528\u6d41\u7a0b\u3002`;
+    }
+
+    return `Hello! I'm your AI Co-Founder. Let's shape **${formData.name}** together.${formData.description ? `\n\nI see you want to build: "${formData.description}".` : ""}\n\nStart with the product goal, core users, and the most important workflow.`;
+}
+
 function buildInitialDiagram(language: WorkspaceLanguage) {
     return language === "zh"
         ? "graph TD\nStart[从这里开始]"
@@ -254,7 +264,7 @@ export default function DashboardPage() {
                 data: {
                     messages: [{
                         role: "assistant",
-                        content: buildInitialAssistantMessage(formData)
+                        content: buildForcedArchitectureAssistantMessage(formData)
                     }],
                     evaluation: null,
                     generation: null,
