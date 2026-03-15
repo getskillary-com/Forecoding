@@ -34,6 +34,7 @@ import {
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
 import { useNavigationFeedback } from "@/components/NavigationFeedback";
+import { RoutePendingState } from "@/components/RoutePendingState";
 import dynamic from "next/dynamic";
 const ArchitectureViewer = dynamic(() => import("@/components/ArchitectureViewer"), {
     ssr: false,
@@ -5650,41 +5651,7 @@ function ArchitecturePanelPlaceholder() {
 }
 
 function WizardSkeleton() {
-    return (
-        <div className="fc-delayed-fallback relative flex h-screen w-full overflow-hidden font-sans text-slate-900 dark:text-slate-100">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(13,93,255,0.16),transparent_70%)]" />
-            <div className="relative z-10 flex h-full w-[420px] min-w-[320px] max-w-[720px] flex-col border-r border-[color:var(--border)] bg-white/85 backdrop-blur-sm dark:bg-slate-900/75">
-                <div className="border-b border-[color:var(--border)] bg-white/60 p-4 dark:bg-slate-900/75">
-                    <div className="h-4 w-40 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                </div>
-                <div className="flex-1 p-4 space-y-4 overflow-hidden">
-                    <div className="h-20 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-                    <div className="h-16 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-                    <div className="h-24 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-                    <div className="h-14 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-                </div>
-                <div className="border-t border-[color:var(--border)] p-4">
-                    <div className="h-12 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-                </div>
-            </div>
-
-            <div className="relative z-10 h-full min-w-0 flex-1 overflow-hidden p-4 md:p-6">
-                <div className="fc-surface mb-3 rounded-xl p-3">
-                    <div className="h-4 w-36 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                    <div className="mt-2 h-3 w-48 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
-                </div>
-                <div className="mb-4 flex gap-2">
-                    <div className="h-8 w-28 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
-                    <div className="h-8 w-24 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
-                    <div className="h-8 w-24 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
-                </div>
-                <div className="fc-surface-strong flex-1 min-h-0 rounded-2xl p-6">
-                    <div className="h-4 w-40 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                    <div className="mt-4 h-56 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-                </div>
-            </div>
-        </div>
-    );
+    return <RoutePendingState label="Loading workspace..." />;
 }
 
 export default function WizardPage() {

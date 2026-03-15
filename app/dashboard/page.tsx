@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { BrandLogo } from "@/components/BrandLogo";
 import { UserCenter } from "@/components/UserCenter";
 import { useNavigationFeedback } from "@/components/NavigationFeedback";
+import { RoutePendingState } from "@/components/RoutePendingState";
 import {
     prefetchWorkspaceRemote,
     primeWorkspaceCache,
@@ -566,33 +567,5 @@ export default function DashboardPage() {
 }
 
 function DashboardSkeleton() {
-    return (
-        <div className="fc-delayed-fallback relative min-h-screen overflow-hidden px-4 pb-10 pt-6 sm:px-8">
-            <div className="mx-auto max-w-6xl space-y-8">
-                <header className="fc-surface relative z-40 rounded-[var(--radius-2xl)] p-5 sm:p-7">
-                    <div className="flex items-center justify-between">
-                        <div className="space-y-3">
-                            <div className="h-8 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                            <div className="h-6 w-52 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-                            <div className="h-4 w-64 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
-                        </div>
-                        <div className="h-10 w-32 animate-pulse rounded-xl bg-gray-200 dark:bg-gray-800" />
-                    </div>
-                </header>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {Array.from({ length: 6 }).map((_, idx) => (
-                        <div
-                            key={idx}
-                            className="fc-surface-strong rounded-[var(--radius-xl)] p-4 animate-pulse"
-                        >
-                            <div className="h-4 w-32 rounded bg-gray-200 dark:bg-gray-800" />
-                            <div className="mt-3 h-3 w-48 rounded bg-gray-100 dark:bg-gray-800" />
-                            <div className="mt-6 h-24 rounded-xl bg-gray-100 dark:bg-gray-800" />
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
+    return <RoutePendingState label="Loading workspace..." />;
 }
