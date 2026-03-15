@@ -1,5 +1,10 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import LoginClient from "../login/LoginClient";
+
+export const metadata: Metadata = {
+    title: "Create Account"
+};
 
 export default function RegisterPage() {
     return (

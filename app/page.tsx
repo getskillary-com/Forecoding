@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import {
     ArrowRight,
@@ -11,6 +12,10 @@ import {
 } from "lucide-react";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
+
+export const metadata: Metadata = {
+    title: "AI Product Blueprint Studio"
+};
 
 const capabilityCards = [
     {

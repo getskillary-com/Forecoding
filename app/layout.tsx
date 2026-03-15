@@ -5,7 +5,10 @@ import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.APP_BASE_URL || "https://forecoding.com"),
-  title: "Forecoding",
+  title: {
+    default: "Forecoding",
+    template: "%s | Forecoding"
+  },
   description: "AI-powered product blueprint studio for your next big idea.",
   manifest: "/site.webmanifest",
   icons: {

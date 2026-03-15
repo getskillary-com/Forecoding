@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Terms of Service | Forecoding",
+  title: "Terms of Service",
   description: "Forecoding Terms of Service"
 };
 
