@@ -1189,36 +1189,6 @@ function normalizeSingleQuestion(raw: string) {
     return clipText(raw.replace(/\s+/g, " ").trim(), 260);
 }
 
-function buildAssistantDisplayContent(
-    rawQuestion: string,
-    analysis?: EvaluationResponse["analysis"] | null,
-    forcedLanguage?: WorkspaceLanguage
-) {
-    const parsed = parseQuestionBlock(rawQuestion);
-    if (parsed.recommendation) return parsed.displayText;
-
-    const clarified = normalizeAnalysis(analysis).clarified
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .slice(0, 2);
-
-    if (clarified.length === 0) {
-        return parsed.displayText || clipText(rawQuestion.replace(/\s+/g, " ").trim(), 360);
-    }
-
-    const language = forcedLanguage ?? detectResponseLanguage(rawQuestion, clarified.join(" "));
-    const summaryTitle = language === "zh" ? "当前判断：" : "Current view:";
-    const parts = [
-        `${summaryTitle}\n- ${clarified.join("\n- ")}`
-    ];
-
-    if (parsed.question) {
-        parts.push(`${language === "zh" ? "需要确认：" : "Please confirm:"}\n${clipText(parsed.question, 260)}`);
-    }
-
-    return parts.join("\n\n");
-}
-
 function buildAssistantStreamingContent(rawQuestion: string) {
     const normalized = rawQuestion
         .replace(/\r\n/g, "\n")
@@ -1235,17 +1205,8 @@ function buildAssistantStreamingContent(rawQuestion: string) {
         .trimStart();
 }
 
-function buildAssistantFinalContent(
-    rawQuestion: string,
-    interactionMode: EvaluateInteractionMode,
-    analysis?: EvaluationResponse["analysis"] | null,
-    forcedLanguage?: WorkspaceLanguage
-) {
-    if (interactionMode === "chat") {
-        return buildAssistantStreamingContent(rawQuestion);
-    }
-
-    return buildAssistantDisplayContent(rawQuestion, analysis, forcedLanguage);
+function buildAssistantFinalContent(rawQuestion: string) {
+    return buildAssistantStreamingContent(rawQuestion);
 }
 
 function buildCommonFallbackOptions(
@@ -2542,10 +2503,7 @@ function ensureCommonQuestionOptions(
 }
 
 function extractCompletedAssistantText(
-    raw: string,
-    interactionMode: EvaluateInteractionMode,
-    analysis?: EvaluationResponse["analysis"] | null,
-    forcedLanguage?: WorkspaceLanguage
+    raw: string
 ) {
     const normalized = raw.replace(/\r\n/g, "\n").trim();
     if (!normalized) return "";
@@ -2553,21 +2511,18 @@ function extractCompletedAssistantText(
     const questionMatch = normalized.match(/<question>([\s\S]*?)<\/question>/i);
     if (!questionMatch?.[1]) return "";
 
-    return buildAssistantFinalContent(questionMatch[1], interactionMode, analysis, forcedLanguage);
+    return buildAssistantFinalContent(questionMatch[1]);
 }
 
 function extractFallbackAssistantText(
-    raw: string,
-    interactionMode: EvaluateInteractionMode,
-    analysis?: EvaluationResponse["analysis"] | null,
-    forcedLanguage?: WorkspaceLanguage
+    raw: string
 ) {
     const normalized = raw.replace(/\r\n/g, "\n").trim();
     if (!normalized) return "";
 
     const questionMatch = normalized.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
     if (questionMatch && questionMatch[1]) {
-        const questionText = buildAssistantFinalContent(questionMatch[1], interactionMode, analysis, forcedLanguage);
+        const questionText = buildAssistantFinalContent(questionMatch[1]);
         if (questionText) return questionText;
     }
 
@@ -4351,17 +4306,7 @@ function WizardContent() {
                             const current = updated[assistantIndex];
                             if (!current || current.role !== "assistant") return prev;
                             const nextContent = displayContent || q;
-                            const nextOptions = shouldTrackQuestion
-                                ? ensureCommonQuestionOptions(
-                                    q,
-                                    current.options ?? [],
-                                    latestUserContext,
-                                    nextQuestionAction,
-                                    currentQuestionKey,
-                                    currentQuestionRequirementKey,
-                                    workspaceLanguage
-                                )
-                                : current.options;
+                            const nextOptions = current.options;
                             const normalizedNextOptions = nextOptions && nextOptions.length > 0 ? nextOptions : undefined;
                             const nextQuestionKey = shouldTrackQuestion ? currentQuestionKey ?? undefined : undefined;
                             const nextQuestionStatus = shouldTrackQuestion ? "pending" as const : undefined;
@@ -4620,18 +4565,8 @@ function WizardContent() {
                         requestMessages
                     )
                     : null;
-                const completedQuestionText = extractCompletedAssistantText(
-                    buffer,
-                    interactionMode,
-                    currentEval.analysis,
-                    workspaceLanguage
-                );
-                const fallbackText = extractFallbackAssistantText(
-                    buffer,
-                    interactionMode,
-                    currentEval.analysis,
-                    workspaceLanguage
-                ) || "Model response format was invalid. Please retry.";
+                const completedQuestionText = extractCompletedAssistantText(buffer);
+                const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
                 const hasCompletedVisibleQuestion = Boolean(completedQuestionText && completedQuestionText.trim().length > 0);
                 setMessages(prev => {
                     if (evalRequestIdRef.current !== requestId) return prev;
