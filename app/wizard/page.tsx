@@ -2129,6 +2129,29 @@ function parseOptionsBlock(raw: string): MessageOption[] {
         });
 }
 
+function areMessageOptionsEqual(
+    left?: MessageOption[] | null,
+    right?: MessageOption[] | null
+) {
+    const normalizedLeft = left && left.length > 0 ? left : undefined;
+    const normalizedRight = right && right.length > 0 ? right : undefined;
+
+    if (!normalizedLeft && !normalizedRight) return true;
+    if (!normalizedLeft || !normalizedRight) return false;
+    if (normalizedLeft.length !== normalizedRight.length) return false;
+
+    return normalizedLeft.every((option, index) => {
+        const candidate = normalizedRight[index];
+        return Boolean(candidate) &&
+            option.label === candidate.label &&
+            option.value === candidate.value &&
+            option.action === candidate.action &&
+            option.questionKey === candidate.questionKey &&
+            option.requirementKey === candidate.requirementKey &&
+            option.stale === candidate.stale;
+    });
+}
+
 function extractStreamingOptionsBlock(raw: string): string | null {
     const match = raw.match(
         /<options>([\s\S]*?)(<\/options>|(?=\r?\n\s*<(?!\/?options\b)[a-z_][\w-]*>)|$)/i
@@ -2731,6 +2754,7 @@ function WizardContent() {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const hasScrolledMessagesRef = useRef(false);
+    const lastAutoScrolledAssistantContentRef = useRef("");
     const workspaceLanguage = getProjectWorkspaceLanguage(project);
     const uiText = getWorkspaceUiText(workspaceLanguage);
     const baseMessageIndex = Math.max(0, messages.length - messageWindow);
@@ -3419,10 +3443,28 @@ function WizardContent() {
 
     // 4. Scroll to bottom
     useEffect(() => {
-        const behavior: ScrollBehavior = !hasScrolledMessagesRef.current || isLoading ? "auto" : "smooth";
+        const lastMessage = lastMessageIndex >= 0 ? messages[lastMessageIndex] : null;
+        const lastAssistantContent = lastMessage?.role === "assistant" ? lastMessage.content : "";
+        const didVisibleAssistantContentChange =
+            lastMessage?.role === "assistant" &&
+            lastAssistantContent !== lastAutoScrolledAssistantContentRef.current;
+        const shouldAutoScroll =
+            !hasScrolledMessagesRef.current ||
+            lastMessage?.role === "user" ||
+            (isLoading && !lastAssistantHasVisibleContent) ||
+            didVisibleAssistantContentChange;
+
+        if (!shouldAutoScroll) return;
+
+        const behavior: ScrollBehavior =
+            !hasScrolledMessagesRef.current ||
+            (isLoading && (!lastAssistantHasVisibleContent || didVisibleAssistantContentChange))
+                ? "auto"
+                : "smooth";
         messagesEndRef.current?.scrollIntoView({ behavior });
         hasScrolledMessagesRef.current = true;
-    }, [messages, isLoading]);
+        lastAutoScrolledAssistantContentRef.current = lastAssistantContent;
+    }, [messages, isLoading, lastAssistantHasVisibleContent, lastMessageIndex]);
 
     // --- Handlers ---
 
@@ -3788,24 +3830,43 @@ function WizardContent() {
                             const updated = [...prev];
                             const current = updated[assistantIndex];
                             if (!current || current.role !== "assistant") return prev;
+                            const nextContent = displayContent || q;
+                            const nextOptions = shouldTrackQuestion
+                                ? ensureCommonQuestionOptions(
+                                    q,
+                                    current.options ?? [],
+                                    latestUserContext,
+                                    nextQuestionAction,
+                                    currentQuestionKey,
+                                    currentQuestionRequirementKey,
+                                    workspaceLanguage
+                                )
+                                : current.options;
+                            const normalizedNextOptions = nextOptions && nextOptions.length > 0 ? nextOptions : undefined;
+                            const nextQuestionKey = shouldTrackQuestion ? currentQuestionKey ?? undefined : undefined;
+                            const nextQuestionStatus = shouldTrackQuestion ? "pending" as const : undefined;
+                            const nextTrackedQuestionAction = shouldTrackQuestion ? nextQuestionAction ?? undefined : undefined;
+                            const nextQuestionRequirementKey = shouldTrackQuestion
+                                ? currentQuestionRequirementKey ?? undefined
+                                : undefined;
+                            if (
+                                nextContent === current.content &&
+                                areMessageOptionsEqual(current.options, normalizedNextOptions) &&
+                                nextQuestionKey === current.questionKey &&
+                                nextQuestionStatus === current.questionStatus &&
+                                nextTrackedQuestionAction === current.questionAction &&
+                                nextQuestionRequirementKey === current.questionRequirementKey
+                            ) {
+                                return prev;
+                            }
                             updated[assistantIndex] = {
                                 ...current,
-                                content: displayContent || q,
-                                options: shouldTrackQuestion
-                                    ? ensureCommonQuestionOptions(
-                                        q,
-                                        current.options ?? [],
-                                        latestUserContext,
-                                        nextQuestionAction,
-                                        currentQuestionKey,
-                                        currentQuestionRequirementKey,
-                                        workspaceLanguage
-                                    )
-                                    : current.options,
-                                questionKey: shouldTrackQuestion ? currentQuestionKey : undefined,
-                                questionStatus: shouldTrackQuestion ? "pending" : undefined,
-                                questionAction: shouldTrackQuestion ? nextQuestionAction ?? undefined : undefined,
-                                questionRequirementKey: shouldTrackQuestion ? currentQuestionRequirementKey ?? undefined : undefined
+                                content: nextContent,
+                                options: normalizedNextOptions,
+                                questionKey: nextQuestionKey,
+                                questionStatus: nextQuestionStatus,
+                                questionAction: nextTrackedQuestionAction,
+                                questionRequirementKey: nextQuestionRequirementKey
                             };
                             return updated;
                         });
@@ -3957,17 +4018,36 @@ function WizardContent() {
                             currentQuestionAction !== null ||
                             currentQuestionRequirementKey !== null ||
                             options.length > 0;
+                        const nextQuestionKey = shouldTrackQuestion
+                            ? currentQuestionKey ?? current.questionKey ?? undefined
+                            : undefined;
+                        const nextQuestionStatus = shouldTrackQuestion
+                            ? current.questionKey || currentQuestionKey
+                                ? "pending"
+                                : current.questionStatus
+                            : undefined;
+                        const nextQuestionAction = shouldTrackQuestion
+                            ? currentQuestionAction ?? current.questionAction
+                            : undefined;
+                        const nextQuestionRequirementKey = shouldTrackQuestion
+                            ? currentQuestionRequirementKey ?? current.questionRequirementKey
+                            : undefined;
+                        if (
+                            areMessageOptionsEqual(current.options, normalizedOptions) &&
+                            nextQuestionKey === current.questionKey &&
+                            nextQuestionStatus === current.questionStatus &&
+                            nextQuestionAction === current.questionAction &&
+                            nextQuestionRequirementKey === current.questionRequirementKey
+                        ) {
+                            return prev;
+                        }
                         updated[assistantIndex] = {
                             ...current,
                             options: normalizedOptions,
-                            questionKey: shouldTrackQuestion ? currentQuestionKey ?? current.questionKey ?? undefined : undefined,
-                            questionStatus: shouldTrackQuestion
-                                ? current.questionKey || currentQuestionKey
-                                    ? "pending"
-                                    : current.questionStatus
-                                : undefined,
-                            questionAction: shouldTrackQuestion ? currentQuestionAction ?? current.questionAction : undefined,
-                            questionRequirementKey: shouldTrackQuestion ? currentQuestionRequirementKey ?? current.questionRequirementKey : undefined
+                            questionKey: nextQuestionKey,
+                            questionStatus: nextQuestionStatus,
+                            questionAction: nextQuestionAction,
+                            questionRequirementKey: nextQuestionRequirementKey
                         };
                         return updated;
                     });
