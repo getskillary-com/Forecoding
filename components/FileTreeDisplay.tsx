@@ -88,7 +88,7 @@ function TreeNode({
     return (
         <div className="select-none">
             <div
-                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm transition-colors ${
+                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition-colors ${
                     isSelected
                         ? "bg-blue-100 dark:bg-blue-900/30"
                         : "hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -347,7 +347,7 @@ export function FileTreeDisplay({
     };
 
     if (typeof content === "string") {
-        return <pre className="whitespace-pre-wrap p-4 text-xs font-mono">{content}</pre>;
+        return <pre className="whitespace-pre-wrap p-4 text-[11px] leading-5 font-mono">{content}</pre>;
     }
 
     const fallbackTitle = language === "zh" ? "Scaffold 预览" : "Scaffold Preview";
@@ -395,11 +395,11 @@ export function FileTreeDisplay({
                     </div>
                     <div className="min-h-0 flex-1 overflow-auto p-4">
                         {selectedPreviewFile ? (
-                            <pre className="whitespace-pre-wrap text-xs font-mono text-gray-700 dark:text-gray-200">
+                            <pre className="whitespace-pre-wrap text-[11px] leading-5 font-mono text-gray-700 dark:text-gray-200">
                                 {selectedPreviewFile.content || (language === "zh" ? "// 空文件" : "// Empty specification")}
                             </pre>
                         ) : (
-                            <div className="text-sm text-gray-500 dark:text-gray-400">
+                            <div className="text-xs text-gray-500 dark:text-gray-400">
                                 {emptyStateLabel || fallbackEmptyStateLabel}
                             </div>
                         )}

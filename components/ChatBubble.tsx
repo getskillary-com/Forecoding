@@ -11,7 +11,7 @@ interface Props {
     isStreaming?: boolean;
 }
 
-const markdownBodyClassName = "max-w-none text-[15px] leading-7 break-words text-inherit [&_ol]:my-3 [&_p]:my-0 [&_p+ol]:mt-3 [&_p+p]:mt-3 [&_p+ul]:mt-3 [&_pre]:overflow-x-auto [&_ul]:my-3 [&_li]:my-1";
+const markdownBodyClassName = "max-w-none text-[13px] leading-6 break-words text-inherit [&_ol]:my-3 [&_p]:my-0 [&_p+ol]:mt-3 [&_p+p]:mt-3 [&_p+ul]:mt-3 [&_pre]:overflow-x-auto [&_ul]:my-3 [&_li]:my-1";
 
 export const ChatBubble = memo(function ChatBubble({
     message,
@@ -125,7 +125,7 @@ export const ChatBubble = memo(function ChatBubble({
                                             type="button"
                                             onClick={() => onOptionClick?.(opt)}
                                             disabled={isDisabled}
-                                            className={`text-left p-3 text-sm border rounded-xl transition-all duration-200 shadow-sm font-medium ${
+                                            className={`text-left p-3 text-[13px] border rounded-xl transition-all duration-200 shadow-sm font-medium ${
                                                 isDisabled
                                                     ? 'bg-gray-100 dark:bg-gray-900 border-gray-200 dark:border-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed'
                                                     : enabledClassName

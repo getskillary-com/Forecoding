@@ -29,6 +29,7 @@ import {
     Project,
     Task,
     ProjectVersion,
+    PendingEvaluation,
     Attachment,
     FileNode
 } from "@/types";
@@ -771,6 +772,29 @@ function getPreferredGeneratedTab(artifacts: GenerationArtifacts): StudioTab {
     if (artifacts.virtual_spec) return "spec";
     if (artifacts.runnable_scaffold) return "runnable";
     return "architecture";
+}
+
+function normalizePendingEvaluation(value: unknown): PendingEvaluation | null {
+    if (!value || typeof value !== "object") return null;
+
+    const candidate = value as Partial<PendingEvaluation>;
+    const requestId = typeof candidate.requestId === "string" ? candidate.requestId.trim() : "";
+    const requestMessages = normalizeMessages(candidate.requestMessages);
+
+    if (!requestId || requestMessages.length === 0) {
+        return null;
+    }
+
+    return {
+        requestId,
+        requestMessages,
+        startedAt: typeof candidate.startedAt === "number" ? candidate.startedAt : Date.now(),
+        assistantContent: typeof candidate.assistantContent === "string" ? candidate.assistantContent : ""
+    };
+}
+
+function createPendingEvaluationId() {
+    return `eval-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
@@ -2530,6 +2554,7 @@ function WizardContent() {
     const initialEvaluation = initialNormalizedState.evaluation;
     const initialUiDesignSpec = initialNormalizedState.uiDesignSpec;
     const initialUiDesignState = initialNormalizedState.uiDesignState;
+    const initialPendingEvaluation = normalizePendingEvaluation(cachedSnapshot?.data?.pendingEvaluation);
     const hasLegacyInitialUiStage = rawCachedStage === "ui_design";
     const initialDesignStage = hasLegacyInitialUiStage
         ? "functional_architecture"
@@ -2548,9 +2573,12 @@ function WizardContent() {
     const hasUserEditedRef = useRef(false);
 
     const [messages, setMessages] = useState<Message[]>(initialNormalizedState.messages);
+    const [pendingEvaluation, setPendingEvaluation] = useState<PendingEvaluation | null>(initialPendingEvaluation);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [messageWindow, setMessageWindow] = useState(MESSAGE_WINDOW_SIZE);
+    const messagesRef = useRef<Message[]>(initialNormalizedState.messages);
+    const pendingEvaluationRef = useRef<PendingEvaluation | null>(initialPendingEvaluation);
 
     // Core Domain State
     const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(initialEvaluation);
@@ -2586,6 +2614,8 @@ function WizardContent() {
     const generateInFlightRef = useRef(false);
     const evaluateAbortRef = useRef<AbortController | null>(null);
     const evalRequestIdRef = useRef(0);
+    const resumedPendingEvaluationIdsRef = useRef<Set<string>>(new Set());
+    const isUnmountingRef = useRef(false);
 
     // Chat Attachments
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
@@ -2660,6 +2690,56 @@ function WizardContent() {
         }
     };
 
+    const persistLocalVersionSnapshot = (overrides: Partial<ProjectVersion["data"]> = {}) => {
+        if (!project || !currentVersion) return;
+
+        const localProjects = readProjectsFromLocalStorage();
+        const baseProject = localProjects.find((candidate) => candidate.id === project.id) ?? project;
+        const baseVersion = baseProject.versions.find((candidate) => candidate.id === currentVersion.id) ?? currentVersion;
+        const hasPendingEvaluationOverride = Object.prototype.hasOwnProperty.call(overrides, "pendingEvaluation");
+        const nextVersion: ProjectVersion = {
+            ...baseVersion,
+            status: currentVersion.status,
+            data: {
+                ...baseVersion.data,
+                messages: overrides.messages ?? messagesRef.current,
+                evaluation: overrides.evaluation ?? evaluation,
+                generation: overrides.generation ?? generation,
+                generationArtifacts: overrides.generationArtifacts ?? generationArtifacts,
+                currentDiagram: overrides.currentDiagram ?? currentDiagram,
+                tasks: overrides.tasks ?? tasks,
+                paymentStatus: overrides.paymentStatus ?? currentVersion.data.paymentStatus,
+                diagramGovernance: overrides.diagramGovernance ?? diagramGovernance,
+                designStage: overrides.designStage ?? designStage,
+                uiDesignState: overrides.uiDesignState ?? uiDesignState,
+                uiDesignSpec: overrides.uiDesignSpec ?? uiDesignSpec ?? undefined,
+                functionalLockedAt: overrides.functionalLockedAt ?? functionalLockedAt,
+                uiReadyAt: overrides.uiReadyAt ?? uiReadyAt,
+                sourceArtifacts: overrides.sourceArtifacts ?? sourceArtifacts,
+                architecturePack: overrides.architecturePack ?? architecturePack,
+                decisionRecords: overrides.decisionRecords ?? decisionRecords,
+                guardrailChecklist: overrides.guardrailChecklist ?? guardrailChecklist,
+                architectureStage: overrides.architectureStage ?? architectureStage,
+                readinessOverrides: overrides.readinessOverrides ?? readinessOverrides,
+                pendingEvaluation: hasPendingEvaluationOverride
+                    ? overrides.pendingEvaluation ?? undefined
+                    : pendingEvaluationRef.current ?? undefined
+            }
+        };
+        const versionExists = baseProject.versions.some((candidate) => candidate.id === nextVersion.id);
+        const nextProject: Project = {
+            ...baseProject,
+            updatedAt: Date.now(),
+            versions: versionExists
+                ? baseProject.versions.map((candidate) => candidate.id === nextVersion.id ? nextVersion : candidate)
+                : [...baseProject.versions, nextVersion]
+        };
+        const nextProjects = localProjects.some((candidate) => candidate.id === nextProject.id)
+            ? localProjects.map((candidate) => candidate.id === nextProject.id ? nextProject : candidate)
+            : [nextProject, ...localProjects];
+        writeProjectsToLocalStorage(nextProjects);
+    };
+
 
     // --- Effects ---
 
@@ -2698,6 +2778,24 @@ function WizardContent() {
         hasUserEditedRef.current = hasUserEdited;
     }, [hasUserEdited]);
 
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
+
+    useEffect(() => {
+        pendingEvaluationRef.current = pendingEvaluation;
+    }, [pendingEvaluation]);
+
+    useEffect(() => {
+        return () => {
+            isUnmountingRef.current = true;
+            if (evaluateAbortRef.current) {
+                evaluateAbortRef.current.abort();
+                evaluateAbortRef.current = null;
+            }
+        };
+    }, []);
+
     // 1. Load Project & Version Data
     useEffect(() => {
         if (typeof window === "undefined" || !projectId) return;
@@ -2723,6 +2821,7 @@ function WizardContent() {
                 data.generation ?? null
             );
             setMessages(normalizedDesignState.messages);
+            setPendingEvaluation(normalizePendingEvaluation(data.pendingEvaluation));
             setMessageWindow(MESSAGE_WINDOW_SIZE);
             setEvaluation(normalizedDesignState.evaluation);
             setGenerationArtifacts(normalizedGenerationArtifacts);
@@ -2753,10 +2852,24 @@ function WizardContent() {
             try {
                 const remoteProjects = await prefetchWorkspaceRemote();
                 const nextProjects = remoteProjects ?? readProjectsFromLocalStorage();
+                const localProject = localProjects.find((candidate) => candidate.id === projectId) ?? null;
+                const localVersion = localProject ? resolveProjectVersionForWizard(localProject, versionId) : null;
+                const hasPendingLocalEvaluation = Boolean(normalizePendingEvaluation(localVersion?.data.pendingEvaluation));
 
                 if (nextProjects.length > 0 || localProjects.length === 0) {
                     const remoteProject = nextProjects.find((p) => p.id === projectId);
-                    if (remoteProject && (!background || !hasUserEditedRef.current)) {
+                    const shouldHydrateRemote =
+                        remoteProject &&
+                        (!background || !hasUserEditedRef.current) &&
+                        (
+                            !localProject ||
+                            (
+                                !hasPendingLocalEvaluation &&
+                                remoteProject.updatedAt > localProject.updatedAt
+                            )
+                        );
+
+                    if (shouldHydrateRemote) {
                         hydrateFromProject(remoteProject);
                     }
                 } else {
@@ -3134,6 +3247,7 @@ function WizardContent() {
                 decisionRecords,
                 guardrailChecklist,
                 readinessOverrides,
+                pendingEvaluation,
                 sourceArtifacts,
                 architectureStage,
                 functionalLockedAt,
@@ -3186,6 +3300,7 @@ function WizardContent() {
         decisionRecords,
         guardrailChecklist,
         readinessOverrides,
+        pendingEvaluation,
         sourceArtifacts,
         architectureStage,
         functionalLockedAt,
@@ -3311,7 +3426,555 @@ function WizardContent() {
         }
         evalRequestIdRef.current += 1;
         setIsLoading(false);
+        setPendingEvaluation(null);
+        persistLocalVersionSnapshot({
+            pendingEvaluation: null
+        });
         if (message) updateAssistantPlaceholder(message);
+    };
+
+    const continueEvaluation = async (input: {
+        requestMessages: Message[];
+        latestUserContext: string;
+        resumePending?: PendingEvaluation | null;
+        assistantContent?: string;
+    }) => {
+        const requestMessages = input.requestMessages;
+        const latestUserContext = input.latestUserContext;
+        const assistantIndex = requestMessages.length;
+        const activePendingEvaluation: PendingEvaluation = input.resumePending ?? {
+            requestId: createPendingEvaluationId(),
+            requestMessages,
+            startedAt: Date.now(),
+            assistantContent: input.assistantContent ?? ""
+        };
+        const assistantPlaceholder: Message = {
+            role: "assistant",
+            content: input.assistantContent ?? activePendingEvaluation.assistantContent ?? ""
+        };
+        const requestId = evalRequestIdRef.current + 1;
+        let controller: AbortController | null = null;
+
+        evalRequestIdRef.current = requestId;
+        setPendingEvaluation(activePendingEvaluation);
+        setMessages([...requestMessages, assistantPlaceholder]);
+        setIsLoading(true);
+        persistLocalVersionSnapshot({
+            messages: [...requestMessages, assistantPlaceholder],
+            pendingEvaluation: activePendingEvaluation
+        });
+
+        try {
+            await yieldToBrowser();
+            const structureContext = buildProjectStructureContext(generation?.projectTree);
+            const latestSourceArtifacts = extractSourceArtifacts(requestMessages);
+            const sourceContext = buildSourceContext(latestSourceArtifacts, requestMessages);
+            const designMemory = buildDesignMemory(
+                currentDiagram,
+                evaluation,
+                diagramGovernance,
+                architecturePack,
+                decisionRecords,
+                guardrailChecklist,
+                readinessOverrides,
+                requestMessages,
+                EVALUATE_DESIGN_MEMORY_CHARS
+            );
+            controller = new AbortController();
+            evaluateAbortRef.current = controller;
+
+            const requestBody = buildEvaluateRequestBody(
+                requestMessages,
+                structureContext,
+                sourceContext,
+                Boolean(generation),
+                false,
+                designMemory,
+                DIAGRAM_POLICY,
+                workspaceLanguage
+            );
+
+            if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
+                throw new Error("Evaluate request is too large. Please shorten the conversation or remove large attachments.");
+            }
+
+            const runEvaluateRequest = async (body: string) => {
+                try {
+                    return await fetch("/api/evaluate", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Accept": "text/event-stream"
+                        },
+                        body,
+                        cache: "no-store",
+                        signal: controller?.signal
+                    });
+                } catch (fetchError) {
+                    const normalizedNetworkError = normalizeEvaluateNetworkError(fetchError, "/api/evaluate");
+                    if (normalizedNetworkError) {
+                        throw new Error(normalizedNetworkError);
+                    }
+                    throw fetchError;
+                }
+            };
+
+            let res = await runEvaluateRequest(requestBody);
+
+            if (!res.ok && EVALUATE_RETRYABLE_STATUS.has(res.status)) {
+                const compactRequestBody = buildEvaluateRequestBody(
+                    requestMessages,
+                    structureContext,
+                    sourceContext,
+                    Boolean(generation),
+                    true,
+                    designMemory,
+                    DIAGRAM_POLICY,
+                    workspaceLanguage
+                );
+
+                if (compactRequestBody.length <= EVALUATE_MAX_REQUEST_CHARS) {
+                    res = await runEvaluateRequest(compactRequestBody);
+                }
+            }
+
+            if (!res.ok) {
+                let detail = `${res.status} ${res.statusText}`;
+                const contentType = (res.headers.get("content-type") || "").toLowerCase();
+                const serverRequestId = res.headers.get("x-evaluate-request-id") || "";
+
+                try {
+                    if (contentType.includes("application/json")) {
+                        const payload = await res.json() as { error?: string; details?: string };
+                        const normalizedPayloadDetails = normalizeEvaluateErrorDetail(payload.details || "");
+                        if (payload.error) {
+                            detail = normalizedPayloadDetails
+                                ? `${payload.error}: ${normalizedPayloadDetails}`
+                                : payload.error;
+                        } else if (normalizedPayloadDetails) {
+                            detail = normalizedPayloadDetails;
+                        }
+                    } else {
+                        const text = (await res.text()).trim();
+                        if (text) {
+                            detail = normalizeEvaluateErrorDetail(text);
+                        }
+                    }
+                } catch {
+                    // Use default detail above.
+                }
+
+                if (res.status === 524) {
+                    detail = `${detail}. Gateway timeout from CDN/origin (524). Please retry.`;
+                }
+
+                if (serverRequestId) {
+                    detail = `${detail} (ref: ${serverRequestId})`;
+                }
+
+                throw new Error(`Failed to evaluate (${res.status}): ${detail}`);
+            }
+
+            if (!res.body) {
+                throw new Error("Failed to evaluate: empty response body");
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            const baselineDiagramForRequest = currentDiagram;
+            const baselineDiagramNormalized = normalizeMermaidForComparison(baselineDiagramForRequest);
+            let latestAppliedDiagram = baselineDiagramForRequest;
+            let latestAppliedDiagramNormalized = baselineDiagramNormalized;
+            const resolvedQuestionKeys = new Set(
+                buildResolvedConfirmationLog(requestMessages).map((item) => normalizeQuestionKey(item.questionKey))
+            );
+            let currentQuestionKey: string | null = null;
+            let currentQuestionAction: MessageAction | null = null;
+            let currentQuestionRequirementKey: ReadinessRequirementKey | null = null;
+            const currentEval: EvaluationResponse = {
+                density_score: evaluation?.density_score || 0,
+                is_ready: false,
+                current_diagram: currentDiagram,
+                analysis: normalizeAnalysis(evaluation?.analysis),
+                next_step: { reasoning: "", question: null },
+                stage: architectureStage,
+                openQuestions: normalizeStringList(evaluation?.openQuestions ?? evaluation?.analysis?.missing, 12),
+                architecturePackDraft: architecturePack,
+                decisionDrafts: decisionRecords,
+                guardrailDrafts: guardrailChecklist,
+                readiness: architectureReadiness
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (evalRequestIdRef.current !== requestId) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                buffer += chunk;
+
+                const diagramMatch = buffer.match(/<diagram>([\s\S]*?)<\/diagram>/);
+                if (diagramMatch && diagramMatch[1]) {
+                    const rawContent = diagramMatch[1].trim();
+                    let code = rawContent;
+
+                    const codeBlockMatch = rawContent.match(/```mermaid([\s\S]*?)```/);
+                    if (codeBlockMatch && codeBlockMatch[1]) {
+                        code = codeBlockMatch[1].trim();
+                    } else {
+                        code = code.replace(/```mermaid\n?|```\n?/g, "").replace(/```$/g, "").trim();
+                    }
+                    code = code.replace(/<\s*\/\s*subgraph\s*>/gi, "\nend\n").trim();
+
+                    const normalizedCandidate = normalizeMermaidForComparison(code);
+                    if (
+                        normalizedCandidate &&
+                        normalizedCandidate !== latestAppliedDiagramNormalized &&
+                        hasMeaningfulDiagramChange(latestAppliedDiagram, code)
+                    ) {
+                        latestAppliedDiagram = code;
+                        latestAppliedDiagramNormalized = normalizedCandidate;
+                        setCurrentDiagram(code);
+                        setDiagramGovernance((prev) => ({
+                            ...prev,
+                            pendingDiagram: null,
+                            pendingSourceRequestId: null,
+                            pendingUpdatedAt: null,
+                            lastDecision: "applied",
+                            lastDecisionNote: "Auto-applied architecture update from assistant response.",
+                            lastDecisionAt: Date.now()
+                        }));
+                    }
+                }
+
+                const questionActionMatch = buffer.match(/<question_action>([\s\S]*?)<\/question_action>/i);
+                if (questionActionMatch?.[1]) {
+                    currentQuestionAction = normalizeMessageAction(questionActionMatch[1].trim()) ?? currentQuestionAction;
+                }
+
+                const questionRequirementKeyMatch = buffer.match(/<question_requirement_key>([\s\S]*?)<\/question_requirement_key>/i);
+                if (questionRequirementKeyMatch?.[1]) {
+                    currentQuestionRequirementKey = normalizeReadinessRequirementKey(questionRequirementKeyMatch[1].trim()) ?? currentQuestionRequirementKey;
+                }
+
+                const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
+                if (questionMatch && questionMatch[1]) {
+                    const rawQuestion = questionMatch[1];
+                    const q = normalizeSingleQuestion(rawQuestion);
+                    if (q) {
+                        currentQuestionKey = normalizeQuestionKey(q);
+                        const inferredQuestionAction = inferQuestionAction(rawQuestion);
+                        const nextQuestionAction = currentQuestionAction ?? inferredQuestionAction;
+                        currentEval.next_step.question = q;
+                        const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis, workspaceLanguage);
+                        setMessages(prev => {
+                            if (evalRequestIdRef.current !== requestId) return prev;
+                            const updated = [...prev];
+                            const current = updated[assistantIndex];
+                            if (!current || current.role !== "assistant") return prev;
+                            const ensuredOptions = ensureCommonQuestionOptions(
+                                q,
+                                current.options ?? [],
+                                latestUserContext,
+                                nextQuestionAction,
+                                currentQuestionKey,
+                                currentQuestionRequirementKey,
+                                workspaceLanguage
+                            );
+                            updated[assistantIndex] = {
+                                ...current,
+                                content: displayContent || q,
+                                options: ensuredOptions,
+                                questionKey: currentQuestionKey,
+                                questionStatus: "pending",
+                                questionAction: nextQuestionAction ?? undefined,
+                                questionRequirementKey: currentQuestionRequirementKey ?? undefined
+                            };
+                            return updated;
+                        });
+                    }
+                }
+
+                const stageMatch = buffer.match(/<stage>([\s\S]*?)<\/stage>/i);
+                if (stageMatch?.[1]) {
+                    const parsedStage = normalizeArchitectureStage(
+                        stageMatch[1].trim(),
+                        currentEval.architecturePackDraft ?? architecturePack,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        readinessOverrides
+                    );
+                    currentEval.stage = parsedStage;
+                    setArchitectureStage(parsedStage);
+                }
+
+                const densityMatch = buffer.match(/<density>\s*(\d+)\s*<\/density>/);
+                if (densityMatch) {
+                    currentEval.density_score = parseInt(densityMatch[1]);
+                }
+
+                const readyMatch = buffer.match(/<is_ready>\s*(true|false)\s*<\/is_ready>/);
+                if (readyMatch) currentEval.is_ready = readyMatch[1] === 'true';
+
+                const clarifiedMatch = buffer.match(/<analysis_clarified>([\s\S]*?)<\/analysis_clarified>/);
+                if (clarifiedMatch) {
+                    currentEval.analysis.clarified = parseAnalysisList(clarifiedMatch[1]);
+                }
+
+                const missingMatch = buffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/);
+                if (missingMatch) {
+                    currentEval.analysis.missing = parseAnalysisList(missingMatch[1])
+                        .filter((item) => !resolvedQuestionKeys.has(normalizeQuestionKey(item)));
+                    currentEval.openQuestions = currentEval.analysis.missing.slice(0, 8);
+                }
+
+                const uiSpecMatch = buffer.match(/<analysis_ui_spec>([\s\S]*?)<\/analysis_ui_spec>/i);
+                if (uiSpecMatch) {
+                    const parsedSpec = parseUiDesignSpecBlock(uiSpecMatch[1]);
+                    if (parsedSpec) {
+                        setUiDesignSpec(parsedSpec);
+                        currentEval.analysis.ui = deriveUiRequirements(parsedSpec);
+                    }
+                }
+
+                const uiMatch = buffer.match(/<analysis_ui>([\s\S]*?)<\/analysis_ui>/i);
+                if (uiMatch) {
+                    currentEval.analysis.ui = parseAnalysisUiBlock(uiMatch[1]);
+                    setUiDesignSpec((prev) => prev ?? buildMinimalUiDesignSpec(currentEval.analysis.ui));
+                }
+
+                const architecturePackMatch = buffer.match(/<architecture_pack>([\s\S]*?)<\/architecture_pack>/i);
+                if (architecturePackMatch) {
+                    const parsedPack = parseJsonBlock(architecturePackMatch[1], (value) => normalizeArchitecturePack(value, currentEval.analysis.ui));
+                    if (parsedPack) {
+                        currentEval.architecturePackDraft = parsedPack;
+                        setArchitecturePack(parsedPack);
+                    }
+                }
+
+                const decisionsMatch = buffer.match(/<decision_records>([\s\S]*?)<\/decision_records>/i);
+                if (decisionsMatch) {
+                    const parsedDecisions = parseJsonBlock(decisionsMatch[1], normalizeDecisionRecords);
+                    if (parsedDecisions) {
+                        currentEval.decisionDrafts = parsedDecisions;
+                        setDecisionRecords(parsedDecisions);
+                    }
+                }
+
+                const guardrailsMatch = buffer.match(/<guardrails>([\s\S]*?)<\/guardrails>/i);
+                if (guardrailsMatch) {
+                    const parsedGuardrails = parseJsonBlock(guardrailsMatch[1], normalizeGuardrailChecklist);
+                    if (parsedGuardrails) {
+                        currentEval.guardrailDrafts = parsedGuardrails;
+                        setGuardrailChecklist(parsedGuardrails);
+                    }
+                }
+
+                currentEval.architecturePackDraft = normalizeArchitecturePack(
+                    currentEval.architecturePackDraft ?? seedArchitecturePackFromAnalysis(currentEval.analysis, currentEval.analysis.ui),
+                    currentEval.analysis.ui
+                );
+
+                const readinessMatch = buffer.match(/<readiness>([\s\S]*?)<\/readiness>/i);
+                if (readinessMatch) {
+                    const parsedReadiness = parseJsonBlock(readinessMatch[1], (value) => normalizeReadiness(
+                        value,
+                        currentEval.architecturePackDraft ?? architecturePack,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        readinessOverrides
+                    ));
+                    if (parsedReadiness) {
+                        currentEval.readiness = parsedReadiness;
+                        setArchitectureReadiness(parsedReadiness);
+                    }
+                }
+
+                if (!currentEval.readiness) {
+                    currentEval.readiness = createReadinessChecklist(
+                        currentEval.architecturePackDraft,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        readinessOverrides
+                    );
+                }
+                currentEval.is_ready = currentEval.readiness.functionalReady && currentEval.readiness.uiReady;
+                currentEval.density_score = currentEval.readiness.score;
+
+                if (!currentEval.stage) {
+                    currentEval.stage = inferArchitectureStage(
+                        currentEval.architecturePackDraft,
+                        currentEval.decisionDrafts ?? decisionRecords,
+                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        readinessOverrides
+                    );
+                }
+
+                const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
+                if (optionsMatch) {
+                    const options = ensureCommonQuestionOptions(
+                        currentEval.next_step.question || "",
+                        parseOptionsBlock(optionsMatch[1]),
+                        latestUserContext,
+                        currentQuestionAction,
+                        currentQuestionKey,
+                        currentQuestionRequirementKey,
+                        workspaceLanguage
+                    );
+                    setMessages(prev => {
+                        if (evalRequestIdRef.current !== requestId) return prev;
+                        const updated = [...prev];
+                        const current = updated[assistantIndex];
+                        if (!current || current.role !== "assistant") return prev;
+                        updated[assistantIndex] = { ...current, options };
+                        return updated;
+                    });
+                }
+
+                const normalizedEval = normalizeEvaluation({ ...currentEval }, readinessOverrides);
+                if (normalizedEval?.architecturePackDraft) {
+                    setArchitecturePack(normalizedEval.architecturePackDraft);
+                }
+                if (normalizedEval?.decisionDrafts) {
+                    setDecisionRecords(normalizedEval.decisionDrafts);
+                }
+                if (normalizedEval?.guardrailDrafts) {
+                    setGuardrailChecklist(normalizedEval.guardrailDrafts);
+                }
+                if (normalizedEval?.readiness) {
+                    setArchitectureReadiness(normalizedEval.readiness);
+                }
+                if (normalizedEval?.stage) {
+                    setArchitectureStage(normalizedEval.stage);
+                }
+                setEvaluation(normalizedEval);
+            }
+
+            if (evalRequestIdRef.current === requestId) {
+                const resolvedPack = currentEval.architecturePackDraft ?? architecturePack;
+                const resolvedDecisions = currentEval.decisionDrafts ?? decisionRecords;
+                const resolvedGuardrails = currentEval.guardrailDrafts ?? guardrailChecklist;
+                const resolvedStage = inferArchitectureStage(
+                    resolvedPack,
+                    resolvedDecisions,
+                    resolvedGuardrails,
+                    readinessOverrides
+                );
+                const resolvedEligibility = computeScaffoldEligibility({
+                    architecturePack: resolvedPack,
+                    decisionRecords: resolvedDecisions,
+                    guardrailChecklist: resolvedGuardrails,
+                    readinessOverrides
+                });
+                const coercedPlatformQuestion = shouldPrioritizePlatformQuestion(resolvedPack)
+                    ? buildPlatformDiscoveryQuestion(workspaceLanguage)
+                    : null;
+                const coercedStackQuestion =
+                    !coercedPlatformQuestion &&
+                    shouldPrioritizeStackQuestion(resolvedStage, resolvedPack, resolvedDecisions)
+                        ? buildStackRecommendationQuestion(workspaceLanguage, resolvedPack)
+                        : null;
+                const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
+                    ? buildBlockedGenerateQuestion(
+                        workspaceLanguage,
+                        resolvedStage,
+                        resolvedEligibility.readiness,
+                        resolvedPack,
+                        requestMessages
+                    )
+                    : null;
+                const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
+                setMessages(prev => {
+                    if (evalRequestIdRef.current !== requestId) return prev;
+                    const updated = [...prev];
+                    const current = updated[assistantIndex];
+                    if (!current || current.role !== "assistant") return prev;
+                    const fallbackOptions = ensureCommonQuestionOptions(
+                        currentEval.next_step.question || fallbackText,
+                        current.options ?? [],
+                        latestUserContext,
+                        currentQuestionAction,
+                        currentQuestionKey,
+                        currentQuestionRequirementKey,
+                        workspaceLanguage
+                    );
+                    const coercedQuestion = coercedPlatformQuestion ?? coercedStackQuestion ?? coercedGenerateQuestion;
+                    const nextContent = coercedQuestion
+                        ? coercedQuestion.content
+                        : current.content.trim().length > 0
+                            ? current.content
+                            : fallbackText;
+                    const nextOptions = coercedQuestion
+                        ? coercedQuestion.options
+                        : current.options && current.options.length > 0
+                            ? current.options
+                            : fallbackOptions;
+                    const nextQuestionKey = coercedQuestion
+                        ? coercedQuestion.questionKey
+                        : current.questionKey;
+                    const nextQuestionAction = coercedQuestion
+                        ? coercedQuestion.questionAction
+                        : current.questionAction;
+                    const nextQuestionRequirementKey = coercedQuestion
+                        ? coercedQuestion.questionRequirementKey
+                        : current.questionRequirementKey;
+                    const nextQuestionStatus = coercedQuestion ? "pending" as const : current.questionStatus;
+                    if (
+                        nextContent === current.content &&
+                        nextOptions === current.options &&
+                        nextQuestionKey === current.questionKey &&
+                        nextQuestionAction === current.questionAction &&
+                        nextQuestionRequirementKey === current.questionRequirementKey &&
+                        nextQuestionStatus === current.questionStatus
+                    ) {
+                        return prev;
+                    }
+                    updated[assistantIndex] = {
+                        ...current,
+                        content: nextContent,
+                        options: nextOptions,
+                        questionKey: nextQuestionKey,
+                        questionAction: nextQuestionAction,
+                        questionRequirementKey: nextQuestionRequirementKey,
+                        questionStatus: nextQuestionStatus
+                    };
+                    return updated;
+                });
+            }
+        } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") {
+                return;
+            }
+            console.error(error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            setMessages(prev => {
+                if (evalRequestIdRef.current !== requestId) return prev;
+                const updated = [...prev];
+                const current = updated[assistantIndex];
+                if (!current || current.role !== "assistant") return prev;
+                updated[assistantIndex] = {
+                    ...current,
+                    content: workspaceLanguage === "zh" ? `错误：${errorMessage}` : `Error: ${errorMessage}`,
+                    options: []
+                };
+                return updated;
+            });
+        } finally {
+            if (evalRequestIdRef.current === requestId) {
+                setIsLoading(false);
+                if (!isUnmountingRef.current) {
+                    setPendingEvaluation(null);
+                    persistLocalVersionSnapshot({
+                        messages: messagesRef.current,
+                        pendingEvaluation: null
+                    });
+                }
+            }
+            if (evaluateAbortRef.current === controller) {
+                evaluateAbortRef.current = null;
+            }
+        }
     };
 
     const buildAssistantQuestionMessage = (input: {
@@ -4291,524 +4954,40 @@ Do you want to start scaffold generation now?`;
             }
         }
 
-        const requestId = evalRequestIdRef.current + 1;
-        evalRequestIdRef.current = requestId;
-        const assistantPlaceholder: Message = { role: "assistant", content: "" };
-        const assistantIndex = newMessages.length;
-        setMessages([...newMessages, assistantPlaceholder]);
-        setIsLoading(true);
-
-        try {
-            await yieldToBrowser();
-            const structureContext = buildProjectStructureContext(generation?.projectTree);
-            const latestSourceArtifacts = extractSourceArtifacts(newMessages);
-            const sourceContext = buildSourceContext(latestSourceArtifacts, newMessages);
-            const designMemory = buildDesignMemory(
-                currentDiagram,
-                evaluation,
-                diagramGovernance,
-                architecturePack,
-                decisionRecords,
-                guardrailChecklist,
-                readinessOverrides,
-                newMessages,
-                EVALUATE_DESIGN_MEMORY_CHARS
-            );
-            const controller = new AbortController();
-            evaluateAbortRef.current = controller;
-
-            const requestBody = buildEvaluateRequestBody(
-                newMessages,
-                structureContext,
-                sourceContext,
-                Boolean(generation),
-                false,
-                designMemory,
-                DIAGRAM_POLICY,
-                workspaceLanguage
-            );
-
-            if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
-                throw new Error("Evaluate request is too large. Please shorten the conversation or remove large attachments.");
-            }
-
-            const runEvaluateRequest = async (body: string) => {
-                try {
-                    return await fetch("/api/evaluate", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Accept": "text/event-stream"
-                        },
-                        body,
-                        cache: "no-store",
-                        signal: controller.signal
-                    });
-                } catch (fetchError) {
-                    const normalizedNetworkError = normalizeEvaluateNetworkError(fetchError, "/api/evaluate");
-                    if (normalizedNetworkError) {
-                        throw new Error(normalizedNetworkError);
-                    }
-                    throw fetchError;
-                }
-            };
-
-            let res = await runEvaluateRequest(requestBody);
-
-            if (!res.ok && EVALUATE_RETRYABLE_STATUS.has(res.status)) {
-                const compactRequestBody = buildEvaluateRequestBody(
-                    newMessages,
-                    structureContext,
-                    sourceContext,
-                    Boolean(generation),
-                    true,
-                    designMemory,
-                    DIAGRAM_POLICY,
-                    workspaceLanguage
-                );
-
-                if (compactRequestBody.length <= EVALUATE_MAX_REQUEST_CHARS) {
-                    res = await runEvaluateRequest(compactRequestBody);
-                }
-            }
-
-            if (!res.ok) {
-                let detail = `${res.status} ${res.statusText}`;
-                const contentType = (res.headers.get("content-type") || "").toLowerCase();
-                const serverRequestId = res.headers.get("x-evaluate-request-id") || "";
-
-                try {
-                    if (contentType.includes("application/json")) {
-                        const payload = await res.json() as { error?: string; details?: string };
-                        const normalizedPayloadDetails = normalizeEvaluateErrorDetail(payload.details || "");
-                        if (payload.error) {
-                            detail = normalizedPayloadDetails
-                                ? `${payload.error}: ${normalizedPayloadDetails}`
-                                : payload.error;
-                        } else if (normalizedPayloadDetails) {
-                            detail = normalizedPayloadDetails;
-                        }
-                    } else {
-                        const text = (await res.text()).trim();
-                        if (text) {
-                            detail = normalizeEvaluateErrorDetail(text);
-                        }
-                    }
-                } catch {
-                    // Use default detail above.
-                }
-
-                if (res.status === 524) {
-                    detail = `${detail}. Gateway timeout from CDN/origin (524). Please retry.`;
-                }
-
-                if (serverRequestId) {
-                    detail = `${detail} (ref: ${serverRequestId})`;
-                }
-
-                throw new Error(`Failed to evaluate (${res.status}): ${detail}`);
-            }
-
-            if (!res.body) {
-                throw new Error("Failed to evaluate: empty response body");
-            }
-
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-            const baselineDiagramForRequest = currentDiagram;
-            const baselineDiagramNormalized = normalizeMermaidForComparison(baselineDiagramForRequest);
-            let latestAppliedDiagram = baselineDiagramForRequest;
-            let latestAppliedDiagramNormalized = baselineDiagramNormalized;
-            const resolvedQuestionKeys = new Set(
-                buildResolvedConfirmationLog(newMessages).map((item) => normalizeQuestionKey(item.questionKey))
-            );
-            let currentQuestionKey: string | null = null;
-            let currentQuestionAction: MessageAction | null = null;
-            let currentQuestionRequirementKey: ReadinessRequirementKey | null = null;
-            const currentEval: EvaluationResponse = {
-                density_score: evaluation?.density_score || 0,
-                is_ready: false,
-                current_diagram: currentDiagram,
-                analysis: normalizeAnalysis(evaluation?.analysis),
-                next_step: { reasoning: "", question: null },
-                stage: architectureStage,
-                openQuestions: normalizeStringList(evaluation?.openQuestions ?? evaluation?.analysis?.missing, 12),
-                architecturePackDraft: architecturePack,
-                decisionDrafts: decisionRecords,
-                guardrailDrafts: guardrailChecklist,
-                readiness: architectureReadiness
-            };
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                if (evalRequestIdRef.current !== requestId) break;
-
-                const chunk = decoder.decode(value, { stream: true });
-                buffer += chunk;
-
-                // --- Stream Parsing (Identical logic) ---
-                const diagramMatch = buffer.match(/<diagram>([\s\S]*?)<\/diagram>/);
-                if (diagramMatch && diagramMatch[1]) {
-                    const rawContent = diagramMatch[1].trim();
-                    let code = rawContent;
-
-                    // Try to extract mermaid code block if explicitly present
-                    const codeBlockMatch = rawContent.match(/```mermaid([\s\S]*?)```/);
-                    if (codeBlockMatch && codeBlockMatch[1]) {
-                        code = codeBlockMatch[1].trim();
-                    } else {
-                        // Fallback: cleanup potential raw code artifacts just in case
-                        code = code.replace(/```mermaid\n?|```\n?/g, "").replace(/```$/g, "").trim();
-                    }
-                    code = code.replace(/<\s*\/\s*subgraph\s*>/gi, "\nend\n").trim();
-
-                    const normalizedCandidate = normalizeMermaidForComparison(code);
-                    if (
-                        normalizedCandidate &&
-                        normalizedCandidate !== latestAppliedDiagramNormalized &&
-                        hasMeaningfulDiagramChange(latestAppliedDiagram, code)
-                    ) {
-                        latestAppliedDiagram = code;
-                        latestAppliedDiagramNormalized = normalizedCandidate;
-                        setCurrentDiagram(code);
-                        setDiagramGovernance((prev) => ({
-                            ...prev,
-                            pendingDiagram: null,
-                            pendingSourceRequestId: null,
-                            pendingUpdatedAt: null,
-                            lastDecision: "applied",
-                            lastDecisionNote: "Auto-applied architecture update from assistant response.",
-                            lastDecisionAt: Date.now()
-                        }));
-                    }
-                }
-
-                const questionActionMatch = buffer.match(/<question_action>([\s\S]*?)<\/question_action>/i);
-                if (questionActionMatch?.[1]) {
-                    currentQuestionAction = normalizeMessageAction(questionActionMatch[1].trim()) ?? currentQuestionAction;
-                }
-
-                const questionRequirementKeyMatch = buffer.match(/<question_requirement_key>([\s\S]*?)<\/question_requirement_key>/i);
-                if (questionRequirementKeyMatch?.[1]) {
-                    currentQuestionRequirementKey = normalizeReadinessRequirementKey(questionRequirementKeyMatch[1].trim()) ?? currentQuestionRequirementKey;
-                }
-
-                const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
-                if (questionMatch && questionMatch[1]) {
-                    const rawQuestion = questionMatch[1];
-                    const q = normalizeSingleQuestion(rawQuestion);
-                    if (q) {
-                        currentQuestionKey = normalizeQuestionKey(q);
-                        const inferredQuestionAction = inferQuestionAction(rawQuestion);
-                        const nextQuestionAction = currentQuestionAction ?? inferredQuestionAction;
-                        currentEval.next_step.question = q;
-                        const displayContent = buildAssistantDisplayContent(rawQuestion, currentEval.analysis, workspaceLanguage);
-                        setMessages(prev => {
-                            if (evalRequestIdRef.current !== requestId) return prev;
-                            const updated = [...prev];
-                            const current = updated[assistantIndex];
-                            if (!current || current.role !== "assistant") return prev;
-                            const ensuredOptions = ensureCommonQuestionOptions(
-                                q,
-                                current.options ?? [],
-                                latestUserContext,
-                                nextQuestionAction,
-                                currentQuestionKey,
-                                currentQuestionRequirementKey,
-                                workspaceLanguage
-                            );
-                            updated[assistantIndex] = {
-                                ...current,
-                                content: displayContent || q,
-                                options: ensuredOptions,
-                                questionKey: currentQuestionKey,
-                                questionStatus: "pending",
-                                questionAction: nextQuestionAction ?? undefined,
-                                questionRequirementKey: currentQuestionRequirementKey ?? undefined
-                            };
-                            return updated;
-                        });
-                    }
-                }
-
-                const stageMatch = buffer.match(/<stage>([\s\S]*?)<\/stage>/i);
-                if (stageMatch?.[1]) {
-                    const parsedStage = normalizeArchitectureStage(
-                        stageMatch[1].trim(),
-                        currentEval.architecturePackDraft ?? architecturePack,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
-                        readinessOverrides
-                    );
-                    currentEval.stage = parsedStage;
-                    setArchitectureStage(parsedStage);
-                }
-
-                const densityMatch = buffer.match(/<density>\s*(\d+)\s*<\/density>/);
-                if (densityMatch) {
-                    currentEval.density_score = parseInt(densityMatch[1]);
-                }
-
-                const readyMatch = buffer.match(/<is_ready>\s*(true|false)\s*<\/is_ready>/);
-                if (readyMatch) currentEval.is_ready = readyMatch[1] === 'true';
-
-                const clarifiedMatch = buffer.match(/<analysis_clarified>([\s\S]*?)<\/analysis_clarified>/);
-                if (clarifiedMatch) {
-                    currentEval.analysis.clarified = parseAnalysisList(clarifiedMatch[1]);
-                }
-
-                const missingMatch = buffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/);
-                if (missingMatch) {
-                    currentEval.analysis.missing = parseAnalysisList(missingMatch[1])
-                        .filter((item) => !resolvedQuestionKeys.has(normalizeQuestionKey(item)));
-                    currentEval.openQuestions = currentEval.analysis.missing.slice(0, 8);
-                }
-
-                const uiSpecMatch = buffer.match(/<analysis_ui_spec>([\s\S]*?)<\/analysis_ui_spec>/i);
-                if (uiSpecMatch) {
-                    const parsedSpec = parseUiDesignSpecBlock(uiSpecMatch[1]);
-                    if (parsedSpec) {
-                        setUiDesignSpec(parsedSpec);
-                        currentEval.analysis.ui = deriveUiRequirements(parsedSpec);
-                    }
-                }
-
-                const uiMatch = buffer.match(/<analysis_ui>([\s\S]*?)<\/analysis_ui>/i);
-                if (uiMatch) {
-                    currentEval.analysis.ui = parseAnalysisUiBlock(uiMatch[1]);
-                    setUiDesignSpec((prev) => prev ?? buildMinimalUiDesignSpec(currentEval.analysis.ui));
-                }
-
-                const architecturePackMatch = buffer.match(/<architecture_pack>([\s\S]*?)<\/architecture_pack>/i);
-                if (architecturePackMatch) {
-                    const parsedPack = parseJsonBlock(architecturePackMatch[1], (value) => normalizeArchitecturePack(value, currentEval.analysis.ui));
-                    if (parsedPack) {
-                        currentEval.architecturePackDraft = parsedPack;
-                        setArchitecturePack(parsedPack);
-                    }
-                }
-
-                const decisionsMatch = buffer.match(/<decision_records>([\s\S]*?)<\/decision_records>/i);
-                if (decisionsMatch) {
-                    const parsedDecisions = parseJsonBlock(decisionsMatch[1], normalizeDecisionRecords);
-                    if (parsedDecisions) {
-                        currentEval.decisionDrafts = parsedDecisions;
-                        setDecisionRecords(parsedDecisions);
-                    }
-                }
-
-                const guardrailsMatch = buffer.match(/<guardrails>([\s\S]*?)<\/guardrails>/i);
-                if (guardrailsMatch) {
-                    const parsedGuardrails = parseJsonBlock(guardrailsMatch[1], normalizeGuardrailChecklist);
-                    if (parsedGuardrails) {
-                        currentEval.guardrailDrafts = parsedGuardrails;
-                        setGuardrailChecklist(parsedGuardrails);
-                    }
-                }
-
-                currentEval.architecturePackDraft = normalizeArchitecturePack(
-                    currentEval.architecturePackDraft ?? seedArchitecturePackFromAnalysis(currentEval.analysis, currentEval.analysis.ui),
-                    currentEval.analysis.ui
-                );
-
-                const readinessMatch = buffer.match(/<readiness>([\s\S]*?)<\/readiness>/i);
-                if (readinessMatch) {
-                    const parsedReadiness = parseJsonBlock(readinessMatch[1], (value) => normalizeReadiness(
-                        value,
-                        currentEval.architecturePackDraft ?? architecturePack,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
-                        readinessOverrides
-                    ));
-                    if (parsedReadiness) {
-                        currentEval.readiness = parsedReadiness;
-                        setArchitectureReadiness(parsedReadiness);
-                    }
-                }
-
-                if (!currentEval.readiness) {
-                    currentEval.readiness = createReadinessChecklist(
-                        currentEval.architecturePackDraft,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
-                        readinessOverrides
-                    );
-                }
-                currentEval.is_ready = currentEval.readiness.functionalReady && currentEval.readiness.uiReady;
-                currentEval.density_score = currentEval.readiness.score;
-
-                if (!currentEval.stage) {
-                    currentEval.stage = inferArchitectureStage(
-                        currentEval.architecturePackDraft,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
-                        readinessOverrides
-                    );
-                }
-
-                // Options
-                const optionsMatch = buffer.match(/<options>([\s\S]*?)<\/options>/i);
-                if (optionsMatch) {
-                    const options = ensureCommonQuestionOptions(
-                        currentEval.next_step.question || "",
-                        parseOptionsBlock(optionsMatch[1]),
-                        latestUserContext,
-                        currentQuestionAction,
-                        currentQuestionKey,
-                        currentQuestionRequirementKey,
-                        workspaceLanguage
-                    );
-                    setMessages(prev => {
-                        if (evalRequestIdRef.current !== requestId) return prev;
-                        const updated = [...prev];
-                        const current = updated[assistantIndex];
-                        if (!current || current.role !== "assistant") return prev;
-                        updated[assistantIndex] = { ...current, options };
-                        return updated;
-                    });
-                }
-
-                const normalizedEval = normalizeEvaluation({ ...currentEval }, readinessOverrides);
-                if (normalizedEval?.architecturePackDraft) {
-                    setArchitecturePack(normalizedEval.architecturePackDraft);
-                }
-                if (normalizedEval?.decisionDrafts) {
-                    setDecisionRecords(normalizedEval.decisionDrafts);
-                }
-                if (normalizedEval?.guardrailDrafts) {
-                    setGuardrailChecklist(normalizedEval.guardrailDrafts);
-                }
-                if (normalizedEval?.readiness) {
-                    setArchitectureReadiness(normalizedEval.readiness);
-                }
-                if (normalizedEval?.stage) {
-                    setArchitectureStage(normalizedEval.stage);
-                }
-                setEvaluation(normalizedEval);
-            }
-
-            if (evalRequestIdRef.current === requestId) {
-                const resolvedPack = currentEval.architecturePackDraft ?? architecturePack;
-                const resolvedDecisions = currentEval.decisionDrafts ?? decisionRecords;
-                const resolvedGuardrails = currentEval.guardrailDrafts ?? guardrailChecklist;
-                const resolvedStage = inferArchitectureStage(
-                    resolvedPack,
-                    resolvedDecisions,
-                    resolvedGuardrails,
-                    readinessOverrides
-                );
-                const resolvedEligibility = computeScaffoldEligibility({
-                    architecturePack: resolvedPack,
-                    decisionRecords: resolvedDecisions,
-                    guardrailChecklist: resolvedGuardrails,
-                    readinessOverrides
-                });
-                const coercedPlatformQuestion = shouldPrioritizePlatformQuestion(resolvedPack)
-                    ? buildPlatformDiscoveryQuestion(workspaceLanguage)
-                    : null;
-                const coercedStackQuestion =
-                    !coercedPlatformQuestion &&
-                    shouldPrioritizeStackQuestion(resolvedStage, resolvedPack, resolvedDecisions)
-                        ? buildStackRecommendationQuestion(workspaceLanguage, resolvedPack)
-                        : null;
-                const coercedGenerateQuestion = currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
-                    ? buildBlockedGenerateQuestion(
-                        workspaceLanguage,
-                        resolvedStage,
-                        resolvedEligibility.readiness,
-                        resolvedPack,
-                        newMessages
-                    )
-                    : null;
-                const fallbackText = extractFallbackAssistantText(buffer) || "Model response format was invalid. Please retry.";
-                setMessages(prev => {
-                    if (evalRequestIdRef.current !== requestId) return prev;
-                    const updated = [...prev];
-                    const current = updated[assistantIndex];
-                    if (!current || current.role !== "assistant") return prev;
-                    const fallbackOptions = ensureCommonQuestionOptions(
-                        currentEval.next_step.question || fallbackText,
-                        current.options ?? [],
-                        latestUserContext,
-                        currentQuestionAction,
-                        currentQuestionKey,
-                        currentQuestionRequirementKey,
-                        workspaceLanguage
-                    );
-                    const coercedQuestion = coercedPlatformQuestion ?? coercedStackQuestion ?? coercedGenerateQuestion;
-                    const nextContent = coercedQuestion
-                        ? coercedQuestion.content
-                        : current.content.trim().length > 0
-                            ? current.content
-                            : fallbackText;
-                    const nextOptions = coercedQuestion
-                        ? coercedQuestion.options
-                        : current.options && current.options.length > 0
-                            ? current.options
-                            : fallbackOptions;
-                    const nextQuestionKey = coercedQuestion
-                        ? coercedQuestion.questionKey
-                        : current.questionKey;
-                    const nextQuestionAction = coercedQuestion
-                        ? coercedQuestion.questionAction
-                        : current.questionAction;
-                    const nextQuestionRequirementKey = coercedQuestion
-                        ? coercedQuestion.questionRequirementKey
-                        : current.questionRequirementKey;
-                    const nextQuestionStatus = coercedQuestion ? "pending" as const : current.questionStatus;
-                    if (
-                        nextContent === current.content &&
-                        nextOptions === current.options &&
-                        nextQuestionKey === current.questionKey &&
-                        nextQuestionAction === current.questionAction &&
-                        nextQuestionRequirementKey === current.questionRequirementKey &&
-                        nextQuestionStatus === current.questionStatus
-                    ) {
-                        return prev;
-                    }
-                    updated[assistantIndex] = {
-                        ...current,
-                        content: nextContent,
-                        options: nextOptions,
-                        questionKey: nextQuestionKey,
-                        questionAction: nextQuestionAction,
-                        questionRequirementKey: nextQuestionRequirementKey,
-                        questionStatus: nextQuestionStatus
-                    };
-                    return updated;
-                });
-            }
-
-        } catch (error) {
-            if (error instanceof DOMException && error.name === "AbortError") {
-                // Swallow abort errors
-                return;
-            }
-            console.error(error);
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            setMessages(prev => {
-                if (evalRequestIdRef.current !== requestId) return prev;
-                const updated = [...prev];
-                const current = updated[assistantIndex];
-                if (!current || current.role !== "assistant") return prev;
-                updated[assistantIndex] = {
-                    ...current,
-                    content: workspaceLanguage === "zh" ? `错误：${errorMessage}` : `Error: ${errorMessage}`,
-                    options: []
-                };
-                return updated;
-            });
-        } finally {
-            if (evalRequestIdRef.current === requestId) {
-                setIsLoading(false);
-            }
-            if (evaluateAbortRef.current) {
-                evaluateAbortRef.current = null;
-            }
-        }
+        await continueEvaluation({
+            requestMessages: newMessages,
+            latestUserContext
+        });
     };
+
+    const continueEvaluationRef = useRef(continueEvaluation);
+
+    useEffect(() => {
+        continueEvaluationRef.current = continueEvaluation;
+    });
+
+    useEffect(() => {
+        if (isHydrating || isLoading || !pendingEvaluation) return;
+        if (!project || !currentVersion) return;
+        if (resumedPendingEvaluationIdsRef.current.has(pendingEvaluation.requestId)) return;
+
+        resumedPendingEvaluationIdsRef.current.add(pendingEvaluation.requestId);
+        const latestUserContext = [...pendingEvaluation.requestMessages]
+            .reverse()
+            .find((message) => message.role === "user")
+            ?.content ?? "";
+        const existingAssistantContent =
+            messages[messages.length - 1]?.role === "assistant"
+                ? messages[messages.length - 1]?.content ?? ""
+                : pendingEvaluation.assistantContent ?? "";
+
+        void continueEvaluationRef.current({
+            requestMessages: pendingEvaluation.requestMessages,
+            latestUserContext,
+            resumePending: pendingEvaluation,
+            assistantContent: existingAssistantContent
+        });
+    }, [pendingEvaluation, isHydrating, isLoading, project, currentVersion, messages]);
 
     const handleOptionClick = (option: MessageOption) => {
         if (isConversationLocked) return;
@@ -5168,23 +5347,8 @@ Do you want to start scaffold generation now?`;
                             onPaste={handlePaste}
                         >
                             {/* Header */}
-                            <div className="flex items-center justify-between border-b border-[color:var(--border)] bg-white/70 px-4 py-3 backdrop-blur-sm dark:bg-slate-900/75">
-                                <div className="space-y-1">
-                                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-400">{uiText.projectLabel}</p>
-                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{project.name}</p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsChatCollapsed(true)}
-                                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[color:var(--border)] bg-white/90 text-slate-500 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-200"
-                                        title={collapseChatLabel}
-                                        aria-label={collapseChatLabel}
-                                    >
-                                        <PanelLeftClose className="h-4 w-4" />
-                                    </button>
-                                    <UserCenter signOutCallbackUrl="/" />
-                                </div>
+                            <div className="flex items-center justify-end border-b border-[color:var(--border)] bg-white/70 px-4 py-3 backdrop-blur-sm dark:bg-slate-900/75">
+                                <UserCenter signOutCallbackUrl="/" />
                             </div>
 
                             {/* Chat Area */}
@@ -5217,7 +5381,7 @@ Do you want to start scaffold generation now?`;
 
                                 {isLoading && !isAssistantStreamingWithContent && (
                                     <div className="flex justify-start animate-pulse">
-                                        <div className="rounded-xl rounded-tl-none bg-slate-100 px-4 py-2 text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                                        <div className="rounded-xl rounded-tl-none bg-slate-100 px-4 py-2 text-[13px] text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                                             {uiText.thinking}
                                         </div>
                                     </div>
@@ -5415,6 +5579,20 @@ Do you want to start scaffold generation now?`;
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
+                {!isChatCollapsed && (
+                    <div className="mb-4 flex flex-shrink-0 justify-end">
+                        <button
+                            type="button"
+                            onClick={() => setIsChatCollapsed(true)}
+                            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[color:var(--border)] bg-white/90 px-3 text-[13px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-200"
+                            title={collapseChatLabel}
+                            aria-label={collapseChatLabel}
+                        >
+                            <PanelLeftClose className="h-4 w-4" />
+                            <span>{collapseChatLabel}</span>
+                        </button>
+                    </div>
+                )}
                 {/* Tabs */}
                 <div className="fc-surface mb-4 grid flex-shrink-0 grid-cols-4 gap-2 rounded-2xl p-2">
                     <TabButton

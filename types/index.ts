@@ -505,6 +505,13 @@ export interface Task {
     source?: 'scaffold' | 'blueprint';
 }
 
+export interface PendingEvaluation {
+    requestId: string;
+    requestMessages: Message[];
+    startedAt: number;
+    assistantContent?: string;
+}
+
 // Represents the "Content" of a specific version
 export interface ProjectVersionData {
     messages: Message[];
@@ -526,6 +533,7 @@ export interface ProjectVersionData {
     guardrailChecklist?: GuardrailChecklist;
     architectureStage?: ArchitectureStage;
     readinessOverrides?: ReadinessOverride[];
+    pendingEvaluation?: PendingEvaluation | null;
 }
 
 // Represents a specific snapshot/iteration of a project
