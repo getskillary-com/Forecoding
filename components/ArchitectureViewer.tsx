@@ -608,10 +608,10 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     return (
         <div
             ref={viewerRef}
-            className={`w-full h-full flex flex-col relative bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 shadow-inner overflow-hidden border border-slate-800/50 ${
+            className={`h-full w-full overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 ${
                 isExpanded
                     ? "fixed inset-0 z-[140] rounded-none border-none bg-slate-950/95"
-                    : "rounded-xl"
+                    : "relative flex flex-col"
             }`}
         >
             {/* Subtle grid overlay for depth */}

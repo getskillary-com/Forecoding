@@ -5669,16 +5669,14 @@ Do you want to start scaffold generation now?`;
 
                     {/* Architecture Tab */}
                     {activeTab === 'architecture' && (
-                        <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
-                            <section className="h-full rounded-2xl border border-[color:var(--border)] bg-slate-50/70 p-4 dark:bg-black/25">
-                                <div className="relative h-full min-h-[520px] overflow-hidden rounded-xl border border-dashed border-[color:var(--border)] bg-slate-50/70 dark:bg-black/25">
-                                    {shouldMountArchitectureViewer ? (
-                                        <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} language={workspaceLanguage} />
-                                    ) : (
-                                        <ArchitecturePanelPlaceholder />
-                                    )}
-                                </div>
-                            </section>
+                        <div className="absolute inset-0 overflow-y-auto">
+                            <div className="h-full min-h-[520px]">
+                                {shouldMountArchitectureViewer ? (
+                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} language={workspaceLanguage} />
+                                ) : (
+                                    <ArchitecturePanelPlaceholder />
+                                )}
+                            </div>
                         </div>
                     )}
 
