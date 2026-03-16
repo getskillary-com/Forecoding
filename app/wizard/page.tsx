@@ -33,6 +33,7 @@ import {
     Task,
     ProjectVersion,
     PendingEvaluation,
+    PrdDelta,
     Attachment,
     FileNode
 } from "@/types";
@@ -345,7 +346,21 @@ function normalizeMessageOptionValue(value: unknown): MessageOption | null {
     };
 }
 
-function normalizeMessageValue(value: unknown): Message | null {
+function createMessageId() {
+    return `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildLegacyMessageId(candidate: Partial<Message>, index: number) {
+    const questionSeed = typeof candidate.questionKey === "string" && candidate.questionKey.trim()
+        ? normalizeQuestionKey(candidate.questionKey).slice(0, 24)
+        : typeof candidate.content === "string" && candidate.content.trim()
+            ? normalizeQuestionKey(candidate.content).slice(0, 24)
+            : `m${index}`;
+    const roleSeed = candidate.role === "assistant" ? "a" : "u";
+    return `legacy-${roleSeed}-${index}-${questionSeed || "item"}`;
+}
+
+function normalizeMessageValue(value: unknown, index: number): Message | null {
     if (!value || typeof value !== "object") return null;
 
     const candidate = value as Partial<Message>;
@@ -402,8 +417,16 @@ function normalizeMessageValue(value: unknown): Message | null {
     const inferredQuestionStatus =
         explicitQuestionStatus ??
         (looksLikeTrackedQuestion && inferredQuestionKey ? "pending" : undefined);
+    const id = typeof candidate.id === "string" && candidate.id.trim()
+        ? candidate.id.trim()
+        : buildLegacyMessageId(candidate, index);
+    const createdAt = typeof candidate.createdAt === "number"
+        ? candidate.createdAt
+        : (index + 1) * 1000;
 
     return {
+        id,
+        createdAt,
         role,
         content,
         kind: explicitKind,
@@ -423,7 +446,7 @@ function normalizeMessageValue(value: unknown): Message | null {
 function normalizeMessages(value: unknown): Message[] {
     if (!Array.isArray(value)) return [];
     return value
-        .map((item) => normalizeMessageValue(item))
+        .map((item, index) => normalizeMessageValue(item, index))
         .filter((item): item is Message => Boolean(item));
 }
 
@@ -499,18 +522,25 @@ function closeOpenAssistantQuestions(messages: Message[], answeredQuestionKey?: 
 }
 
 function buildResolvedConfirmationLog(messages: Message[], maxItems: number = 12) {
-    const assistantQuestions = new Map<string, string>();
+    const assistantQuestions = new Map<string, {
+        question: string;
+        requirementKey: ReadinessRequirementKey | null;
+    }>();
     const resolvedByQuestionKey = new Map<string, {
         questionKey: string;
         question: string;
         answer: string;
         action: MessageAction | null;
+        requirementKey: ReadinessRequirementKey | null;
     }>();
 
     messages.forEach((message) => {
         if (message.role !== "assistant" || !message.questionKey) return;
         const normalizedQuestion = normalizeSingleQuestion(message.content || "");
-        assistantQuestions.set(message.questionKey, normalizedQuestion || message.questionKey);
+        assistantQuestions.set(message.questionKey, {
+            question: normalizedQuestion || message.questionKey,
+            requirementKey: message.questionRequirementKey ?? null
+        });
     });
 
     messages
@@ -522,12 +552,14 @@ function buildResolvedConfirmationLog(messages: Message[], maxItems: number = 12
         .forEach((message) => {
             const answer = message.content.trim();
             if (!answer) return;
+            const assistantMeta = assistantQuestions.get(message.answeredQuestionKey);
 
             resolvedByQuestionKey.set(message.answeredQuestionKey, {
                 questionKey: message.answeredQuestionKey,
-                question: assistantQuestions.get(message.answeredQuestionKey) || message.answeredQuestionKey,
+                question: assistantMeta?.question || message.answeredQuestionKey,
                 answer,
-                action: message.triggeredAction ?? null
+                action: message.triggeredAction ?? null,
+                requirementKey: assistantMeta?.requirementKey ?? null
             });
         });
 
@@ -937,6 +969,68 @@ function createPendingEvaluationId() {
     return `eval-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function createPrdDeltaId() {
+    return `prd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizePrdDeltaAction(value: unknown): PrdDelta["action"] | null {
+    return value === "confirmed" ||
+        value === "focus_requirement" ||
+        value === "fill_requirement" ||
+        value === "show_blockers"
+        ? value
+        : null;
+}
+
+function normalizePrdDeltas(
+    value: unknown,
+    messages: Message[] = []
+): PrdDelta[] {
+    if (Array.isArray(value)) {
+        const normalized = value
+            .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+            .map((item, index) => {
+                const action = normalizePrdDeltaAction(item.action);
+                const id = typeof item.id === "string" && item.id.trim()
+                    ? item.id.trim()
+                    : `prd-${index}`;
+                if (!action) return null;
+                return {
+                    id,
+                    createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now() - (index * 1000),
+                    action,
+                    requirementKey: normalizeReadinessRequirementKey(item.requirementKey) ?? undefined,
+                    questionKey: typeof item.questionKey === "string" && item.questionKey.trim()
+                        ? normalizeQuestionKey(item.questionKey)
+                        : undefined,
+                    sourceMessageId: typeof item.sourceMessageId === "string" && item.sourceMessageId.trim()
+                        ? item.sourceMessageId.trim()
+                        : undefined
+                } satisfies PrdDelta;
+            })
+            .filter((item): item is PrdDelta => Boolean(item));
+
+        if (normalized.length > 0) {
+            return normalized.slice(-24);
+        }
+    }
+
+    return buildResolvedConfirmationLog(messages, 12)
+        .map((item, index) => ({
+            id: `legacy-prd-${index}-${item.questionKey}`,
+            createdAt: Date.now() - ((12 - index) * 1000),
+            action: item.action === "focus_requirement" ||
+                item.action === "fill_requirement" ||
+                item.action === "show_blockers"
+                ? item.action
+                : "confirmed",
+            requirementKey: item.requirementKey ?? undefined,
+            questionKey: item.questionKey,
+            sourceMessageId: undefined
+        } satisfies PrdDelta))
+        .slice(-12);
+}
+
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
     const messages = normalizeMessages(data?.messages);
     const readinessOverrides = normalizeReadinessOverrides(data?.readinessOverrides);
@@ -980,6 +1074,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         typeof data?.uiReadyAt === "number"
             ? (hasLegacyUiStage ? null : data.uiReadyAt)
             : (designStage === "ready_to_generate" ? Date.now() : null);
+    const prdDeltas = normalizePrdDeltas(data?.prdDeltas, messages);
 
     return {
         messages,
@@ -994,6 +1089,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         architectureStage,
         readiness,
         readinessOverrides,
+        prdDeltas,
         functionalLockedAt,
         uiReadyAt
     };
@@ -2179,33 +2275,6 @@ function buildBlockersSummary(
     ].join("\n");
 }
 
-function buildPrdConversationSignals(
-    language: "zh" | "en",
-    messages: Message[]
-) {
-    const confirmations = buildResolvedConfirmationLog(messages, 4).map((item) =>
-        language === "zh"
-            ? `已确认：${clipText(item.question, 72)} -> ${clipText(item.answer, 96)}`
-            : `Confirmed: ${clipText(item.question, 72)} -> ${clipText(item.answer, 96)}`
-    );
-
-    const recentUserNotes = messages
-        .filter((message) => message.role === "user" && message.content.trim().length > 0)
-        .slice(-4)
-        .map((message) =>
-            language === "zh"
-                ? `用户：${clipText(message.content.trim(), 140)}`
-                : `User: ${clipText(message.content.trim(), 140)}`
-        );
-
-    return [...confirmations, ...recentUserNotes].slice(0, 6);
-}
-
-type PrdDecisionLogItem = {
-    title: string;
-    detail: string;
-};
-
 type PrdStageRoadmapStatus = "completed" | "current" | "upcoming";
 
 type PrdStageTaskItem = {
@@ -2230,18 +2299,40 @@ type PrdStageProgressModel = {
     liveStatusLine: string;
     overallProgressLine: string;
     nextFocusLine: string;
-    committedSnapshotLine: string;
     currentStageTasks: PrdStageTaskItem[];
     stageRoadmap: PrdStageRoadmapItem[];
 };
 
-type CanonicalPrdViewModel = {
-    summaryLines: string[];
-    clarifiedItems: string[];
-    openQuestions: string[];
-    architectureSnapshot: string[];
-    decisionLog: PrdDecisionLogItem[];
-    guardrailItems: string[];
+type PrdStatusCardTone = "sky" | "emerald" | "amber" | "slate";
+
+type PrdStatusCardItem = {
+    label: string;
+    value: string;
+    detail: string;
+    tone: PrdStatusCardTone;
+};
+
+type PrdPendingQuestionItem = {
+    requirementKey: ReadinessRequirementKey;
+    label: string;
+    detail: string;
+    progressLabel: string;
+    status: ReadinessRequirementStatus;
+};
+
+type PrdChangeLogItem = {
+    title: string;
+    detail: string;
+    tone: PrdStatusCardTone;
+    sourceMessageId?: string;
+};
+
+type PrdProjectionModel = {
+    currentStatus: PrdStatusCardItem[];
+    confirmedScope: string[];
+    pendingQuestions: PrdPendingQuestionItem[];
+    implementationReadiness: PrdStatusCardItem[];
+    changeLog: PrdChangeLogItem[];
 };
 
 const ARCHITECTURE_STAGE_REQUIREMENT_KEYS: Record<Exclude<ArchitectureStage, "ready_to_generate">, ReadinessRequirementKey[]> = {
@@ -2275,23 +2366,74 @@ const ARCHITECTURE_STAGE_REQUIREMENT_KEYS: Record<Exclude<ArchitectureStage, "re
 function getPrdPhaseUiText(language: "zh" | "en") {
     return language === "zh"
         ? {
-            currentStageTitle: "当前阶段任务",
-            currentStageDesc: "这里展示本回合实时推进的阶段目标与子任务；正式架构快照仍只在阶段推进时提交。",
+            currentStageTitle: "当前状态",
+            currentStageDesc: "这里按每回合最新确认内容展示当前阶段、完成度、阶段任务和路线图。",
             currentStageSubtasks: "当前阶段子任务",
             roadmapTitle: "阶段路线图",
             roadmapDesc: "所有阶段按顺序列出，便于判断当前所处位置、已完成内容和后续任务。",
             noStageTasks: "当前阶段没有额外子任务。",
-            liveDraftBadge: "实时阶段"
+            stageBadge: "当前阶段"
         }
         : {
-            currentStageTitle: "Current Phase Focus",
-            currentStageDesc: "This shows the live phase goal and subtasks for the current turn, while the committed architecture snapshot only advances when the phase is promoted.",
+            currentStageTitle: "Current Status",
+            currentStageDesc: "This view tracks the current phase, progress, active subtasks, and roadmap using the latest confirmed content from each turn.",
             currentStageSubtasks: "Current Phase Subtasks",
             roadmapTitle: "Phase Roadmap",
             roadmapDesc: "Every phase is listed in order so the current position, completed work, and upcoming tasks stay explicit.",
             noStageTasks: "There are no additional subtasks in the current phase.",
-            liveDraftBadge: "Live phase"
+            stageBadge: "Current phase"
         };
+}
+
+function getPrdLayoutUiText(language: "zh" | "en") {
+    return language === "zh"
+        ? {
+            pageDesc: "PRD 只展示用户可追踪的范围、进度、待确认事项与实施准备，不直接暴露内部架构原始数据。",
+            confirmedScopeTitle: "已确认范围",
+            confirmedScopeDesc: "这里只保留已经稳定下来的产品范围与目标，不展示内部架构原文。",
+            noConfirmedScope: "还没有足够的已确认范围，请继续补充产品目标、用户和核心流程。",
+            pendingQuestionsTitle: "待确认事项",
+            pendingQuestionsDesc: "优先处理最影响架构质量的缺口；你可以继续追问，或直接按推荐补齐。",
+            noPendingQuestions: "当前没有待确认事项，可以继续润色 PRD 或开始生成。",
+            implementationReadinessTitle: "实施准备",
+            implementationReadinessDesc: "只展示生成门槛、验收与测试准备摘要，不直接展开内部 guardrails 明细。",
+            changeLogTitle: "变更记录",
+            changeLogDesc: "这里记录本轮 PRD 的高层更新，不展示完整聊天原文。",
+            noChangeLog: "还没有新的 PRD 更新记录。",
+            jumpToChatAction: "查看聊天",
+            followUpAction: "继续追问",
+            fillAction: "按推荐补齐"
+        }
+        : {
+            pageDesc: "The PRD only shows user-facing scope, progress, open decisions, and implementation readiness without exposing the raw internal architecture data.",
+            confirmedScopeTitle: "Confirmed Scope",
+            confirmedScopeDesc: "This keeps only the stable product scope and intent, not the raw internal architecture content.",
+            noConfirmedScope: "There is not enough confirmed scope yet. Continue clarifying the product goal, users, and key journeys.",
+            pendingQuestionsTitle: "Pending Decisions",
+            pendingQuestionsDesc: "Focus on the gaps with the highest architecture impact. You can continue the discussion or apply the recommendation directly.",
+            noPendingQuestions: "There are no pending decisions right now. You can keep polishing the PRD or start generation.",
+            implementationReadinessTitle: "Implementation Readiness",
+            implementationReadinessDesc: "This section shows only the generation gate, acceptance summary, and test readiness instead of the raw internal guardrails.",
+            changeLogTitle: "Change Log",
+            changeLogDesc: "This records the high-level PRD updates from recent turns without replaying the full chat transcript.",
+            noChangeLog: "No new PRD updates yet.",
+            jumpToChatAction: "View in chat",
+            followUpAction: "Continue in chat",
+            fillAction: "Apply default"
+        };
+}
+
+function getPrdStatusCardClassName(tone: PrdStatusCardTone) {
+    switch (tone) {
+        case "emerald":
+            return "rounded-2xl border border-emerald-100 bg-emerald-50/80 px-3 py-3 dark:border-emerald-800/40 dark:bg-emerald-900/15";
+        case "amber":
+            return "rounded-2xl border border-amber-100 bg-amber-50/80 px-3 py-3 dark:border-amber-800/40 dark:bg-amber-900/15";
+        case "sky":
+            return "rounded-2xl border border-sky-100 bg-sky-50/80 px-3 py-3 dark:border-sky-800/40 dark:bg-sky-900/15";
+        default:
+            return "rounded-2xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-3 dark:bg-slate-800/40";
+    }
 }
 
 function getArchitectureStageObjective(
@@ -2459,8 +2601,7 @@ function buildPrdStageTaskProgressLabel(
 
 function buildPrdStageProgressModel(
     language: "zh" | "en",
-    workingState: WorkingArchitectureState,
-    committedStage: ArchitectureStage
+    workingState: WorkingArchitectureState
 ): PrdStageProgressModel {
     const currentStageRequirements = collectStageRequirements(workingState.readiness, workingState.stage);
     const currentStageCompletedCount = workingState.stage === "ready_to_generate"
@@ -2531,9 +2672,6 @@ function buildPrdStageProgressModel(
         nextFocusLine: language === "zh"
             ? `本回合目标：${nextFocus}`
             : `Current turn goal: ${nextFocus}`,
-        committedSnapshotLine: language === "zh"
-            ? `正式架构快照停留在 ${getArchitectureStageLabel(language, committedStage)} 阶段；只有真正推进阶段时才会提交。`
-            : `The committed architecture snapshot stays at ${getArchitectureStageLabel(language, committedStage)} and only advances when the phase is actually promoted.`,
         currentStageTasks,
         stageRoadmap
     };
@@ -2569,74 +2707,134 @@ function buildPrdProgressLine(
         : `Readiness ${readinessText}${nextMilestone ? ` | Next: ${nextMilestone}` : ""}`;
 }
 
-function buildCanonicalPrdViewModel(
+function buildPrdChangeLog(
+    language: "zh" | "en",
+    prdDeltas: PrdDelta[]
+): PrdChangeLogItem[] {
+    return [...prdDeltas]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 6)
+        .map((item) => {
+            const targetLabel = item.requirementKey
+                ? getReadinessRequirementLabel(item.requirementKey, language)
+                : clipText(item.questionKey || (language === "zh" ? "当前问题" : "Current question"), 72);
+
+            if (item.action === "fill_requirement") {
+                return {
+                    title: language === "zh"
+                        ? `已按推荐补齐：${targetLabel}`
+                        : `Applied default: ${targetLabel}`,
+                    detail: language === "zh"
+                        ? "已用推荐默认值更新 PRD，并自动推进到下一条关键缺口。"
+                        : "The PRD was updated with the recommended default and advanced to the next important gap.",
+                    tone: "emerald" as const,
+                    sourceMessageId: item.sourceMessageId ?? undefined
+                };
+            }
+
+            if (item.action === "focus_requirement") {
+                return {
+                    title: language === "zh"
+                        ? `已切换焦点：${targetLabel}`
+                        : `Focused next: ${targetLabel}`,
+                    detail: language === "zh"
+                        ? "聊天已重新聚焦到这一项，接下来会继续追问最关键的信息。"
+                        : "The chat has been redirected to this item and will keep asking for the highest-impact missing detail.",
+                    tone: "sky" as const,
+                    sourceMessageId: item.sourceMessageId ?? undefined
+                };
+            }
+
+            if (item.action === "show_blockers") {
+                return {
+                    title: language === "zh"
+                        ? `已整理阻塞项：${targetLabel}`
+                        : `Reviewed blockers: ${targetLabel}`,
+                    detail: language === "zh"
+                        ? "这项缺口和替代路径已经整理出来，方便继续判断下一步。"
+                        : "The blocker and its alternative paths were organized so the next step stays clear.",
+                    tone: "amber" as const,
+                    sourceMessageId: item.sourceMessageId ?? undefined
+                };
+            }
+
+            if (item.action === "confirmed") {
+                return {
+                    title: language === "zh"
+                        ? `已确认：${targetLabel}`
+                        : `Confirmed: ${targetLabel}`,
+                    detail: language === "zh"
+                        ? "新的确认内容已经同步进 PRD 和阶段进度。"
+                        : "The newly confirmed information has been synced into the PRD and progress tracking.",
+                    tone: "sky" as const,
+                    sourceMessageId: item.sourceMessageId ?? undefined
+                };
+            }
+
+            return {
+                title: language === "zh"
+                    ? `已整理：${targetLabel}`
+                    : `Updated: ${targetLabel}`,
+                detail: language === "zh"
+                    ? "这条变更已经写入 PRD 记录。"
+                    : "This update has been written into the PRD record.",
+                tone: "slate" as const,
+                sourceMessageId: item.sourceMessageId ?? undefined
+            };
+        });
+}
+
+function buildPrdProjectionModel(
     language: "zh" | "en",
     architecturePack: ArchitecturePack,
-    decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
     readiness: ReadinessChecklist,
-    liveReadiness: ReadinessChecklist = readiness
-): CanonicalPrdViewModel {
-    const summaryLines: string[] = [];
-    const clarifiedItems: string[] = [];
-    const openQuestions: string[] = [];
-    const architectureSnapshot: string[] = [];
-    const decisionLog: PrdDecisionLogItem[] = [];
-    const guardrailItems: string[] = [];
+    architectureStage: ArchitectureStage,
+    prdDeltas: PrdDelta[],
+    canGenerate: boolean
+): PrdProjectionModel {
+    const confirmedScope: string[] = [];
+    const pendingQuestions: PrdPendingQuestionItem[] = [];
+    const changeLog = buildPrdChangeLog(language, prdDeltas);
     const platformSummary = buildPlatformSummaryLine(architecturePack.platformStrategy);
-    const progressLine = buildPrdProgressLine(language, liveReadiness);
-    const targetUsers = joinPrdItems(language, architecturePack.businessContext.targetUsers);
-    const userJourneys = joinPrdItems(language, architecturePack.businessContext.userJourneys);
-    const constraints = joinPrdItems(language, architecturePack.businessContext.constraints);
-    const risks = joinPrdItems(language, architecturePack.businessContext.risks);
-    const boundedContexts = joinPrdItems(language, architecturePack.boundedContexts.map((item) => item.name));
-    const modules = joinPrdItems(language, architecturePack.moduleResponsibilities.map((item) => item.module));
-    const dataOwnership = joinPrdItems(language, architecturePack.dataOwnership.map((item) => `${item.data} -> ${item.owner}`));
-    const integrationContracts = joinPrdItems(language, architecturePack.integrationContracts.map((item) => item.name));
-    const nonFunctionalRequirements = joinPrdItems(language, architecturePack.nonFunctionalRequirements.map((item) => item.requirement));
-    const keyScreens = joinPrdItems(language, architecturePack.experienceConstraints.keyScreens);
-    const sharedComponents = joinPrdItems(language, architecturePack.experienceConstraints.uiComponents);
-    const responsiveStrategy = joinPrdItems(language, architecturePack.experienceConstraints.responsiveStrategy);
-
-    appendUniquePrdLine(summaryLines, architecturePack.businessContext.productGoal.trim(), 180);
-    appendUniquePrdLine(summaryLines, platformSummary, 180);
-    appendUniquePrdLine(
-        summaryLines,
-        targetUsers
-            ? language === "zh"
-                ? `目标用户：${targetUsers}`
-                : `Target users: ${targetUsers}`
-            : null
-    );
-    appendUniquePrdLine(
-        summaryLines,
-        userJourneys
-            ? language === "zh"
-                ? `关键流程：${userJourneys}`
-                : `Key journeys: ${userJourneys}`
-            : null
-    );
-    appendUniquePrdLine(summaryLines, progressLine, 180);
-
-    if (summaryLines.length === 0) {
-        appendUniquePrdLine(
-            summaryLines,
+    const targetUsers = joinPrdItems(language, architecturePack.businessContext.targetUsers, 4);
+    const userJourneys = joinPrdItems(language, architecturePack.businessContext.userJourneys, 4);
+    const constraints = joinPrdItems(language, architecturePack.businessContext.constraints, 3);
+    const risks = joinPrdItems(language, architecturePack.businessContext.risks, 3);
+    const keyScreens = joinPrdItems(language, architecturePack.experienceConstraints.keyScreens, 3);
+    const primaryBlocker = canGenerate
+        ? (
             language === "zh"
-                ? `当前完成度 ${Math.round(liveReadiness.score)}%，请继续补充产品目标与关键流程。`
-                : `Current readiness is ${Math.round(liveReadiness.score)}%. Continue clarifying the product goal and key flows.`
+                ? "当前没有阻塞项，可以开始生成或继续微调。"
+                : "There are no current blockers. You can generate now or keep polishing."
+        )
+        : translateReadinessText(
+            language,
+            readiness.blockingIssues[0] || (
+                language === "zh"
+                    ? "还需要继续补齐当前阶段的关键缺口。"
+                    : "The current phase still has a key gap to close."
+            )
         );
-    }
+    const latestUpdate = changeLog[0] ?? {
+        title: language === "zh" ? "等待新的确认内容" : "Waiting for the next confirmed update",
+        detail: language === "zh"
+            ? "新的确认会在聊天里完成后自动同步到这里。"
+            : "New confirmations will be synced here automatically after they are resolved in chat.",
+        tone: "slate" as const
+    };
 
     appendUniquePrdLine(
-        clarifiedItems,
+        confirmedScope,
         architecturePack.businessContext.productGoal.trim()
             ? language === "zh"
                 ? `产品目标：${architecturePack.businessContext.productGoal.trim()}`
                 : `Product goal: ${architecturePack.businessContext.productGoal.trim()}`
             : null
     );
+    appendUniquePrdLine(confirmedScope, platformSummary, 180);
     appendUniquePrdLine(
-        clarifiedItems,
+        confirmedScope,
         targetUsers
             ? language === "zh"
                 ? `目标用户：${targetUsers}`
@@ -2644,7 +2842,7 @@ function buildCanonicalPrdViewModel(
             : null
     );
     appendUniquePrdLine(
-        clarifiedItems,
+        confirmedScope,
         userJourneys
             ? language === "zh"
                 ? `关键流程：${userJourneys}`
@@ -2652,179 +2850,168 @@ function buildCanonicalPrdViewModel(
             : null
     );
     appendUniquePrdLine(
-        clarifiedItems,
+        confirmedScope,
         constraints
             ? language === "zh"
-                ? `约束条件：${constraints}`
-                : `Constraints: ${constraints}`
+                ? `关键约束：${constraints}`
+                : `Key constraints: ${constraints}`
             : null
     );
     appendUniquePrdLine(
-        clarifiedItems,
+        confirmedScope,
         risks
             ? language === "zh"
                 ? `主要风险：${risks}`
-                : `Risks: ${risks}`
+                : `Primary risks: ${risks}`
             : null
     );
     appendUniquePrdLine(
-        clarifiedItems,
-        boundedContexts
-            ? language === "zh"
-                ? `限界上下文：${boundedContexts}`
-                : `Bounded contexts: ${boundedContexts}`
-            : null
-    );
-    appendUniquePrdLine(
-        clarifiedItems,
-        modules
-            ? language === "zh"
-                ? `核心模块：${modules}`
-                : `Core modules: ${modules}`
-            : null
-    );
-    appendUniquePrdLine(
-        clarifiedItems,
-        dataOwnership
-            ? language === "zh"
-                ? `数据归属：${dataOwnership}`
-                : `Data ownership: ${dataOwnership}`
-            : null
-    );
-    appendUniquePrdLine(
-        clarifiedItems,
-        integrationContracts
-            ? language === "zh"
-                ? `集成契约：${integrationContracts}`
-                : `Integration contracts: ${integrationContracts}`
-            : null
-    );
-    appendUniquePrdLine(
-        clarifiedItems,
-        nonFunctionalRequirements
-            ? language === "zh"
-                ? `非功能性需求：${nonFunctionalRequirements}`
-                : `Non-functional requirements: ${nonFunctionalRequirements}`
-            : null
-    );
-    appendUniquePrdLine(
-        clarifiedItems,
+        confirmedScope,
         keyScreens
             ? language === "zh"
                 ? `关键界面：${keyScreens}`
                 : `Key screens: ${keyScreens}`
             : null
     );
-    appendUniquePrdLine(
-        clarifiedItems,
-        sharedComponents
-            ? language === "zh"
-                ? `共享组件：${sharedComponents}`
-                : `Shared components: ${sharedComponents}`
-            : null
-    );
-    appendUniquePrdLine(
-        clarifiedItems,
-        responsiveStrategy
-            ? language === "zh"
-                ? `响应式策略：${responsiveStrategy}`
-                : `Responsive strategy: ${responsiveStrategy}`
-            : null
-    );
 
-    const incompleteRequirements = liveReadiness.criteria.flatMap((criterion) =>
+    const incompleteRequirements = readiness.criteria.flatMap((criterion) =>
         criterion.requirements.filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
     );
-    for (const requirement of incompleteRequirements.slice(0, 8)) {
-        const label = getReadinessRequirementLabel(requirement.key, language);
-        const missingDetail = translateReadinessText(
-            language,
-            requirement.missing[0] || (
-                language === "zh"
-                    ? `请继续补齐${label}。`
-                    : `Please clarify ${label}.`
-            )
-        );
-        appendUniquePrdLine(
-            openQuestions,
-            language === "zh"
-                ? `${label}：${missingDetail}`
-                : `${label}: ${missingDetail}`,
-            180
-        );
-    }
-
-    appendUniquePrdLine(architectureSnapshot, platformSummary, 180);
-    appendUniquePrdLine(
-        architectureSnapshot,
-        boundedContexts
-            ? language === "zh"
-                ? `限界上下文：${boundedContexts}`
-                : `Bounded contexts: ${boundedContexts}`
-            : null
-    );
-    appendUniquePrdLine(
-        architectureSnapshot,
-        modules
-            ? language === "zh"
-                ? `核心模块：${modules}`
-                : `Core modules: ${modules}`
-            : null
-    );
-    appendUniquePrdLine(
-        architectureSnapshot,
-        integrationContracts
-            ? language === "zh"
-                ? `集成契约：${integrationContracts}`
-                : `Integration contracts: ${integrationContracts}`
-            : null
-    );
-    appendUniquePrdLine(
-        architectureSnapshot,
-        keyScreens
-            ? language === "zh"
-                ? `关键界面：${keyScreens}`
-                : `Key screens: ${keyScreens}`
-            : null
-    );
-    appendUniquePrdLine(architectureSnapshot, progressLine, 180);
-
-    for (const record of decisionRecords.slice(0, 5)) {
-        const title = clipText((record.title || record.decision || "").trim(), 120);
-        const detail = clipText((record.rationale || record.decision || "").trim(), 180);
-        if (!title && !detail) continue;
-        decisionLog.push({
-            title: title || detail,
-            detail: detail || title
+    for (const requirement of incompleteRequirements.slice(0, 3)) {
+        pendingQuestions.push({
+            requirementKey: requirement.key,
+            label: getReadinessRequirementLabel(requirement.key, language),
+            detail: translateReadinessText(
+                language,
+                requirement.missing[0] || (
+                    language === "zh"
+                        ? `请继续补齐${getReadinessRequirementLabel(requirement.key, language)}。`
+                        : `Please clarify ${getReadinessRequirementLabel(requirement.key, language)}.`
+                )
+            ),
+            progressLabel: buildPrdStageTaskProgressLabel(language, requirement),
+            status: requirement.status
         });
     }
 
-    for (const item of guardrailChecklist.implementationOrder.slice(0, 3)) {
-        appendUniquePrdLine(
-            guardrailItems,
-            language === "zh" ? `实现顺序：${item}` : `Implementation order: ${item}`
-        );
-    }
-    for (const item of guardrailChecklist.acceptanceCriteria.slice(0, 3)) {
-        appendUniquePrdLine(
-            guardrailItems,
-            language === "zh" ? `验收标准：${item}` : `Acceptance criteria: ${item}`
-        );
-    }
-    for (const item of guardrailChecklist.testStrategy.slice(0, 2)) {
-        appendUniquePrdLine(
-            guardrailItems,
-            language === "zh" ? `测试策略：${item}` : `Test strategy: ${item}`
-        );
-    }
+    const implementationReadiness: PrdStatusCardItem[] = [
+        {
+            label: language === "zh" ? "生成状态" : "Generation gate",
+            value: canGenerate
+                ? (language === "zh" ? "可以开始生成" : "Ready to generate")
+                : (language === "zh" ? "仍需补齐" : "Not ready yet"),
+            detail: primaryBlocker,
+            tone: canGenerate ? "emerald" : "amber"
+        },
+        {
+            label: language === "zh" ? "功能准备" : "Functional readiness",
+            value: readiness.functionalReady
+                ? (language === "zh" ? "已满足" : "Ready")
+                : (language === "zh" ? "待补齐" : "Missing"),
+            detail: readiness.functionalReady
+                ? (
+                    language === "zh"
+                        ? "业务范围、边界和关键决策已经达到当前生成门槛。"
+                        : "The business scope, boundaries, and key decisions have reached the current generation bar."
+                )
+                : (
+                    language === "zh"
+                        ? "功能范围、边界或关键决策里仍有缺口。"
+                        : "There is still a gap in the functional scope, boundaries, or key decisions."
+                ),
+            tone: readiness.functionalReady ? "emerald" : "amber"
+        },
+        {
+            label: language === "zh" ? "验收准备" : "Acceptance readiness",
+            value: guardrailChecklist.acceptanceCriteria.length > 0
+                ? (
+                    language === "zh"
+                        ? `已沉淀 ${guardrailChecklist.acceptanceCriteria.length} 条验收标准`
+                        : `${guardrailChecklist.acceptanceCriteria.length} acceptance criteria captured`
+                )
+                : (language === "zh" ? "待补齐" : "Missing"),
+            detail: guardrailChecklist.acceptanceCriteria[0]
+                ? clipText(guardrailChecklist.acceptanceCriteria[0], 120)
+                : (
+                    language === "zh"
+                        ? "还没有可展示的验收标准摘要。"
+                        : "There is no acceptance summary yet."
+                ),
+            tone: guardrailChecklist.acceptanceCriteria.length > 0 ? "sky" : "slate"
+        },
+        {
+            label: language === "zh" ? "测试准备" : "Test readiness",
+            value: guardrailChecklist.testStrategy.length > 0
+                ? (
+                    language === "zh"
+                        ? `已沉淀 ${guardrailChecklist.testStrategy.length} 条测试策略`
+                        : `${guardrailChecklist.testStrategy.length} test strategy items captured`
+                )
+                : (language === "zh" ? "待补齐" : "Missing"),
+            detail: guardrailChecklist.testStrategy[0]
+                ? clipText(guardrailChecklist.testStrategy[0], 120)
+                : (
+                    language === "zh"
+                        ? "还没有可展示的测试策略摘要。"
+                        : "There is no test-strategy summary yet."
+                ),
+            tone: guardrailChecklist.testStrategy.length > 0 ? "sky" : "slate"
+        }
+    ];
+
+    const currentStatus: PrdStatusCardItem[] = [
+        {
+            label: language === "zh" ? "当前阶段" : "Current phase",
+            value: getArchitectureStageLabel(language, architectureStage),
+            detail: getArchitectureStageObjective(language, architectureStage),
+            tone: "sky"
+        },
+        {
+            label: language === "zh" ? "总体进度" : "Overall progress",
+            value: buildPrdProgressLine(language, readiness),
+            detail: canGenerate
+                ? (
+                    language === "zh"
+                        ? "当前范围已经满足生成门槛，可以进入代码脚手架阶段。"
+                        : "The current scope meets the generation gate and can move into scaffold generation."
+                )
+                : (
+                    language === "zh"
+                        ? "请继续按当前阶段任务补齐缺口，完成度会随之更新。"
+                        : "Keep closing the current-phase gaps and the overall progress will update with it."
+                ),
+            tone: canGenerate ? "emerald" : "amber"
+        },
+        {
+            label: language === "zh" ? "当前阻塞" : "Primary blocker",
+            value: primaryBlocker,
+            detail: readiness.nextMilestone
+                ? (
+                    language === "zh"
+                        ? `下一步：${clipText(readiness.nextMilestone, 120)}`
+                        : `Next: ${clipText(readiness.nextMilestone, 120)}`
+                )
+                : (
+                    language === "zh"
+                        ? "继续处理当前阶段里最关键的缺口。"
+                        : "Continue with the highest-impact gap in the current phase."
+                ),
+            tone: canGenerate ? "emerald" : "amber"
+        },
+        {
+            label: language === "zh" ? "最近更新" : "Latest update",
+            value: latestUpdate.title,
+            detail: latestUpdate.detail,
+            tone: latestUpdate.tone
+        }
+    ];
 
     return {
-        summaryLines: summaryLines.slice(0, 5),
-        clarifiedItems: clarifiedItems.slice(0, 10),
-        openQuestions: openQuestions.slice(0, 8),
-        architectureSnapshot: architectureSnapshot.slice(0, 6),
-        decisionLog,
-        guardrailItems: guardrailItems.slice(0, 8)
+        currentStatus,
+        confirmedScope: confirmedScope.slice(0, 7),
+        pendingQuestions,
+        implementationReadiness,
+        changeLog
     };
 }
 
@@ -3556,6 +3743,7 @@ function buildPricingProjectSnapshot(
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
     readinessOverrides: ReadinessOverride[],
+    prdDeltas: PrdDelta[],
     sourceArtifacts: SourceArtifact[],
     architectureStage: ArchitectureStage,
     functionalLockedAt: number | null,
@@ -3564,6 +3752,8 @@ function buildPricingProjectSnapshot(
     if (!project || !currentVersion) return null;
 
     const compactMessages: Message[] = messages.map((message) => ({
+        id: message.id,
+        createdAt: message.createdAt,
         role: message.role,
         content: message.content,
         kind: message.kind,
@@ -3606,6 +3796,7 @@ function buildPricingProjectSnapshot(
             decisionRecords,
             guardrailChecklist,
             readinessOverrides,
+            prdDeltas,
             sourceArtifacts: compactSourceArtifactsForPricing(sourceArtifacts),
             architectureStage,
             functionalLockedAt,
@@ -3675,6 +3866,8 @@ function WizardContent() {
     const [messageWindow, setMessageWindow] = useState(MESSAGE_WINDOW_SIZE);
     const messagesRef = useRef<Message[]>(initialNormalizedState.messages);
     const pendingEvaluationRef = useRef<PendingEvaluation | null>(initialPendingEvaluation);
+    const [prdDeltas, setPrdDeltas] = useState<PrdDelta[]>(initialNormalizedState.prdDeltas);
+    const prdDeltasRef = useRef<PrdDelta[]>(initialNormalizedState.prdDeltas);
 
     // Core Domain State
     const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(initialEvaluation);
@@ -3728,8 +3921,12 @@ function WizardContent() {
         getPreferredGeneratedTab(initialGenerationArtifacts)
     );
     const [shouldMountArchitectureViewer, setShouldMountArchitectureViewer] = useState(false);
+    const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const pendingScrollMessageIdRef = useRef<string | null>(null);
+    const highlightResetTimerRef = useRef<number | null>(null);
+    const messageElementRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const hasScrolledMessagesRef = useRef(false);
     const lastAutoScrolledAssistantContentRef = useRef("");
     const workspaceLanguage = getProjectWorkspaceLanguage(project);
@@ -3836,6 +4033,7 @@ function WizardContent() {
                 guardrailChecklist: overrides.guardrailChecklist ?? guardrailChecklist,
                 architectureStage: overrides.architectureStage ?? architectureStage,
                 readinessOverrides: overrides.readinessOverrides ?? readinessOverrides,
+                prdDeltas: overrides.prdDeltas ?? prdDeltasRef.current,
                 pendingEvaluation: hasPendingEvaluationOverride
                     ? overrides.pendingEvaluation ?? undefined
                     : pendingEvaluationRef.current ?? undefined
@@ -3929,8 +4127,35 @@ function WizardContent() {
     }, [pendingEvaluation]);
 
     useEffect(() => {
+        prdDeltasRef.current = prdDeltas;
+    }, [prdDeltas]);
+
+    useEffect(() => {
+        const targetId = pendingScrollMessageIdRef.current;
+        if (!targetId || isChatCollapsed) return;
+
+        const element = messageElementRefs.current[targetId];
+        if (!element) return;
+
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+        setHighlightedMessageId(targetId);
+        pendingScrollMessageIdRef.current = null;
+
+        if (highlightResetTimerRef.current !== null) {
+            window.clearTimeout(highlightResetTimerRef.current);
+        }
+        highlightResetTimerRef.current = window.setTimeout(() => {
+            setHighlightedMessageId((current) => current === targetId ? null : current);
+            highlightResetTimerRef.current = null;
+        }, 1800);
+    }, [messages, messageWindow, isChatCollapsed]);
+
+    useEffect(() => {
         return () => {
             isUnmountingRef.current = true;
+            if (highlightResetTimerRef.current !== null) {
+                window.clearTimeout(highlightResetTimerRef.current);
+            }
             if (evaluateAbortRef.current) {
                 evaluateAbortRef.current.abort();
                 evaluateAbortRef.current = null;
@@ -3981,6 +4206,7 @@ function WizardContent() {
             setSourceArtifacts(normalizedDesignState.sourceArtifacts);
             setArchitectureStage(normalizedDesignState.architectureStage);
             setArchitectureReadiness(normalizedDesignState.readiness);
+            setPrdDeltas(normalizedDesignState.prdDeltas);
             setFunctionalLockedAt(normalizedDesignState.functionalLockedAt);
             setUiReadyAt(normalizedDesignState.uiReadyAt);
             setActiveTab(getPreferredGeneratedTab(normalizedGenerationArtifacts));
@@ -4208,6 +4434,7 @@ function WizardContent() {
                             decisionRecords,
                             guardrailChecklist,
                             readinessOverrides,
+                            prdDeltas,
                             sourceArtifacts,
                             architectureStage,
                             functionalLockedAt,
@@ -4273,6 +4500,7 @@ function WizardContent() {
         decisionRecords,
         guardrailChecklist,
         readinessOverrides,
+        prdDeltas,
         sourceArtifacts,
         architectureStage,
         functionalLockedAt,
@@ -4386,6 +4614,7 @@ function WizardContent() {
                 decisionRecords,
                 guardrailChecklist,
                 readinessOverrides,
+                prdDeltas,
                 pendingEvaluation,
                 sourceArtifacts,
                 architectureStage,
@@ -4439,6 +4668,7 @@ function WizardContent() {
         decisionRecords,
         guardrailChecklist,
         readinessOverrides,
+        prdDeltas,
         pendingEvaluation,
         sourceArtifacts,
         architectureStage,
@@ -4609,6 +4839,8 @@ function WizardContent() {
             interactionMode
         };
         const assistantPlaceholder: Message = {
+            id: createMessageId(),
+            createdAt: Date.now(),
             role: "assistant",
             content: input.assistantContent ?? activePendingEvaluation.assistantContent ?? ""
         };
@@ -5211,6 +5443,8 @@ function WizardContent() {
         questionAction?: MessageAction | null;
         questionRequirementKey?: ReadinessRequirementKey | null;
     }): Message => ({
+        id: createMessageId(),
+        createdAt: Date.now(),
         role: "assistant",
         kind: "chat",
         content: input.content,
@@ -6032,6 +6266,52 @@ Do you want to start scaffold generation now?`;
         setMessages([...baseMessages, assistantMessage]);
     };
 
+    const scrollToChatMessage = (messageId: string) => {
+        if (!messageId) return;
+
+        pendingScrollMessageIdRef.current = messageId;
+        setIsChatCollapsed(false);
+        setActiveTab("prd");
+
+        const targetIndex = messages.findIndex((message) => message.id === messageId);
+        if (targetIndex >= 0) {
+            setMessageWindow((prev) => Math.max(prev, messages.length - targetIndex));
+        }
+    };
+
+    const appendPrdDelta = (input: {
+        action: PrdDelta["action"];
+        requirementKey?: ReadinessRequirementKey | null;
+        questionKey?: string | null;
+        sourceMessageId?: string | null;
+    }) => {
+        const nextDelta: PrdDelta = {
+            id: createPrdDeltaId(),
+            createdAt: Date.now(),
+            action: input.action,
+            requirementKey: input.requirementKey ?? undefined,
+            questionKey: input.questionKey ? normalizeQuestionKey(input.questionKey) : undefined,
+            sourceMessageId: input.sourceMessageId ?? undefined
+        };
+        const previous = prdDeltasRef.current;
+        const last = previous[previous.length - 1];
+
+        if (
+            last &&
+            last.action === nextDelta.action &&
+            last.requirementKey === nextDelta.requirementKey &&
+            last.questionKey === nextDelta.questionKey &&
+            last.sourceMessageId === nextDelta.sourceMessageId
+        ) {
+            return previous;
+        }
+
+        const next = [...previous, nextDelta].slice(-24);
+        prdDeltasRef.current = next;
+        setPrdDeltas(next);
+        return next;
+    };
+
     const handleRequirementAction = (
         action: "focus_requirement" | "fill_requirement" | "show_blockers",
         requirementKey: ReadinessRequirementKey | null,
@@ -6049,15 +6329,26 @@ Do you want to start scaffold generation now?`;
                 workingArchitectureState.architecturePack,
                 baseMessages
             );
-            appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
+            const assistantMessage = buildAssistantQuestionMessage(focused);
+            appendDeterministicAssistantResponse(baseMessages, assistantMessage);
+            appendPrdDelta({
+                action: "focus_requirement",
+                requirementKey,
+                questionKey: focused.questionKey,
+                sourceMessageId: assistantMessage.id
+            });
             return true;
         }
 
         if (action === "show_blockers") {
-            appendDeterministicAssistantResponse(
-                baseMessages,
-                buildRequirementAlternativesMessage(language, requirementKey)
-            );
+            const blockersMessage = buildRequirementAlternativesMessage(language, requirementKey);
+            appendDeterministicAssistantResponse(baseMessages, blockersMessage);
+            appendPrdDelta({
+                action: "show_blockers",
+                requirementKey,
+                questionKey: blockersMessage.questionKey,
+                sourceMessageId: blockersMessage.id
+            });
             return true;
         }
 
@@ -6069,7 +6360,14 @@ Do you want to start scaffold generation now?`;
                 workingArchitectureState.architecturePack,
                 baseMessages
             );
-            appendDeterministicAssistantResponse(baseMessages, buildAssistantQuestionMessage(focused));
+            const assistantMessage = buildAssistantQuestionMessage(focused);
+            appendDeterministicAssistantResponse(baseMessages, assistantMessage);
+            appendPrdDelta({
+                action: "focus_requirement",
+                requirementKey,
+                questionKey: focused.questionKey,
+                sourceMessageId: assistantMessage.id
+            });
             return true;
         }
 
@@ -6129,14 +6427,70 @@ Do you want to start scaffold generation now?`;
                 baseMessages
             );
         const combinedContent = `${resolution.summary}\n\n${followUp.content}`.trim();
-        appendDeterministicAssistantResponse(
-            baseMessages,
-            buildAssistantQuestionMessage({
-                ...followUp,
-                content: combinedContent
-            })
-        );
+        const assistantMessage = buildAssistantQuestionMessage({
+            ...followUp,
+            content: combinedContent
+        });
+        appendDeterministicAssistantResponse(baseMessages, assistantMessage);
+        appendPrdDelta({
+            action: "fill_requirement",
+            requirementKey,
+            questionKey: followUp.questionKey,
+            sourceMessageId: assistantMessage.id
+        });
         return true;
+    };
+
+    const handlePrdRequirementAction = async (
+        action: "focus_requirement" | "fill_requirement",
+        requirementKey: ReadinessRequirementKey
+    ) => {
+        if (isConversationLocked) return;
+
+        if (isLoading) {
+            cancelEvaluation();
+        }
+
+        const requirementLabel = getReadinessRequirementLabel(requirementKey, workspaceLanguage);
+        const textToSend = action === "fill_requirement"
+            ? (
+                workspaceLanguage === "zh"
+                    ? `请按推荐补齐${requirementLabel}。`
+                    : `Apply the recommended default for ${requirementLabel}.`
+            )
+            : (
+                workspaceLanguage === "zh"
+                    ? `请继续追问${requirementLabel}。`
+                    : `Continue asking about ${requirementLabel}.`
+            );
+        const latestPendingQuestion = getLatestPendingQuestion(messages);
+        const answeredQuestionKey = latestPendingQuestion?.questionKey ?? null;
+        const preparedMessages = closeOpenAssistantQuestions(messages, answeredQuestionKey);
+        const newUserMessage: Message = {
+            id: createMessageId(),
+            createdAt: Date.now(),
+            role: "user",
+            content: textToSend,
+            answeredQuestionKey: answeredQuestionKey ?? undefined,
+            triggeredAction: action
+        };
+        const newMessages = [...preparedMessages, newUserMessage];
+
+        setHasUserEdited(true);
+        setMessages(newMessages);
+        setMessageWindow(MESSAGE_WINDOW_SIZE);
+        setInput("");
+        setActiveTab("architecture");
+
+        if (handleRequirementAction(action, requirementKey, newMessages)) {
+            return;
+        }
+
+        await continueEvaluation({
+            requestMessages: newMessages,
+            latestUserContext: textToSend,
+            interactionMode: "architecture"
+        });
     };
 
     const handleSend = async (overrideInput?: string, selectedOption?: MessageOption) => {
@@ -6199,10 +6553,17 @@ Do you want to start scaffold generation now?`;
             ? "architecture"
             : "chat";
         const preparedMessages = closeOpenAssistantQuestions(messages, answeredQuestionKey);
+        const shouldRecordConfirmationDelta = Boolean(
+            answeredQuestionKey &&
+            latestPendingQuestion &&
+            !triggeredAction
+        );
 
         // Optimistic UI Update
         setHasUserEdited(true);
         const newUserMessage: Message = {
+            id: createMessageId(),
+            createdAt: Date.now(),
             role: "user",
             content: textToSend,
             attachments: attachmentsToSend,
@@ -6210,6 +6571,14 @@ Do you want to start scaffold generation now?`;
             triggeredAction: triggeredAction ?? undefined
         };
         const newMessages = [...preparedMessages, newUserMessage];
+        if (shouldRecordConfirmationDelta) {
+            appendPrdDelta({
+                action: "confirmed",
+                requirementKey: contextualRequirementKey,
+                questionKey: answeredQuestionKey,
+                sourceMessageId: newUserMessage.id
+            });
+        }
         const latestUserContext = [...newMessages]
             .reverse()
             .find((message) => message.role === "user")
@@ -6480,6 +6849,7 @@ Do you want to start scaffold generation now?`;
                             decisionRecords,
                             guardrailChecklist,
                             readinessOverrides,
+                            prdDeltas,
                             sourceArtifacts,
                             architectureStage,
                             functionalLockedAt,
@@ -6566,34 +6936,31 @@ Do you want to start scaffold generation now?`;
 
     const isPrdTabActive = activeTab === "prd";
     const prdPhaseUi = getPrdPhaseUiText(workspaceLanguage);
-    const canonicalPrdView = isPrdTabActive
-        ? buildCanonicalPrdViewModel(
+    const prdLayoutUi = getPrdLayoutUiText(workspaceLanguage);
+    const prdProjection = isPrdTabActive
+        ? buildPrdProjectionModel(
             workspaceLanguage,
             architecturePack,
-            decisionRecords,
             guardrailChecklist,
             architectureReadiness,
-            workingArchitectureState.readiness
+            architectureStage,
+            prdDeltas,
+            generationReady
         )
         : null;
     const prdStageProgress = isPrdTabActive
         ? buildPrdStageProgressModel(
             workspaceLanguage,
-            workingArchitectureState,
-            architectureStage
+            workingArchitectureState
         )
         : null;
-    const prdSummaryLines = canonicalPrdView?.summaryLines ?? [];
-    const prdConversationSignals = isPrdTabActive
-        ? buildPrdConversationSignals(workspaceLanguage, messages)
-        : [];
+    const prdStatusCards = prdProjection?.currentStatus ?? [];
     const prdCurrentStageTasks = prdStageProgress?.currentStageTasks ?? [];
     const prdStageRoadmap = prdStageProgress?.stageRoadmap ?? [];
-    const prdArchitectureSnapshot = canonicalPrdView?.architectureSnapshot ?? [];
-    const prdClarifiedItems = canonicalPrdView?.clarifiedItems ?? [];
-    const prdOpenQuestions = canonicalPrdView?.openQuestions ?? [];
-    const prdDecisionLog = canonicalPrdView?.decisionLog ?? [];
-    const prdGuardrailItems = canonicalPrdView?.guardrailItems ?? [];
+    const prdConfirmedScope = prdProjection?.confirmedScope ?? [];
+    const prdPendingQuestions = prdProjection?.pendingQuestions ?? [];
+    const prdImplementationReadiness = prdProjection?.implementationReadiness ?? [];
+    const prdChangeLog = prdProjection?.changeLog ?? [];
     const isShowingStaleProject = Boolean(projectId && project && project.id !== projectId);
     const isShowingStaleVersion = Boolean(
         versionId &&
@@ -6670,14 +7037,26 @@ Do you want to start scaffold generation now?`;
 
                                 {visibleMessages.map((msg, idx) => {
                                     const messageIndex = baseMessageIndex + idx;
+                                    const messageId = msg.id ?? `message-${messageIndex}`;
                                     return (
-                                        <ChatBubble
-                                            key={messageIndex}
-                                            message={msg}
-                                            onOptionClick={handleOptionClick}
-                                            disableOptions={isConversationLocked}
-                                            isStreaming={isAssistantStreamingVisible && messageIndex === lastMessageIndex}
-                                        />
+                                        <div
+                                            key={messageId}
+                                            ref={(node) => {
+                                                messageElementRefs.current[messageId] = node;
+                                            }}
+                                            data-message-id={messageId}
+                                            className={highlightedMessageId === messageId
+                                                ? "rounded-2xl ring-2 ring-sky-300/80 ring-offset-2 ring-offset-white transition-all dark:ring-sky-500/70 dark:ring-offset-slate-900"
+                                                : "transition-all"
+                                            }
+                                        >
+                                            <ChatBubble
+                                                message={msg}
+                                                onOptionClick={handleOptionClick}
+                                                disableOptions={isConversationLocked}
+                                                isStreaming={isAssistantStreamingVisible && messageIndex === lastMessageIndex}
+                                            />
+                                        </div>
                                     );
                                 })}
 
@@ -6927,7 +7306,7 @@ Do you want to start scaffold generation now?`;
                                     <div className="flex items-center justify-between gap-3">
                                         <div>
                                             <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{uiText.prdTitle}</h3>
-                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{uiText.prdDesc}</p>
+                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.pageDesc}</p>
                                         </div>
                                         <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
                                             {uiText.prdLastUpdated}
@@ -6943,28 +7322,28 @@ Do you want to start scaffold generation now?`;
                                                         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{prdPhaseUi.currentStageDesc}</p>
                                                     </div>
                                                     <span className="rounded-full border border-sky-200 bg-white/80 px-3 py-1 text-xs font-semibold text-sky-700 dark:border-sky-700/40 dark:bg-sky-900/30 dark:text-sky-300">
-                                                        {prdPhaseUi.liveDraftBadge}: {prdStageProgress.currentStageLabel}
+                                                        {prdPhaseUi.stageBadge}: {prdStageProgress.currentStageLabel}
                                                     </span>
                                                 </div>
 
-                                                <div className="mt-4 grid gap-2 md:grid-cols-3">
-                                                    <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{prdStageProgress.currentStageObjective}</p>
-                                                    </div>
-                                                    <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        {prdStageProgress.liveStatusLine}
-                                                    </div>
-                                                    <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        {prdStageProgress.overallProgressLine}
-                                                    </div>
+                                                <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
+                                                    {prdStatusCards.map((card, index) => (
+                                                        <div key={`prd-status-${index}`} className={getPrdStatusCardClassName(card.tone)}>
+                                                            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">{card.label}</p>
+                                                            <p className="mt-2 text-sm font-semibold text-slate-900 dark:text-slate-100">{card.value}</p>
+                                                            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{card.detail}</p>
+                                                        </div>
+                                                    ))}
                                                 </div>
 
-                                                <div className="mt-3 space-y-2">
+                                                <div className="mt-3 grid gap-3 lg:grid-cols-2">
                                                     <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        {prdStageProgress.nextFocusLine}
+                                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{prdStageProgress.currentStageObjective}</p>
+                                                        <p className="mt-2">{prdStageProgress.liveStatusLine}</p>
                                                     </div>
                                                     <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        {prdStageProgress.committedSnapshotLine}
+                                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{prdStageProgress.nextFocusLine}</p>
+                                                        <p className="mt-2">{prdStageProgress.overallProgressLine}</p>
                                                     </div>
                                                 </div>
 
@@ -6998,41 +7377,70 @@ Do you want to start scaffold generation now?`;
                                         )}
 
                                         <div>
-                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdSummary}</h4>
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdLayoutUi.confirmedScopeTitle}</h4>
+                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.confirmedScopeDesc}</p>
                                             <div className="mt-2 space-y-2">
-                                                {prdSummaryLines.map((item, index) => (
-                                                    <div key={`prd-summary-${index}`} className="rounded-xl border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-800/40 dark:bg-emerald-900/15 dark:text-emerald-100">
-                                                        {item}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-
-                                        <div>
-                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdClarified}</h4>
-                                            <div className="mt-2 space-y-2">
-                                                {prdClarifiedItems.length > 0 ? prdClarifiedItems.map((item, index) => (
-                                                    <div key={`prd-clarified-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
+                                                {prdConfirmedScope.length > 0 ? prdConfirmedScope.map((item, index) => (
+                                                    <div key={`prd-scope-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
                                                         {item}
                                                     </div>
                                                 )) : (
-                                                    <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoClarified}</p>
+                                                    <p className="text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.noConfirmedScope}</p>
                                                 )}
                                             </div>
                                         </div>
 
                                         <div>
-                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdOpenQuestions}</h4>
-                                            <div className="mt-2 space-y-2">
-                                                {prdOpenQuestions.length > 0 ? prdOpenQuestions.map((item, index) => (
-                                                    <div key={`prd-open-${index}`} className="rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-800/40 dark:bg-amber-900/15 dark:text-amber-100">
-                                                        {item}
-                                                    </div>
-                                                )) : (
-                                                    <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoOpenQuestions}</p>
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdLayoutUi.pendingQuestionsTitle}</h4>
+                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.pendingQuestionsDesc}</p>
+                                            <div className="mt-2 space-y-3">
+                                                {prdPendingQuestions.length > 0 ? prdPendingQuestions.map((item, index) => {
+                                                    const statusMeta = getPrdTaskStatusMeta(workspaceLanguage, item.status);
+                                                    return (
+                                                        <div key={`prd-pending-${index}`} className="rounded-xl border border-amber-100 bg-amber-50/60 px-3 py-3 dark:border-amber-800/40 dark:bg-amber-900/10">
+                                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{item.label}</p>
+                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                    <span className="rounded-full border border-amber-200 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:border-amber-700/40 dark:bg-slate-900/40 dark:text-amber-300">
+                                                                        {item.progressLabel}
+                                                                    </span>
+                                                                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusMeta.className}`}>
+                                                                        {statusMeta.label}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">{item.detail}</p>
+                                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        void handlePrdRequirementAction("focus_requirement", item.requirementKey);
+                                                                    }}
+                                                                    disabled={isConversationLocked || isLoading}
+                                                                    className="rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700/40 dark:bg-slate-900/50 dark:text-slate-200 dark:hover:bg-slate-900/70"
+                                                                >
+                                                                    {prdLayoutUi.followUpAction}
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        void handlePrdRequirementAction("fill_requirement", item.requirementKey);
+                                                                    }}
+                                                                    disabled={isConversationLocked || isLoading}
+                                                                    className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-3 py-2 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                                                                >
+                                                                    {prdLayoutUi.fillAction}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }) : (
+                                                    <p className="text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.noPendingQuestions}</p>
                                                 )}
                                             </div>
                                         </div>
+
+                                        <></>
                                     </div>
                                 </section>
 
@@ -7069,55 +7477,43 @@ Do you want to start scaffold generation now?`;
                                     )}
 
                                     <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdConversationSignals}</h4>
-                                        <div className="mt-3 space-y-2">
-                                            {prdConversationSignals.length > 0 ? prdConversationSignals.map((item, index) => (
-                                                <div key={`prd-signal-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
-                                                    {item}
-                                                </div>
-                                            )) : (
-                                                <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoConversationSignals}</p>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdArchitectureSnapshot}</h4>
-                                        <div className="mt-3 space-y-2">
-                                            {prdArchitectureSnapshot.map((item, index) => (
-                                                <div key={`prd-arch-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
-                                                    {item}
+                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdLayoutUi.implementationReadinessTitle}</h4>
+                                        <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.implementationReadinessDesc}</p>
+                                        <div className="mt-3 space-y-3">
+                                            {prdImplementationReadiness.map((item, index) => (
+                                                <div key={`prd-readiness-${index}`} className={getPrdStatusCardClassName(item.tone)}>
+                                                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">{item.label}</p>
+                                                    <p className="mt-2 text-sm font-semibold text-slate-900 dark:text-slate-100">{item.value}</p>
+                                                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{item.detail}</p>
                                                 </div>
                                             ))}
                                         </div>
                                     </div>
 
                                     <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdDecisionLog}</h4>
-                                        <div className="mt-3 space-y-2">
-                                            {prdDecisionLog.length > 0 ? prdDecisionLog.map((record, index) => (
-                                                <div key={`prd-decision-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
-                                                    <p className="font-semibold text-slate-900 dark:text-slate-100">{record.title}</p>
-                                                    <p className="mt-1">{record.detail}</p>
+                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdLayoutUi.changeLogTitle}</h4>
+                                        <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.changeLogDesc}</p>
+                                        <div className="mt-3 space-y-3">
+                                            {prdChangeLog.length > 0 ? prdChangeLog.map((item, index) => (
+                                                <div key={`prd-change-${index}`} className={getPrdStatusCardClassName(item.tone)}>
+                                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{item.title}</p>
+                                                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{item.detail}</p>
+                                                    {item.sourceMessageId && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => scrollToChatMessage(item.sourceMessageId!)}
+                                                            className="mt-3 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-white dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200 dark:hover:bg-slate-900/60"
+                                                        >
+                                                            {prdLayoutUi.jumpToChatAction}
+                                                        </button>
+                                                    )}
                                                 </div>
                                             )) : (
-                                                <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoDecisionLog}</p>
+                                                <p className="text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.noChangeLog}</p>
                                             )}
                                         </div>
                                     </div>
 
-                                    <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{uiText.prdGuardrails}</h4>
-                                        <div className="mt-3 space-y-2">
-                                            {prdGuardrailItems.length > 0 ? prdGuardrailItems.map((item, index) => (
-                                                    <div key={`prd-guardrail-${index}`} className="rounded-xl border border-[color:var(--border)] bg-slate-50/80 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800/40 dark:text-slate-200">
-                                                        {item}
-                                                    </div>
-                                                )) : (
-                                                <p className="text-sm text-slate-500 dark:text-slate-300">{uiText.prdNoGuardrails}</p>
-                                            )}
-                                        </div>
-                                    </div>
                                 </section>
                             </div>
                         </div>

@@ -479,6 +479,8 @@ export interface Attachment {
 }
 
 export interface Message {
+    id?: string;
+    createdAt?: number;
     role: 'user' | 'assistant';
     content: string;
     kind?: MessageKind;
@@ -490,6 +492,21 @@ export interface Message {
     questionRequirementKey?: ReadinessRequirementKey | null;
     answeredQuestionKey?: string | null;
     triggeredAction?: MessageAction | null;
+}
+
+export type PrdDeltaAction =
+    | "confirmed"
+    | "focus_requirement"
+    | "fill_requirement"
+    | "show_blockers";
+
+export interface PrdDelta {
+    id: string;
+    createdAt: number;
+    action: PrdDeltaAction;
+    requirementKey?: ReadinessRequirementKey | null;
+    questionKey?: string | null;
+    sourceMessageId?: string | null;
 }
 
 // v2: Expanded Project Data
@@ -530,6 +547,7 @@ export interface ProjectVersionData {
     guardrailChecklist?: GuardrailChecklist;
     architectureStage?: ArchitectureStage;
     readinessOverrides?: ReadinessOverride[];
+    prdDeltas?: PrdDelta[];
     pendingEvaluation?: PendingEvaluation | null;
 }
 
