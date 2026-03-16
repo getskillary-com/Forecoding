@@ -989,26 +989,28 @@ function normalizePrdDeltas(
     if (Array.isArray(value)) {
         const normalized = value
             .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-            .map((item, index) => {
+            .reduce<PrdDelta[]>((acc, item, index) => {
                 const action = normalizePrdDeltaAction(item.action);
                 const id = typeof item.id === "string" && item.id.trim()
                     ? item.id.trim()
                     : `prd-${index}`;
-                if (!action) return null;
-                return {
+                if (!action) return acc;
+
+                acc.push({
                     id,
                     createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now() - (index * 1000),
                     action,
-                    requirementKey: normalizeReadinessRequirementKey(item.requirementKey) ?? undefined,
+                    requirementKey: normalizeReadinessRequirementKey(item.requirementKey) ?? null,
                     questionKey: typeof item.questionKey === "string" && item.questionKey.trim()
                         ? normalizeQuestionKey(item.questionKey)
-                        : undefined,
+                        : null,
                     sourceMessageId: typeof item.sourceMessageId === "string" && item.sourceMessageId.trim()
                         ? item.sourceMessageId.trim()
-                        : undefined
-                } satisfies PrdDelta;
-            })
-            .filter((item): item is PrdDelta => Boolean(item));
+                        : null
+                });
+
+                return acc;
+            }, []);
 
         if (normalized.length > 0) {
             return normalized.slice(-24);
