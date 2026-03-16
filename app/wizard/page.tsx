@@ -691,19 +691,6 @@ function applyArchitectureStageScoreFloor(
     return readiness;
 }
 
-const ARCHITECTURE_STAGE_ORDER: ArchitectureStage[] = [
-    "context",
-    "boundaries",
-    "decisions",
-    "guardrails",
-    "ready_to_generate"
-];
-
-function getArchitectureStageRank(stage: ArchitectureStage | null | undefined) {
-    const index = stage ? ARCHITECTURE_STAGE_ORDER.indexOf(stage) : -1;
-    return index >= 0 ? index : 0;
-}
-
 type WorkingArchitectureState = {
     architecturePack: ArchitecturePack;
     decisionRecords: DecisionRecord[];
@@ -2277,34 +2264,6 @@ function buildBlockersSummary(
     ].join("\n");
 }
 
-type PrdStageRoadmapStatus = "completed" | "current" | "upcoming";
-
-type PrdStageTaskItem = {
-    label: string;
-    detail: string;
-    status: ReadinessRequirementStatus;
-    progressLabel: string;
-};
-
-type PrdStageRoadmapItem = {
-    stage: ArchitectureStage;
-    label: string;
-    objective: string;
-    status: PrdStageRoadmapStatus;
-    progressLabel: string;
-    subtaskLabels: string[];
-};
-
-type PrdStageProgressModel = {
-    currentStageLabel: string;
-    currentStageObjective: string;
-    liveStatusLine: string;
-    overallProgressLine: string;
-    nextFocusLine: string;
-    currentStageTasks: PrdStageTaskItem[];
-    stageRoadmap: PrdStageRoadmapItem[];
-};
-
 type PrdStatusCardTone = "sky" | "emerald" | "amber" | "slate";
 
 type PrdStatusCardItem = {
@@ -2336,56 +2295,6 @@ type PrdProjectionModel = {
     implementationReadiness: PrdStatusCardItem[];
     changeLog: PrdChangeLogItem[];
 };
-
-const ARCHITECTURE_STAGE_REQUIREMENT_KEYS: Record<Exclude<ArchitectureStage, "ready_to_generate">, ReadinessRequirementKey[]> = {
-    context: [
-        "business_context.product_goal",
-        "business_context.platforms",
-        "business_context.target_users",
-        "business_context.user_journeys",
-        "business_context.constraints_or_risks"
-    ],
-    boundaries: [
-        "boundaries.bounded_contexts",
-        "boundaries.module_responsibilities",
-        "boundaries.data_ownership"
-    ],
-    decisions: [
-        "decisions.decision_records",
-        "decisions.integration_contracts",
-        "decisions.non_functional_requirements"
-    ],
-    guardrails: [
-        "guardrails.implementation_order",
-        "guardrails.acceptance_criteria",
-        "guardrails.test_strategy",
-        "ui.key_screens",
-        "ui.shared_components",
-        "ui.responsive_strategy"
-    ]
-};
-
-function getPrdPhaseUiText(language: "zh" | "en") {
-    return language === "zh"
-        ? {
-            currentStageTitle: "当前状态",
-            currentStageDesc: "这里按每回合最新确认内容展示当前阶段、完成度、阶段任务和路线图。",
-            currentStageSubtasks: "当前阶段子任务",
-            roadmapTitle: "阶段路线图",
-            roadmapDesc: "所有阶段按顺序列出，便于判断当前所处位置、已完成内容和后续任务。",
-            noStageTasks: "当前阶段没有额外子任务。",
-            stageBadge: "当前阶段"
-        }
-        : {
-            currentStageTitle: "Current Status",
-            currentStageDesc: "This view tracks the current phase, progress, active subtasks, and roadmap using the latest confirmed content from each turn.",
-            currentStageSubtasks: "Current Phase Subtasks",
-            roadmapTitle: "Phase Roadmap",
-            roadmapDesc: "Every phase is listed in order so the current position, completed work, and upcoming tasks stay explicit.",
-            noStageTasks: "There are no additional subtasks in the current phase.",
-            stageBadge: "Current phase"
-        };
-}
 
 function getPrdLayoutUiText(language: "zh" | "en") {
     return language === "zh"
@@ -2438,64 +2347,6 @@ function getPrdStatusCardClassName(tone: PrdStatusCardTone) {
     }
 }
 
-function getArchitectureStageObjective(
-    language: "zh" | "en",
-    stage: ArchitectureStage
-) {
-    const objectives: Record<ArchitectureStage, { zh: string; en: string }> = {
-        context: {
-            zh: "先锁定产品目标、平台范围、目标用户与关键用户流程。",
-            en: "Lock the product goal, platform scope, target users, and key user flows."
-        },
-        boundaries: {
-            zh: "划清系统边界、模块职责与数据归属，让系统形态稳定下来。",
-            en: "Define system boundaries, module responsibilities, and data ownership so the system shape becomes stable."
-        },
-        decisions: {
-            zh: "确认关键架构决策、集成契约与非功能性要求。",
-            en: "Confirm the key architecture decisions, integration contracts, and non-functional requirements."
-        },
-        guardrails: {
-            zh: "补齐交付 guardrails 与体验约束，确保可以安全进入生成。",
-            en: "Complete the delivery guardrails and experience constraints so generation can start safely."
-        },
-        ready_to_generate: {
-            zh: "阶段任务已满足，可以生成脚手架，或继续做最后的微调。",
-            en: "The phase requirements are satisfied. You can generate the scaffold now or keep polishing."
-        }
-    };
-
-    return objectives[stage][language];
-}
-
-function getArchitectureStageRequirementKeys(stage: ArchitectureStage) {
-    if (stage === "ready_to_generate") return [] as ReadinessRequirementKey[];
-    return ARCHITECTURE_STAGE_REQUIREMENT_KEYS[stage];
-}
-
-function collectStageRequirements(
-    readiness: ReadinessChecklist,
-    stage: ArchitectureStage
-) {
-    return getArchitectureStageRequirementKeys(stage)
-        .map((requirementKey) => findReadinessRequirement(readiness, requirementKey))
-        .filter((requirement): requirement is ReadinessRequirement => Boolean(requirement));
-}
-
-function isReadinessRequirementDone(status: ReadinessRequirementStatus) {
-    return status === "confirmed" || status === "waived";
-}
-
-function buildStageProgressLabel(
-    language: "zh" | "en",
-    completedCount: number,
-    totalCount: number
-) {
-    return language === "zh"
-        ? `${completedCount}/${totalCount} 子任务完成`
-        : `${completedCount}/${totalCount} subtasks done`;
-}
-
 function getPrdTaskStatusMeta(
     language: "zh" | "en",
     status: ReadinessRequirementStatus
@@ -2524,69 +2375,6 @@ function getPrdTaskStatusMeta(
     }
 }
 
-function getPrdRoadmapStatusMeta(
-    language: "zh" | "en",
-    status: PrdStageRoadmapStatus
-) {
-    switch (status) {
-        case "completed":
-            return {
-                label: language === "zh" ? "已完成" : "Completed",
-                className: "border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300"
-            };
-        case "current":
-            return {
-                label: language === "zh" ? "当前阶段" : "Current",
-                className: "border border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/40 dark:bg-sky-900/20 dark:text-sky-300"
-            };
-        default:
-            return {
-                label: language === "zh" ? "待开始" : "Upcoming",
-                className: "border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300"
-            };
-    }
-}
-
-function getPrdRoadmapCardClassName(status: PrdStageRoadmapStatus) {
-    if (status === "completed") {
-        return "rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3 dark:border-emerald-800/40 dark:bg-emerald-900/15";
-    }
-
-    if (status === "current") {
-        return "rounded-2xl border border-sky-100 bg-sky-50/70 p-3 dark:border-sky-800/40 dark:bg-sky-900/15";
-    }
-
-    return "rounded-2xl border border-[color:var(--border)] bg-slate-50/80 p-3 dark:bg-slate-800/40";
-}
-
-function buildPrdStageTaskDetail(
-    language: "zh" | "en",
-    requirement: ReadinessRequirement
-) {
-    if (requirement.status === "confirmed") {
-        return language === "zh"
-            ? "当前草稿已经覆盖这个子任务。"
-            : "This subtask is already covered in the current draft.";
-    }
-
-    if (requirement.status === "waived") {
-        return requirement.overrideReason
-            ? translateReadinessText(language, requirement.overrideReason)
-            : language === "zh"
-                ? "当前范围下该子任务已被豁免。"
-                : "This subtask is waived for the current scope.";
-    }
-
-    return translateReadinessText(
-        language,
-        requirement.missing[0] || (
-            language === "zh"
-                ? `请继续补齐${getReadinessRequirementLabel(requirement.key, language)}。`
-                : `Keep refining ${getReadinessRequirementLabel(requirement.key, language)}.`
-        )
-    );
-}
-
 function buildPrdStageTaskProgressLabel(
     language: "zh" | "en",
     requirement: ReadinessRequirement
@@ -2599,84 +2387,6 @@ function buildPrdStageTaskProgressLabel(
     return language === "zh"
         ? `${satisfiedCount}/${requirement.requiredCount} 完成`
         : `${satisfiedCount}/${requirement.requiredCount} done`;
-}
-
-function buildPrdStageProgressModel(
-    language: "zh" | "en",
-    workingState: WorkingArchitectureState
-): PrdStageProgressModel {
-    const currentStageRequirements = collectStageRequirements(workingState.readiness, workingState.stage);
-    const currentStageCompletedCount = workingState.stage === "ready_to_generate"
-        ? 1
-        : currentStageRequirements.filter((requirement) => isReadinessRequirementDone(requirement.status)).length;
-    const currentStageTotalCount = workingState.stage === "ready_to_generate"
-        ? 1
-        : Math.max(currentStageRequirements.length, 1);
-    const currentStageLabel = getArchitectureStageLabel(language, workingState.stage);
-    const currentStageTasks = workingState.stage === "ready_to_generate"
-        ? [
-            {
-                label: language === "zh" ? "开始生成或继续微调" : "Generate or keep polishing",
-                detail: language === "zh"
-                    ? "当前阶段要求已经满足，可以直接生成脚手架；如果你还想细调 PRD，也可以继续追问。"
-                    : "The phase requirements are already satisfied, so you can generate now or keep refining the PRD a bit more.",
-                status: "confirmed" as const,
-                progressLabel: buildStageProgressLabel(language, 1, 1)
-            }
-        ]
-        : currentStageRequirements.map((requirement) => ({
-            label: getReadinessRequirementLabel(requirement.key, language),
-            detail: buildPrdStageTaskDetail(language, requirement),
-            status: requirement.status,
-            progressLabel: buildPrdStageTaskProgressLabel(language, requirement)
-        }));
-    const nextFocus = translateReadinessText(
-        language,
-        workingState.readiness.nextMilestone || (
-            language === "zh"
-                ? "继续补齐当前阶段剩余子任务。"
-                : "Continue closing the remaining subtasks in the current phase."
-        )
-    );
-    const currentStageRank = getArchitectureStageRank(workingState.stage);
-    const stageRoadmap = ARCHITECTURE_STAGE_ORDER.map((stage) => {
-        const requirements = collectStageRequirements(workingState.readiness, stage);
-        const completedCount = stage === "ready_to_generate"
-            ? Number(workingState.readiness.functionalReady && workingState.readiness.uiReady)
-            : requirements.filter((requirement) => isReadinessRequirementDone(requirement.status)).length;
-        const totalCount = stage === "ready_to_generate" ? 1 : Math.max(requirements.length, 1);
-        const stageRank = getArchitectureStageRank(stage);
-        const status: PrdStageRoadmapStatus = stageRank < currentStageRank
-            ? "completed"
-            : stage === workingState.stage
-                ? "current"
-                : "upcoming";
-
-        return {
-            stage,
-            label: getArchitectureStageLabel(language, stage),
-            objective: getArchitectureStageObjective(language, stage),
-            status,
-            progressLabel: buildStageProgressLabel(language, completedCount, totalCount),
-            subtaskLabels: stage === "ready_to_generate"
-                ? [language === "zh" ? "开始生成 / 最后微调" : "Generate / final polish"]
-                : requirements.map((requirement) => getReadinessRequirementLabel(requirement.key, language))
-        };
-    });
-
-    return {
-        currentStageLabel,
-        currentStageObjective: getArchitectureStageObjective(language, workingState.stage),
-        liveStatusLine: language === "zh"
-            ? `当前阶段进度：${buildStageProgressLabel(language, currentStageCompletedCount, currentStageTotalCount)}`
-            : `Current phase progress: ${buildStageProgressLabel(language, currentStageCompletedCount, currentStageTotalCount)}`,
-        overallProgressLine: buildPrdProgressLine(language, workingState.readiness),
-        nextFocusLine: language === "zh"
-            ? `本回合目标：${nextFocus}`
-            : `Current turn goal: ${nextFocus}`,
-        currentStageTasks,
-        stageRoadmap
-    };
 }
 
 function appendUniquePrdLine(target: string[], line: string | null | undefined, maxChars: number = 220) {
@@ -2766,7 +2476,7 @@ function buildPrdChangeLog(
                         ? `已确认：${targetLabel}`
                         : `Confirmed: ${targetLabel}`,
                     detail: language === "zh"
-                        ? "新的确认内容已经同步进 PRD 和阶段进度。"
+                        ? "新的确认内容已经同步进 PRD 和进度摘要。"
                         : "The newly confirmed information has been synced into the PRD and progress tracking.",
                     tone: "sky" as const,
                     sourceMessageId: item.sourceMessageId ?? undefined
@@ -2791,7 +2501,6 @@ function buildPrdProjectionModel(
     architecturePack: ArchitecturePack,
     guardrailChecklist: GuardrailChecklist,
     readiness: ReadinessChecklist,
-    architectureStage: ArchitectureStage,
     prdDeltas: PrdDelta[],
     canGenerate: boolean
 ): PrdProjectionModel {
@@ -2814,8 +2523,8 @@ function buildPrdProjectionModel(
             language,
             readiness.blockingIssues[0] || (
                 language === "zh"
-                    ? "还需要继续补齐当前阶段的关键缺口。"
-                    : "The current phase still has a key gap to close."
+                    ? "还需要继续补齐当前最关键的缺口。"
+                    : "There is still a key gap to close."
             )
         );
     const latestUpdate = changeLog[0] ?? {
@@ -2896,6 +2605,26 @@ function buildPrdProjectionModel(
         });
     }
 
+    const currentFocus = clipText(
+        translateReadinessText(
+            language,
+            readiness.nextMilestone || pendingQuestions[0]?.detail || (
+                canGenerate
+                    ? (
+                        language === "zh"
+                            ? "可以开始生成，或者继续打磨已确认范围。"
+                            : "You can start generation now or keep polishing the confirmed scope."
+                    )
+                    : (
+                        language === "zh"
+                            ? "优先补齐当前最影响生成质量的缺口。"
+                            : "Focus on the highest-impact gap before generation."
+                    )
+            )
+        ),
+        120
+    );
+
     const implementationReadiness: PrdStatusCardItem[] = [
         {
             label: language === "zh" ? "生成状态" : "Generation gate",
@@ -2963,12 +2692,6 @@ function buildPrdProjectionModel(
 
     const currentStatus: PrdStatusCardItem[] = [
         {
-            label: language === "zh" ? "当前阶段" : "Current phase",
-            value: getArchitectureStageLabel(language, architectureStage),
-            detail: getArchitectureStageObjective(language, architectureStage),
-            tone: "sky"
-        },
-        {
             label: language === "zh" ? "总体进度" : "Overall progress",
             value: buildPrdProgressLine(language, readiness),
             detail: canGenerate
@@ -2979,8 +2702,20 @@ function buildPrdProjectionModel(
                 )
                 : (
                     language === "zh"
-                        ? "请继续按当前阶段任务补齐缺口，完成度会随之更新。"
-                        : "Keep closing the current-phase gaps and the overall progress will update with it."
+                        ? "继续补齐高影响缺口，进度会随确认内容实时更新。"
+                        : "Keep closing the highest-impact gaps and the progress summary will update with each confirmation."
+                ),
+            tone: "sky"
+        },
+        {
+            label: language === "zh" ? "当前焦点" : "Current focus",
+            value: currentFocus,
+            detail: pendingQuestions[0]
+                ? pendingQuestions[0].label
+                : (
+                    language === "zh"
+                        ? "当前没有待确认事项，可以继续润色 PRD 或开始生成。"
+                        : "There are no pending decisions right now. You can keep polishing the PRD or start generation."
                 ),
             tone: canGenerate ? "emerald" : "amber"
         },
@@ -2995,8 +2730,8 @@ function buildPrdProjectionModel(
                 )
                 : (
                     language === "zh"
-                        ? "继续处理当前阶段里最关键的缺口。"
-                        : "Continue with the highest-impact gap in the current phase."
+                        ? "继续处理当前最关键的缺口。"
+                        : "Continue with the highest-impact remaining gap."
                 ),
             tone: canGenerate ? "emerald" : "amber"
         },
@@ -6937,7 +6672,6 @@ Do you want to start scaffold generation now?`;
     };
 
     const isPrdTabActive = activeTab === "prd";
-    const prdPhaseUi = getPrdPhaseUiText(workspaceLanguage);
     const prdLayoutUi = getPrdLayoutUiText(workspaceLanguage);
     const prdProjection = isPrdTabActive
         ? buildPrdProjectionModel(
@@ -6945,20 +6679,11 @@ Do you want to start scaffold generation now?`;
             architecturePack,
             guardrailChecklist,
             architectureReadiness,
-            architectureStage,
             prdDeltas,
             generationReady
         )
         : null;
-    const prdStageProgress = isPrdTabActive
-        ? buildPrdStageProgressModel(
-            workspaceLanguage,
-            workingArchitectureState
-        )
-        : null;
     const prdStatusCards = prdProjection?.currentStatus ?? [];
-    const prdCurrentStageTasks = prdStageProgress?.currentStageTasks ?? [];
-    const prdStageRoadmap = prdStageProgress?.stageRoadmap ?? [];
     const prdConfirmedScope = prdProjection?.confirmedScope ?? [];
     const prdPendingQuestions = prdProjection?.pendingQuestions ?? [];
     const prdImplementationReadiness = prdProjection?.implementationReadiness ?? [];
@@ -7316,67 +7041,30 @@ Do you want to start scaffold generation now?`;
                                     </div>
 
                                     <div className="mt-4 space-y-5">
-                                        {prdStageProgress && (
-                                            <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-800/40 dark:bg-sky-900/15">
-                                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                                    <div>
-                                                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdPhaseUi.currentStageTitle}</h4>
-                                                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{prdPhaseUi.currentStageDesc}</p>
-                                                    </div>
-                                                    <span className="rounded-full border border-sky-200 bg-white/80 px-3 py-1 text-xs font-semibold text-sky-700 dark:border-sky-700/40 dark:bg-sky-900/30 dark:text-sky-300">
-                                                        {prdPhaseUi.stageBadge}: {prdStageProgress.currentStageLabel}
-                                                    </span>
-                                                </div>
-
-                                                <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
-                                                    {prdStatusCards.map((card, index) => (
-                                                        <div key={`prd-status-${index}`} className={getPrdStatusCardClassName(card.tone)}>
-                                                            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">{card.label}</p>
-                                                            <p className="mt-2 text-sm font-semibold text-slate-900 dark:text-slate-100">{card.value}</p>
-                                                            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{card.detail}</p>
-                                                        </div>
-                                                    ))}
-                                                </div>
-
-                                                <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                                                    <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{prdStageProgress.currentStageObjective}</p>
-                                                        <p className="mt-2">{prdStageProgress.liveStatusLine}</p>
-                                                    </div>
-                                                    <div className="rounded-xl border border-white/70 bg-white/80 px-3 py-3 text-sm text-slate-700 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-200">
-                                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{prdStageProgress.nextFocusLine}</p>
-                                                        <p className="mt-2">{prdStageProgress.overallProgressLine}</p>
-                                                    </div>
-                                                </div>
-
-                                                <div className="mt-4">
-                                                    <h5 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdPhaseUi.currentStageSubtasks}</h5>
-                                                    <div className="mt-2 space-y-2">
-                                                        {prdCurrentStageTasks.length > 0 ? prdCurrentStageTasks.map((task, index) => {
-                                                            const statusMeta = getPrdTaskStatusMeta(workspaceLanguage, task.status);
-                                                            return (
-                                                                <div key={`prd-stage-task-${index}`} className="rounded-xl border border-white/70 bg-white/85 px-3 py-3 dark:border-slate-700/40 dark:bg-slate-900/45">
-                                                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                        <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{task.label}</p>
-                                                                        <div className="flex flex-wrap items-center gap-2">
-                                                                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300">
-                                                                                {task.progressLabel}
-                                                                            </span>
-                                                                            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusMeta.className}`}>
-                                                                                {statusMeta.label}
-                                                                            </span>
-                                                                        </div>
-                                                                    </div>
-                                                                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{task.detail}</p>
-                                                                </div>
-                                                            );
-                                                        }) : (
-                                                            <p className="text-sm text-slate-500 dark:text-slate-300">{prdPhaseUi.noStageTasks}</p>
-                                                        )}
-                                                    </div>
+                                        <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-800/40 dark:bg-sky-900/15">
+                                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                                <div>
+                                                    <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                        {workspaceLanguage === "zh" ? "当前状态" : "Current status"}
+                                                    </h4>
+                                                    <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                                                        {workspaceLanguage === "zh"
+                                                            ? "这里按每回合最新确认内容展示进度、当前焦点、阻塞项和最近更新。"
+                                                            : "This view tracks the latest confirmed progress, active focus, blockers, and recent updates from each turn."}
+                                                    </p>
                                                 </div>
                                             </div>
-                                        )}
+
+                                            <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
+                                                {prdStatusCards.map((card, index) => (
+                                                    <div key={`prd-status-${index}`} className={getPrdStatusCardClassName(card.tone)}>
+                                                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">{card.label}</p>
+                                                        <p className="mt-2 text-sm font-semibold text-slate-900 dark:text-slate-100">{card.value}</p>
+                                                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{card.detail}</p>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
 
                                         <div>
                                             <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdLayoutUi.confirmedScopeTitle}</h4>
@@ -7447,37 +7135,6 @@ Do you want to start scaffold generation now?`;
                                 </section>
 
                                 <section className="space-y-4">
-                                    {prdStageProgress && (
-                                        <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdPhaseUi.roadmapTitle}</h4>
-                                            <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdPhaseUi.roadmapDesc}</p>
-                                            <div className="mt-3 space-y-3">
-                                                {prdStageRoadmap.map((item) => {
-                                                    const statusMeta = getPrdRoadmapStatusMeta(workspaceLanguage, item.status);
-                                                    return (
-                                                        <div key={`prd-roadmap-${item.stage}`} className={getPrdRoadmapCardClassName(item.status)}>
-                                                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{item.label}</p>
-                                                                <div className="flex flex-wrap items-center gap-2">
-                                                                    <span className="rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300">
-                                                                        {item.progressLabel}
-                                                                    </span>
-                                                                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusMeta.className}`}>
-                                                                        {statusMeta.label}
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{item.objective}</p>
-                                                            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                                                                {item.subtaskLabels.join(workspaceLanguage === "zh" ? "、" : ", ")}
-                                                            </p>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-
                                     <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
                                         <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{prdLayoutUi.implementationReadinessTitle}</h4>
                                         <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.implementationReadinessDesc}</p>
