@@ -97,7 +97,8 @@ Do not wait for <diagram>, JSON blocks, or readiness blocks before starting <opt
 Usually include 3-4 options whenever <question> asks for confirmation or a choice.
 The first option should be the recommended default.
 Include at least one broad fallback option such as "Proceed with your recommendation", "I will add more detail", "Show me common options", or "I'm not sure yet".
-One option per line in format: "Button Text::User Reply Text". Keep labels explicit.)
+One option per line in format: "Button Text::User Reply Text" or "Button Text::User Reply Text::action_name". Keep labels explicit.
+Use explicit actions whenever the button should trigger a known workflow immediately. Valid action names: generate_scaffold, open_prd, fill_requirement, focus_requirement, show_blockers.)
 </options>
 
 <diagram>
@@ -247,7 +248,8 @@ When the user message adds durable structured facts, also append the optional sy
 </question>
 
 <options>
-(Optional. When useful, include 2-4 concise options in "Label::User Reply Text" format. Emit this block immediately after </question>. Leave empty when not needed.)
+(Optional. When useful, include 2-4 concise options in "Label::User Reply Text" or "Label::User Reply Text::action_name" format. Emit this block immediately after </question>. Leave empty when not needed.
+Use explicit actions for direct workflow buttons such as generate_scaffold or open_prd.)
 </options>
 
 <analysis_clarified>

@@ -120,10 +120,68 @@ const GENERATE_OUTPUT_MODES: readonly OutputMode[] = ["virtual_spec"] as const;
 const SOURCE_CONTEXT_ITEM_EXCERPT_CHARS = 700;
 const SOURCE_CONTEXT_MAX_ITEMS = 6;
 const SOURCE_SEARCH_TERM_MAX_COUNT = 24;
-const GENERATE_SCAFFOLD_PATTERN = /generate scaffold|scaffold generation|start scaffold generation|generate scaffold now|开始生成(?:代码)?脚手架|生成(?:代码)?脚手架|立即生成|start scaffold/i;
+const GENERATE_SCAFFOLD_INTENT_PATTERNS = [
+    "generate scaffold",
+    "scaffold generation",
+    "start scaffold generation",
+    "generate scaffold now",
+    "start scaffold",
+    "start generation(?: now)?",
+    "begin generation(?: now)?",
+    "start code generation(?: now)?",
+    "start project generation(?: now)?",
+    "开始生成(?:代码)?脚手架",
+    "生成(?:代码)?脚手架",
+    "(?:确认无误[,，\\s]*)?开始生成(?:(?:工程(?:代码|骨架)?|代码(?:工程|脚手架)?|脚手架))?(?=$|[\\s，。,.!！？?])",
+    "立即开始生成(?:(?:工程(?:代码|骨架)?|代码(?:工程|脚手架)?|脚手架))?(?=$|[\\s，。,.!！？?])",
+    "开始生成工程(?:代码|骨架)",
+    "生成工程(?:代码|骨架)",
+    "立即生成"
+];
+const GENERATE_SCAFFOLD_AFFIRMATIVE_PATTERNS = [
+    "generate scaffold(?: now)?",
+    "start scaffold(?: generation)?",
+    "start generation(?: now)?",
+    "begin generation(?: now)?",
+    "start code generation(?: now)?",
+    "start project generation(?: now)?",
+    "立即生成",
+    "开始生成(?:代码)?脚手架",
+    "生成(?:代码)?脚手架",
+    "(?:确认无误[,，\\s]*)?开始生成(?:(?:工程(?:代码|骨架)?|代码(?:工程|脚手架)?|脚手架))?",
+    "立即开始生成(?:(?:工程(?:代码|骨架)?|代码(?:工程|脚手架)?|脚手架))?",
+    "(?:同意[,，\\s]*)?立即生成(?:(?:工程(?:代码|骨架)?|代码(?:工程|脚手架)?|脚手架))?",
+    "开始生成工程(?:代码|骨架)",
+    "生成工程(?:代码|骨架)"
+];
+const GENERATE_SCAFFOLD_PATTERN = new RegExp(GENERATE_SCAFFOLD_INTENT_PATTERNS.join("|"), "i");
 const OPEN_PRD_PATTERN = /open prd|show prd|prd record|product requirements|打开prd|查看prd|需求记录|prd记录/i;
 const DEFER_RESPONSE_PATTERN = /more detail|common options|not sure|add detail|补充|细节|选项|不确定|更多细节|常见选项/i;
-const AFFIRMATIVE_RESPONSE_PATTERN = /^(?:yes|y|agree|agreed|proceed|continue|go ahead|do it|recommended|default|confirm|confirmed|generate scaffold(?: now)?|start scaffold(?: generation)?|立即生成|开始生成(?:代码)?脚手架|生成(?:代码)?脚手架|按推荐方案继续|按你推荐的默认方案继续|按默认方案继续|同意|是的|继续)$/i;
+const AFFIRMATIVE_RESPONSE_PATTERN = new RegExp([
+    "^(?:",
+    [
+        "yes",
+        "y",
+        "agree",
+        "agreed",
+        "proceed",
+        "continue",
+        "go ahead",
+        "do it",
+        "recommended",
+        "default",
+        "confirm",
+        "confirmed",
+        ...GENERATE_SCAFFOLD_AFFIRMATIVE_PATTERNS,
+        "按推荐方案继续",
+        "按你推荐的默认方案继续",
+        "按默认方案继续",
+        "同意",
+        "是的",
+        "继续"
+    ].join("|"),
+    ")$"
+].join(""), "i");
 const SOURCE_SEARCH_STOP_WORDS = new Set([
     "the",
     "and",
@@ -2549,6 +2607,13 @@ function extractFallbackAssistantText(
     return clipText(plainText, 600);
 }
 
+function parseOptionActionToken(value: string): MessageAction | null {
+    const normalized = stripWrappingQuotes(value)
+        .trim()
+        .replace(/^action\s*[:=]\s*/i, "");
+    return normalizeMessageAction(normalized);
+}
+
 function parseOptionsBlock(raw: string): MessageOption[] {
     const parsed = raw
         .split("\n")
@@ -2557,15 +2622,21 @@ function parseOptionsBlock(raw: string): MessageOption[] {
         .map((line) => line.replace(/^[-*]\s*/, ""))
         .map((line) => stripWrappingQuotes(line))
         .map((line) => {
-            const [rawLabel, ...rest] = line.split("::");
+            const segments = line.split("::").map((segment) => stripWrappingQuotes(segment));
+            const [rawLabel, ...rest] = segments;
             const label = stripWrappingQuotes(rawLabel || "");
-            const valueRaw = stripWrappingQuotes(rest.join("::"));
+            const trailingAction = rest.length >= 2
+                ? parseOptionActionToken(rest[rest.length - 1] || "")
+                : null;
+            const valueSegments = trailingAction ? rest.slice(0, -1) : rest;
+            const valueRaw = stripWrappingQuotes(valueSegments.join("::"));
             const value = valueRaw || label;
 
             if (!label && !value) return null;
             return {
                 label: label || value,
-                value
+                value,
+                action: trailingAction ?? undefined
             };
         })
         .filter((item): item is MessageOption => Boolean(item));
