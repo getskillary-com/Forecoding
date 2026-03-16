@@ -156,7 +156,7 @@ const GENERATE_SCAFFOLD_AFFIRMATIVE_PATTERNS = [
     "生成工程(?:代码|骨架)"
 ];
 const GENERATE_SCAFFOLD_PATTERN = new RegExp(GENERATE_SCAFFOLD_INTENT_PATTERNS.join("|"), "i");
-const OPEN_PRD_PATTERN = /open prd|show prd|prd record|product requirements|打开prd|查看prd|需求记录|prd记录/i;
+const OPEN_PRD_PATTERN = /open prd|show prd|prd record|product requirements|open requirements|show requirements|requirements tab|requirements view|打开prd|查看prd|打开需求进度|查看需求进度|需求记录|需求进度|需求面板|prd记录/i;
 const DEFER_RESPONSE_PATTERN = /more detail|common options|not sure|add detail|补充|细节|选项|不确定|更多细节|常见选项/i;
 const AFFIRMATIVE_RESPONSE_PATTERN = new RegExp([
     "^(?:",
@@ -1498,7 +1498,7 @@ function buildCommonFallbackOptions(
             return [
                 { label: "开始生成脚手架", value: "开始生成脚手架。", action: "generate_scaffold" },
                 { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
-                { label: "打开 PRD", value: "请切换到 PRD 记录页，我想先确认需求沉淀。", action: "open_prd" },
+                { label: "打开需求进度", value: "请切换到需求进度页，我想先确认需求沉淀。", action: "open_prd" },
                 { label: "暂时不生成", value: "我暂时不生成，请继续完善架构包。" }
             ];
         }
@@ -1506,7 +1506,7 @@ function buildCommonFallbackOptions(
         return [
             { label: "Generate scaffold now", value: "Generate scaffold now.", action: "generate_scaffold" },
             { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
-            { label: "Open PRD", value: "Open the PRD tab first so I can double-check the requirements.", action: "open_prd" },
+            { label: "Open requirements", value: "Open the requirements tab first so I can double-check the current scope.", action: "open_prd" },
             { label: "Not yet", value: "Not yet. Please continue refining the architecture pack." }
         ];
     }
@@ -2299,35 +2299,35 @@ type PrdProjectionModel = {
 function getPrdLayoutUiText(language: "zh" | "en") {
     return language === "zh"
         ? {
-            pageDesc: "PRD 只展示用户可追踪的范围、进度、待确认事项与实施准备，不直接暴露内部架构原始数据。",
+            pageDesc: "需求进度只展示用户可追踪的范围、进度、待确认事项与实施准备，不直接暴露内部架构原始数据。",
             confirmedScopeTitle: "已确认范围",
             confirmedScopeDesc: "这里只保留已经稳定下来的产品范围与目标，不展示内部架构原文。",
             noConfirmedScope: "还没有足够的已确认范围，请继续补充产品目标、用户和核心流程。",
             pendingQuestionsTitle: "待确认事项",
             pendingQuestionsDesc: "优先处理最影响架构质量的缺口；你可以继续追问，或直接按推荐补齐。",
-            noPendingQuestions: "当前没有待确认事项，可以继续润色 PRD 或开始生成。",
+            noPendingQuestions: "当前没有待确认事项，可以继续完善需求摘要或开始生成。",
             implementationReadinessTitle: "实施准备",
             implementationReadinessDesc: "只展示生成门槛、验收与测试准备摘要，不直接展开内部 guardrails 明细。",
             changeLogTitle: "变更记录",
-            changeLogDesc: "这里记录本轮 PRD 的高层更新，不展示完整聊天原文。",
-            noChangeLog: "还没有新的 PRD 更新记录。",
+            changeLogDesc: "这里记录本轮需求进度的高层更新，不展示完整聊天原文。",
+            noChangeLog: "还没有新的需求进度更新记录。",
             jumpToChatAction: "查看聊天",
             followUpAction: "继续追问",
             fillAction: "按推荐补齐"
         }
         : {
-            pageDesc: "The PRD only shows user-facing scope, progress, open decisions, and implementation readiness without exposing the raw internal architecture data.",
+            pageDesc: "The requirements view shows user-facing scope, progress, open decisions, and implementation readiness without exposing the raw internal architecture data.",
             confirmedScopeTitle: "Confirmed Scope",
             confirmedScopeDesc: "This keeps only the stable product scope and intent, not the raw internal architecture content.",
             noConfirmedScope: "There is not enough confirmed scope yet. Continue clarifying the product goal, users, and key journeys.",
             pendingQuestionsTitle: "Pending Decisions",
             pendingQuestionsDesc: "Focus on the gaps with the highest architecture impact. You can continue the discussion or apply the recommendation directly.",
-            noPendingQuestions: "There are no pending decisions right now. You can keep polishing the PRD or start generation.",
+            noPendingQuestions: "There are no pending decisions right now. You can keep polishing the requirements summary or start generation.",
             implementationReadinessTitle: "Implementation Readiness",
             implementationReadinessDesc: "This section shows only the generation gate, acceptance summary, and test readiness instead of the raw internal guardrails.",
             changeLogTitle: "Change Log",
-            changeLogDesc: "This records the high-level PRD updates from recent turns without replaying the full chat transcript.",
-            noChangeLog: "No new PRD updates yet.",
+            changeLogDesc: "This records the high-level requirements updates from recent turns without replaying the full chat transcript.",
+            noChangeLog: "No new requirements updates yet.",
             jumpToChatAction: "View in chat",
             followUpAction: "Continue in chat",
             fillAction: "Apply default"
@@ -2437,8 +2437,8 @@ function buildPrdChangeLog(
                         ? `已按推荐补齐：${targetLabel}`
                         : `Applied default: ${targetLabel}`,
                     detail: language === "zh"
-                        ? "已用推荐默认值更新 PRD，并自动推进到下一条关键缺口。"
-                        : "The PRD was updated with the recommended default and advanced to the next important gap.",
+                        ? "已用推荐默认值更新需求进度，并自动推进到下一条关键缺口。"
+                        : "The requirements view was updated with the recommended default and advanced to the next important gap.",
                     tone: "emerald" as const,
                     sourceMessageId: item.sourceMessageId ?? undefined
                 };
@@ -2476,8 +2476,8 @@ function buildPrdChangeLog(
                         ? `已确认：${targetLabel}`
                         : `Confirmed: ${targetLabel}`,
                     detail: language === "zh"
-                        ? "新的确认内容已经同步进 PRD 和进度摘要。"
-                        : "The newly confirmed information has been synced into the PRD and progress tracking.",
+                        ? "新的确认内容已经同步进需求进度和进度摘要。"
+                        : "The newly confirmed information has been synced into the requirements view and progress tracking.",
                     tone: "sky" as const,
                     sourceMessageId: item.sourceMessageId ?? undefined
                 };
@@ -2488,8 +2488,8 @@ function buildPrdChangeLog(
                     ? `已整理：${targetLabel}`
                     : `Updated: ${targetLabel}`,
                 detail: language === "zh"
-                    ? "这条变更已经写入 PRD 记录。"
-                    : "This update has been written into the PRD record.",
+                    ? "这条变更已经写入需求进度记录。"
+                    : "This update has been written into the requirements record.",
                 tone: "slate" as const,
                 sourceMessageId: item.sourceMessageId ?? undefined
             };
@@ -2714,8 +2714,8 @@ function buildPrdProjectionModel(
                 ? pendingQuestions[0].label
                 : (
                     language === "zh"
-                        ? "当前没有待确认事项，可以继续润色 PRD 或开始生成。"
-                        : "There are no pending decisions right now. You can keep polishing the PRD or start generation."
+                        ? "当前没有待确认事项，可以继续完善需求摘要或开始生成。"
+                        : "There are no pending decisions right now. You can keep polishing the requirements summary or start generation."
                 ),
             tone: canGenerate ? "emerald" : "amber"
         },
@@ -6673,6 +6673,9 @@ Do you want to start scaffold generation now?`;
 
     const isPrdTabActive = activeTab === "prd";
     const prdLayoutUi = getPrdLayoutUiText(workspaceLanguage);
+    const requirementsTabLabel = workspaceLanguage === "zh" ? "需求进度" : "Requirements";
+    const requirementsTitle = workspaceLanguage === "zh" ? "需求进度" : "Requirements";
+    const requirementsSyncLabel = workspaceLanguage === "zh" ? "实时更新" : "Live updates";
     const prdProjection = isPrdTabActive
         ? buildPrdProjectionModel(
             workspaceLanguage,
@@ -6998,7 +7001,7 @@ Do you want to start scaffold generation now?`;
                         active={activeTab === 'prd'}
                         onClick={() => setActiveTab('prd')}
                         icon={<FileText className="w-4 h-4" />}
-                        label={uiText.prdTab}
+                        label={requirementsTabLabel}
                     />
                     <TabButton
                         active={activeTab === 'spec'}
@@ -7025,18 +7028,18 @@ Do you want to start scaffold generation now?`;
                         </div>
                     )}
 
-                    {/* PRD Tab */}
+                    {/* Requirements Tab */}
                     {activeTab === 'prd' && (
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
                             <div className="mx-auto max-w-6xl space-y-4">
                                 <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
                                     <div className="flex items-center justify-between gap-3">
                                         <div>
-                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{uiText.prdTitle}</h3>
+                                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{requirementsTitle}</h3>
                                             <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">{prdLayoutUi.pageDesc}</p>
                                         </div>
                                         <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300">
-                                            {uiText.prdLastUpdated}
+                                            {requirementsSyncLabel}
                                         </span>
                                     </div>
 

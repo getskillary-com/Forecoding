@@ -1,8 +1,6 @@
 ﻿
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from "react-dom";
-import { Maximize2, Minimize2 } from "lucide-react";
 import type { WorkspaceLanguage } from "@/lib/project-language";
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
@@ -301,11 +299,9 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     const [error, setError] = useState<string | null>(null);
     const [warning, setWarning] = useState<string | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
-    const viewerRef = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
-    const [isExpanded, setIsExpanded] = useState(false);
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
     const [hoveredNode, setHoveredNode] = useState<HoveredNodeState>(null);
     const dragOriginRef = useRef({ x: 0, y: 0 });
@@ -448,25 +444,6 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         };
     }, [code]);
 
-    useEffect(() => {
-        if (!isExpanded || typeof document === "undefined") return;
-
-        const previousOverflow = document.body.style.overflow;
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                setIsExpanded(false);
-            }
-        };
-
-        document.body.style.overflow = "hidden";
-        window.addEventListener("keydown", handleKeyDown);
-
-        return () => {
-            document.body.style.overflow = previousOverflow;
-            window.removeEventListener("keydown", handleKeyDown);
-        };
-    }, [isExpanded]);
-
     const fitDiagramToViewport = useCallback(() => {
         const container = containerRef.current;
         if (!container) return;
@@ -502,7 +479,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
 
         const containerWidth = Math.max(container.clientWidth, 1);
         const containerHeight = Math.max(container.clientHeight, 1);
-        const paddingFactor = isExpanded ? 0.9 : 0.84;
+        const paddingFactor = 0.84;
         const fitScale = Math.min(
             (containerWidth * paddingFactor) / width,
             (containerHeight * paddingFactor) / height
@@ -514,7 +491,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
 
         setZoom(nextZoom);
         setPan({ x: 0, y: 0 });
-    }, [isExpanded]);
+    }, []);
 
     useEffect(() => {
         if (!svg || error || typeof window === "undefined") return;
@@ -526,7 +503,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         return () => {
             window.cancelAnimationFrame(raf);
         };
-    }, [svg, error, isExpanded, fitDiagramToViewport]);
+    }, [svg, error, fitDiagramToViewport]);
 
     useEffect(() => {
         if (!svg || error || typeof window === "undefined") return;
@@ -602,10 +579,6 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         setHoveredNode(null);
         fitDiagramToViewport();
     };
-    const toggleExpanded = () => {
-        setHoveredNode(null);
-        setIsExpanded((current) => !current);
-    };
 
     const handleDownload = () => {
         if (!svg) return;
@@ -651,14 +624,9 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         }
         : undefined;
 
-    const viewerContent = (
+    return (
         <div
-            ref={viewerRef}
-            className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 ${
-                isExpanded
-                    ? "fixed inset-0 z-[140] rounded-none border-none bg-slate-950/95"
-                    : ""
-            }`}
+            className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
         >
             {/* Subtle grid overlay for depth */}
             <div
@@ -671,23 +639,6 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                     backgroundSize: '40px 40px'
                 }}
             />
-
-            {svg && !error && (
-                <div className="absolute left-4 top-4 z-20">
-                    <button
-                        onClick={toggleExpanded}
-                        className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700/60 bg-slate-900/90 text-slate-200 shadow-lg backdrop-blur-sm transition-colors hover:bg-slate-800 hover:text-white"
-                        title={isExpanded
-                            ? (language === "zh" ? "恢复视图" : "Restore view")
-                            : (language === "zh" ? "全屏展开" : "Expand to fullscreen")}
-                        aria-label={isExpanded
-                            ? (language === "zh" ? "恢复视图" : "Restore view")
-                            : (language === "zh" ? "全屏展开" : "Expand to fullscreen")}
-                    >
-                        {isExpanded ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
-                    </button>
-                </div>
-            )}
 
             <div
                 className="relative min-h-0 flex-1 overflow-hidden cursor-grab active:cursor-grabbing"
@@ -782,12 +733,6 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
             )}
         </div>
     );
-
-    if (isExpanded && typeof document !== "undefined") {
-        return createPortal(viewerContent, document.body);
-    }
-
-    return viewerContent;
 }
 
 
