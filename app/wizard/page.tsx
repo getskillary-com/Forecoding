@@ -3031,7 +3031,7 @@ function parseOptionsBlock(raw: string): MessageOption[] {
         .filter(Boolean)
         .map((line) => line.replace(/^[-*]\s*/, ""))
         .map((line) => stripWrappingQuotes(line))
-        .map((line) => {
+        .map((line): MessageOption | null => {
             const segments = line.split("::").map((segment) => stripWrappingQuotes(segment));
             const [rawLabel, ...rest] = segments;
             const label = stripWrappingQuotes(rawLabel || "");
@@ -3043,13 +3043,16 @@ function parseOptionsBlock(raw: string): MessageOption[] {
             const value = valueRaw || label;
 
             if (!label && !value) return null;
-            return {
+            const option: MessageOption = {
                 label: label || value,
-                value,
-                action: trailingAction ?? undefined
+                value
             };
+            if (trailingAction) {
+                option.action = trailingAction;
+            }
+            return option;
         })
-        .filter((item): item is MessageOption => Boolean(item));
+        .filter((item): item is MessageOption => item !== null);
 
     if (parsed.length === 0) return [];
 
