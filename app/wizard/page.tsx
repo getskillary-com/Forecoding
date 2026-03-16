@@ -672,14 +672,6 @@ function getArchitectureStageRank(stage: ArchitectureStage | null | undefined) {
     return index >= 0 ? index : 0;
 }
 
-function shouldPromoteCommittedArchitectureStage(
-    committedStage: ArchitectureStage,
-    candidateStage: ArchitectureStage
-) {
-    return getArchitectureStageRank(candidateStage) > getArchitectureStageRank(committedStage) ||
-        candidateStage === "ready_to_generate";
-}
-
 type WorkingArchitectureState = {
     architecturePack: ArchitecturePack;
     decisionRecords: DecisionRecord[];
@@ -726,17 +718,6 @@ function resolveWorkingArchitectureState(
         readiness: resolvedReadiness,
         stage: resolvedStage
     };
-}
-
-function hasCommittedArchitectureSnapshot(
-    data: ProjectVersion["data"] | null | undefined
-) {
-    return Boolean(
-        data?.architecturePack ||
-        data?.decisionRecords ||
-        data?.guardrailChecklist ||
-        data?.architectureStage
-    );
 }
 
 function normalizeReadiness(
@@ -962,21 +943,14 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
     const evaluation = normalizeEvaluation(data?.evaluation ?? null, readinessOverrides);
     const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
     const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
-    const useEvaluationDraftFallback = !hasCommittedArchitectureSnapshot(data);
     const architecturePack = normalizeArchitecturePack(
-        useEvaluationDraftFallback
-            ? data?.architecturePack ?? evaluation?.architecturePackDraft ?? seedArchitecturePackFromAnalysis(evaluation?.analysis, evaluation?.analysis?.ui)
-            : data?.architecturePack
+        data?.architecturePack ?? evaluation?.architecturePackDraft ?? seedArchitecturePackFromAnalysis(evaluation?.analysis, evaluation?.analysis?.ui)
     );
     const decisionRecords = normalizeDecisionRecords(
-        useEvaluationDraftFallback
-            ? data?.decisionRecords ?? evaluation?.decisionDrafts
-            : data?.decisionRecords
+        data?.decisionRecords ?? evaluation?.decisionDrafts
     );
     const guardrailChecklist = normalizeGuardrailChecklist(
-        useEvaluationDraftFallback
-            ? data?.guardrailChecklist ?? evaluation?.guardrailDrafts
-            : data?.guardrailChecklist
+        data?.guardrailChecklist ?? evaluation?.guardrailDrafts
     );
     const sourceArtifacts = normalizeSourceArtifacts(data?.sourceArtifacts);
     const scaffoldEligibility = computeScaffoldEligibility({
@@ -986,7 +960,7 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
         readinessOverrides
     });
     const architectureStage = normalizeArchitectureStage(
-        useEvaluationDraftFallback ? data?.architectureStage ?? evaluation?.stage : data?.architectureStage,
+        data?.architectureStage ?? evaluation?.stage,
         architecturePack,
         decisionRecords,
         guardrailChecklist,
@@ -3802,45 +3776,9 @@ function WizardContent() {
     });
     const generationReady = scaffoldEligibility.canGenerate;
     const architectureCompletion = scaffoldEligibility.readiness.score;
-    const liveArchitectureCompletion = workingScaffoldEligibility.readiness.score;
     const readinessBlockers = scaffoldEligibility.blockingReasons;
     const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
     const architectureViewerCode = currentDiagram;
-    const committedStageLabel = getArchitectureStageLabel(workspaceLanguage, architectureStage);
-    const liveStageLabel = getArchitectureStageLabel(workspaceLanguage, workingArchitectureState.stage);
-    const committedReadinessPercent = Math.round(architectureCompletion);
-    const liveReadinessPercent = Math.round(liveArchitectureCompletion);
-    const isLiveStageAhead = getArchitectureStageRank(workingArchitectureState.stage) > getArchitectureStageRank(architectureStage);
-    const hasLiveDraftDelta = isLiveStageAhead || liveReadinessPercent !== committedReadinessPercent;
-    const liveArchitectureGoal = translateReadinessText(
-        workspaceLanguage,
-        workingScaffoldEligibility.readiness.nextMilestone || (
-            workspaceLanguage === "zh"
-                ? "继续补齐当前阶段剩余子任务。"
-                : "Continue closing the remaining subtasks in the current phase."
-        )
-    );
-    const architectureStatusUi = workspaceLanguage === "zh"
-        ? {
-            committedStage: "正式阶段",
-            committedReadiness: "正式完成度",
-            liveStage: "当前阶段",
-            liveReadiness: "当前草稿",
-            currentTurnGoal: "本回合目标",
-            snapshotLagging: isLiveStageAhead
-                ? `正式快照仍停留在 ${committedStageLabel}；当前草稿已推进到 ${liveStageLabel}，会在阶段真正推进时提交。`
-                : `当前草稿正在 ${liveStageLabel} 阶段内补齐细节；正式快照保持稳定，避免已提交内容来回抖动。`
-        }
-        : {
-            committedStage: "Committed stage",
-            committedReadiness: "Committed readiness",
-            liveStage: "Live phase",
-            liveReadiness: "Live draft",
-            currentTurnGoal: "Current turn goal",
-            snapshotLagging: isLiveStageAhead
-                ? `The committed snapshot is still ${committedStageLabel}, while the live draft has moved to ${liveStageLabel}; it will promote only when the phase is actually advanced.`
-                : `The live draft is still filling details inside ${liveStageLabel}, while the committed snapshot stays stable to avoid UI churn.`
-        };
     const isConversationLocked = Boolean(
         generationArtifacts.virtual_spec ||
         generation
@@ -3934,11 +3872,6 @@ function WizardContent() {
             snapshot.guardrailChecklist,
             nextReadinessOverrides
         );
-
-        if (!shouldPromoteCommittedArchitectureStage(architectureStage, nextStage)) {
-            return false;
-        }
-
         setHasUserEdited(true);
         setArchitecturePack(snapshot.architecturePack);
         setDecisionRecords(snapshot.decisionRecords);
@@ -6762,28 +6695,9 @@ Do you want to start scaffold generation now?`;
                             {/* Input Area */}
                             <div className="border-t border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/75">
                                 <div className="mb-3 space-y-2">
-                                    <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-600 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300">
-                                            {architectureStatusUi.committedStage}: {committedStageLabel}
-                                        </span>
-                                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-600 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300">
-                                            {architectureStatusUi.committedReadiness}: {committedReadinessPercent}%
-                                        </span>
-                                        <span className={`rounded-full px-2.5 py-1 ${hasLiveDraftDelta ? "border border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/40 dark:bg-sky-900/20 dark:text-sky-300" : "border border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300"}`}>
-                                            {architectureStatusUi.liveStage}: {liveStageLabel}
-                                        </span>
-                                        <span className={`rounded-full px-2.5 py-1 ${hasLiveDraftDelta ? "border border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/40 dark:bg-sky-900/20 dark:text-sky-300" : "border border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700/40 dark:bg-slate-900/40 dark:text-slate-300"}`}>
-                                            {architectureStatusUi.liveReadiness}: {liveReadinessPercent}%
-                                        </span>
-                                    </div>
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-slate-300">
-                                        {architectureStatusUi.currentTurnGoal}: {liveArchitectureGoal}
+                                        {uiText.architectStage}: {getArchitectureStageLabel(workspaceLanguage, architectureStage)} | {uiText.readiness} {Math.round(architectureCompletion)}%
                                     </div>
-                                    {hasLiveDraftDelta && (
-                                        <div className="text-[11px] text-sky-700 dark:text-sky-300">
-                                            {architectureStatusUi.snapshotLagging}
-                                        </div>
-                                    )}
                                 </div>
                                 <div className="mb-4 flex flex-col gap-2">
                                     {isConversationLocked ? (
