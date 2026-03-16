@@ -653,10 +653,10 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     return (
         <div
             ref={viewerRef}
-            className={`h-full w-full overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 ${
+            className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 ${
                 isExpanded
                     ? "fixed inset-0 z-[140] rounded-none border-none bg-slate-950/95"
-                    : "relative flex flex-col"
+                    : ""
             }`}
         >
             {/* Subtle grid overlay for depth */}
@@ -689,7 +689,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
             )}
 
             <div
-                className="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing"
+                className="relative min-h-0 flex-1 overflow-hidden cursor-grab active:cursor-grabbing"
                 ref={containerRef}
                 onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
