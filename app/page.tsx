@@ -14,48 +14,48 @@ import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
 
 export const metadata: Metadata = {
-    title: "AI Product Blueprint Studio"
+    title: "Requirements to Architecture Studio"
 };
 
 const capabilityCards = [
     {
         icon: Compass,
-        title: "Business Discovery",
-        description: "Interrogate goals, users, constraints, and risks before architecture is allowed to harden."
+        title: "Requirements Progress",
+        description: "Keep confirmed scope, blockers, open questions, and next actions visible in one running workspace."
     },
     {
         icon: Workflow,
-        title: "Boundary Modeling",
-        description: "Define bounded contexts, ownership, contracts, and module responsibilities explicitly."
+        title: "Architecture Graph",
+        description: "Turn clarified requirements into system boundaries, ownership, contracts, and delivery structure."
     },
     {
         icon: Boxes,
-        title: "Decision Records",
-        description: "Capture tradeoffs, rejected alternatives, and consequences instead of producing one opaque answer."
+        title: "Decision Trail",
+        description: "Capture tradeoffs, implementation constraints, and what changed instead of losing context in chat."
     },
     {
         icon: ShieldCheck,
-        title: "Delivery Guardrails",
-        description: "Turn architecture into acceptance criteria, test strategy, and scaffold-ready implementation order."
+        title: "Spec-Ready Handoff",
+        description: "Generate only after acceptance criteria, test strategy, and implementation readiness are explicit."
     }
 ];
 
 const flowSteps = [
     {
-        title: "Feed the Architect your context",
-        description: "Share goals, flows, constraints, risks, and reference documents."
+        title: "Clarify the product request",
+        description: "Start from the goal, target users, key workflow, constraints, and any reference material."
     },
     {
-        title: "Lock boundaries and decisions",
-        description: "Forecoding produces an architecture pack with ownership, contracts, and tradeoffs."
+        title: "Track scope and architecture together",
+        description: "Forecoding keeps requirements progress, architecture structure, and blocker resolution synchronized."
     },
     {
-        title: "Lock PRD and generate",
-        description: "Keep PRD, architecture, and delivery guardrails synchronized before generating scaffold."
+        title: "Generate with clearer handoff",
+        description: "Move into Spec Pack or scaffold generation only when the workspace is actually ready."
     }
 ];
 
-const stackTags = ["Cursor", "Windsurf", "Cline", "VS Code + AI"];
+const stackTags = ["Requirements Progress", "Architecture Graph", "Spec Pack", "Generation Gate"];
 
 export default function Home() {
     return (
@@ -83,14 +83,14 @@ export default function Home() {
                     <div className="fc-surface fc-fade-up rounded-[var(--radius-2xl)] p-7 sm:p-10">
                         <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.1em] text-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
                             <Sparkles className="h-4 w-4 text-[color:var(--brand)]" />
-                            Chief AI Architect for Engineering Teams
+                            AI Co-Founder for Requirements and Architecture
                         </div>
                         <h1 className="text-balance text-4xl font-semibold leading-tight text-slate-900 dark:text-slate-100 sm:text-5xl">
-                            Forecoding turns product ambiguity into architecture decisions.
+                            Forecoding turns vague requests into executable requirements and architecture.
                         </h1>
                         <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-lg">
-                            Stop treating AI like a code vending machine. Discover the business, define system
-                            boundaries, lock contracts, and generate only after the architecture pack is ready.
+                            Clarify the product, keep requirements progress and architecture in sync, and generate
+                            only after scope, decisions, and delivery readiness are explicit.
                         </p>
 
                         <div className="mt-7 flex flex-wrap gap-3">
@@ -98,14 +98,14 @@ export default function Home() {
                                 href="/dashboard"
                                 className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
                             >
-                                Start a Project
+                                Start Requirement Session
                                 <ArrowRight className="h-4 w-4" />
                             </Link>
                             <Link
                                 href="/demo"
                                 className="fc-button-secondary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
                             >
-                                View Demo Blueprint
+                                View Example Workspace
                             </Link>
                         </div>
 
@@ -122,36 +122,36 @@ export default function Home() {
                         <div className="grid grid-cols-2 gap-3">
                             <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/70">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Output</p>
-                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Architecture Pack</p>
-                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">PRD + architecture + scaffold + tasks</p>
+                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Live Delivery Context</p>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Requirements + architecture + readiness + spec output</p>
                             </div>
                             <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/70">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Goal</p>
-                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Less Drift</p>
-                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Keep implementation aligned with architecture</p>
+                                <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">Less Ambiguity</p>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Make the next implementation step obvious</p>
                             </div>
                         </div>
 
                         <div className="mt-4 rounded-2xl border border-[color:var(--border)] bg-gradient-to-br from-blue-600/95 to-cyan-600/90 p-5 text-white">
                             <div className="flex items-center justify-between">
-                                <p className="text-sm font-semibold">Planning Quality</p>
+                                <p className="text-sm font-semibold">Readiness Signal</p>
                                 <Gauge className="h-4 w-4 opacity-90" />
                             </div>
                             <p className="mt-2 text-xs text-blue-100">
-                                Better architectural hygiene means more predictable implementation and fewer rewrites.
+                                Better requirement and architecture hygiene leads to fewer rewrites and cleaner handoffs.
                             </p>
                             <ul className="mt-4 space-y-2 text-xs text-blue-50">
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Clarify ownership before coding
+                                    Show what is confirmed, blocked, and still missing
                                 </li>
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Keep contracts and tasks synchronized
+                                    Keep architecture and implementation intent aligned
                                 </li>
                                 <li className="flex items-center gap-2">
                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Keep PRD and tasks synchronized before scaffold handoff
+                                    Hand off a cleaner Spec Pack when generation is ready
                                 </li>
                             </ul>
                         </div>
@@ -191,16 +191,16 @@ export default function Home() {
                 <section className="fc-surface fc-fade-up fc-delay-3 rounded-[var(--radius-2xl)] p-7 sm:p-9">
                     <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                         <div className="text-left">
-                            <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Design first, code faster.</h3>
+                            <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Align first, generate faster.</h3>
                             <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-300">
-                                Forecoding is not a final code generator. It is the architect layer that makes every downstream AI implementation pass more defensible.
+                                Forecoding is the layer that turns product discussion into a clearer implementation handoff, not just another code prompt box.
                             </p>
                         </div>
                         <Link
                             href="/dashboard"
                             className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
                         >
-                            Open Dashboard
+                            Open Workspace
                             <ArrowRight className="h-4 w-4" />
                         </Link>
                     </div>
