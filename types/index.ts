@@ -226,14 +226,6 @@ export interface ReadinessChecklist {
     overrides?: ReadinessOverride[];
 }
 
-export interface MinimumViableLoopChecklist {
-    ready: boolean;
-    score: number;
-    blockingIssues: string[];
-    nextMilestone: string;
-    requirements: ReadinessRequirement[];
-}
-
 export interface UiDesignTokens {
     colors: Record<string, string>;
     typography: {

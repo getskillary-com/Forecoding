@@ -7,12 +7,10 @@ import type {
     Project,
     ProjectVersion,
     ProjectVersionData,
-    MinimumViableLoopChecklist,
     ReadinessChecklist,
     ReadinessOverride
 } from "@/types";
 import {
-    createMinimumViableLoopChecklist,
     createReadinessChecklist,
     normalizeArchitecturePack,
     normalizeDecisionRecords,
@@ -25,7 +23,6 @@ export type ScaffoldEligibilityCode = "ARCHITECTURE_NOT_READY";
 export type ScaffoldEligibility = {
     targetOutputMode: OutputMode;
     readiness: ReadinessChecklist;
-    minimumViableLoop: MinimumViableLoopChecklist;
     architectureFingerprint: string;
     canCheckout: boolean;
     canGenerate: boolean;
@@ -123,32 +120,18 @@ export function computeScaffoldEligibilityForMode(
         guardrailChecklist,
         readinessOverrides
     );
-    const minimumViableLoop = createMinimumViableLoopChecklist(
-        architecturePack,
-        decisionRecords,
-        guardrailChecklist,
-        readinessOverrides
-    );
     const architectureFingerprint = buildArchitectureFingerprint(
         architecturePack,
         decisionRecords,
         guardrailChecklist,
         readinessOverrides
     );
-    const canGenerateSpec = minimumViableLoop.ready;
-    const canGenerateRunnable =
-        minimumViableLoop.ready &&
-        readiness.functionalReady &&
-        readiness.uiReady;
-    const canGenerate =
-        outputMode === "runnable_scaffold"
-            ? canGenerateRunnable
-            : canGenerateSpec;
-    const blockingReasons =
-        outputMode === "runnable_scaffold"
-            ? readiness.blockingIssues
-            : minimumViableLoop.blockingIssues;
-    const designStage: DesignStage = canGenerateRunnable
+    const readinessReady = readiness.functionalReady && readiness.uiReady;
+    const canGenerateSpec = readinessReady;
+    const canGenerateRunnable = readinessReady;
+    const canGenerate = readinessReady;
+    const blockingReasons = readiness.blockingIssues;
+    const designStage: DesignStage = readinessReady
         ? "ready_to_generate"
         : "functional_architecture";
 
@@ -156,7 +139,6 @@ export function computeScaffoldEligibilityForMode(
         return {
             targetOutputMode: outputMode,
             readiness,
-            minimumViableLoop,
             architectureFingerprint,
             canCheckout: false,
             canGenerate: false,
@@ -171,7 +153,6 @@ export function computeScaffoldEligibilityForMode(
     return {
         targetOutputMode: outputMode,
         readiness,
-        minimumViableLoop,
         architectureFingerprint,
         canCheckout: true,
         canGenerate: true,

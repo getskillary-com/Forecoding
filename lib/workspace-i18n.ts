@@ -21,11 +21,10 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
             thinking: "思考中...",
             architectStage: "架构阶段",
             readiness: "完成度",
-            mvlReady: "就绪",
             scaffoldGenerated: "脚手架已生成",
             scaffoldGeneratedDesc: "脚手架已经生成完成。你仍然可以继续补充架构、更新 PRD 或调整方向。",
             checkingAccess: "正在检查访问权限...",
-            generateLockedUntilMvlReady: "MVL 未就绪，暂不可生成",
+            generateLockedUntilReady: "完成度未达生成要求，暂不可生成",
             redirectingToPayment: "正在跳转支付...",
             architectingSolution: "正在生成方案...",
             generateScaffold: "生成脚手架",
@@ -33,13 +32,13 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
             proceedToPaymentWithAmount: (amount: string) => `前往支付（${amount}）`,
             proceedToPaymentCalculating: "前往支付（计算中...）",
             checkingPermissions: "正在检查权限...",
-            minimumViableLoopNotReady: (blocker: string) => `最小可行架构闭环尚未完成。${blocker || "继续完善下方内容以补齐剩余缺口。"}`,
+            readinessNotReady: (blocker: string) => `当前完成度仍未达到生成要求。${blocker || "继续完善下方内容以补齐剩余缺口。"}`,
             adminModeBypassEnabled: "管理员模式：已跳过支付",
-            readyToBuild: "最小可行架构闭环已完成，可以开始构建或更新脚手架。",
+            readyToBuild: "架构完成度已达生成要求，可以开始构建或更新脚手架。",
             estimatedQuote: (amount: string, tier: string) => `预计价格 ${amount}（${tier} 复杂度）。`,
             calculatingPrice: "正在按复杂度计算价格...",
             paymentRequired: "生成前需要先完成支付",
-            nextMvlBlocker: (blocker: string) => `继续在下方完善。下一个 MVL 阻塞项：${blocker || "补齐剩余架构缺口。"}`,
+            nextReadinessBlocker: (blocker: string) => `继续在下方完善。当前主要阻塞项：${blocker || "补齐剩余架构缺口。"}`,
             attachFiles: "添加文件",
             generatedPlaceholder: (name: string) => `描述 ${name} 的实现变更、PRD 更新或执行方向调整...`,
             architecturePlaceholder: (name: string) => `描述 ${name} 的产品目标、模块边界、契约、风险，或直接附加文档...`,
@@ -81,7 +80,7 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
             projectCredit: "项目额度",
             unableToStartStripeCheckout: "无法启动 Stripe 支付。",
             failedToStartCheckout: "启动支付失败。",
-            completeMvlBeforeGenerate: "请先完成最小可行架构闭环，再生成脚手架。",
+            completeReadinessBeforeGenerate: "请先补齐架构完成度要求，再生成脚手架。",
             loading: "加载中..."
         };
     }
@@ -92,11 +91,10 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
         thinking: "Thinking...",
         architectStage: "Architect Stage",
         readiness: "Readiness",
-        mvlReady: "Ready",
         scaffoldGenerated: "Scaffold Generated",
         scaffoldGeneratedDesc: "Scaffold generated successfully. You can still refine the architecture, update the PRD, or adjust direction.",
         checkingAccess: "Checking access...",
-        generateLockedUntilMvlReady: "Generate Locked Until MVL Ready",
+        generateLockedUntilReady: "Generate Locked Until Ready",
         redirectingToPayment: "Redirecting to Payment...",
         architectingSolution: "Architecting Solution...",
         generateScaffold: "Generate Scaffold",
@@ -104,13 +102,13 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
         proceedToPaymentWithAmount: (amount: string) => `Proceed to Payment (${amount})`,
         proceedToPaymentCalculating: "Proceed to Payment (Calculating...)",
         checkingPermissions: "Checking permissions...",
-        minimumViableLoopNotReady: (blocker: string) => `Minimum viable loop is not ready yet. ${blocker || "Continue editing below to close the remaining gap."}`,
+        readinessNotReady: (blocker: string) => `Architecture readiness is not complete yet. ${blocker || "Continue editing below to close the remaining gap."}`,
         adminModeBypassEnabled: "Admin mode: payment bypass enabled",
-        readyToBuild: "Minimum viable architecture loop is complete. Ready to build or update scaffold.",
+        readyToBuild: "Architecture readiness is complete. Ready to build or update scaffold.",
         estimatedQuote: (amount: string, tier: string) => `Estimated ${amount} (${tier} complexity).`,
         calculatingPrice: "Calculating complexity-based price...",
         paymentRequired: "Payment required before generation",
-        nextMvlBlocker: (blocker: string) => `Continue editing below. Next MVL blocker: ${blocker || "Close the remaining architecture gap."}`,
+        nextReadinessBlocker: (blocker: string) => `Continue editing below. Primary blocker: ${blocker || "Close the remaining architecture gap."}`,
         attachFiles: "Attach files",
         generatedPlaceholder: (name: string) => `Describe implementation changes, PRD updates, or execution direction updates for ${name}...`,
         architecturePlaceholder: (name: string) => `Describe architecture goals, module boundaries, contracts, risks, or attach documents for ${name}...`,
@@ -152,7 +150,7 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
         projectCredit: "Project Credit",
         unableToStartStripeCheckout: "Unable to start Stripe checkout.",
         failedToStartCheckout: "Failed to start checkout.",
-        completeMvlBeforeGenerate: "Complete the minimum viable architecture loop before generating scaffold.",
+        completeReadinessBeforeGenerate: "Complete the architecture readiness checklist before generating scaffold.",
         loading: "Loading..."
     };
 }
@@ -193,7 +191,7 @@ export function translateReadinessText(language: WorkspaceLanguage, value: strin
         "Add more concrete detail.": "请补充更具体的细节。",
         "Proceed to scaffold generation when ready.": "准备就绪后进入脚手架生成。",
         "Proceed to scaffold generation.": "进入脚手架生成。",
-        "Complete the minimum viable architecture loop before generating scaffold.": "请先完成最小可行架构闭环，再生成脚手架。"
+        "Complete the architecture readiness checklist before generating scaffold.": "请先补齐架构完成度要求，再生成脚手架。"
     };
 
     if (exactMap[value]) return exactMap[value];

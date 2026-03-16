@@ -6,6 +6,10 @@ import type { WorkspaceLanguage } from "@/lib/project-language";
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
 const customStyles = `
+    svg {
+        background: transparent !important;
+    }
+
     /* Edge label backgrounds - semi-transparent bubbles */
     .edgeLabel {
         background-color: rgba(30, 41, 59, 0.9) !important;
@@ -20,6 +24,20 @@ const customStyles = `
         font-size: 11px !important;
         font-weight: 500 !important;
         letter-spacing: 0.02em !important;
+    }
+
+    .edgeLabel text,
+    .edgeLabel tspan {
+        fill: #e2e8f0 !important;
+        font-size: 11px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.02em !important;
+    }
+
+    .edgeLabel foreignObject div,
+    .edgeLabel foreignObject span {
+        background: transparent !important;
+        color: #e2e8f0 !important;
     }
     
     /* Edge paths - enhanced visibility */
@@ -52,7 +70,9 @@ const customStyles = `
     }
     
     /* Node styling - unified look */
-    .node rect, .node polygon, .node circle, .node ellipse {
+    .node rect, .node polygon, .node circle, .node ellipse, .node path {
+        fill: rgba(15, 23, 42, 0.92) !important;
+        stroke: rgba(96, 165, 250, 0.82) !important;
         stroke-width: 2px !important;
         filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.25)) !important;
     }
@@ -65,11 +85,30 @@ const customStyles = `
     .node .label {
         font-weight: 600 !important;
         font-size: 13px !important;
+        color: #e5eefc !important;
+        fill: #e5eefc !important;
     }
-    
-    /* Code-like elements (detect by content pattern) */
-    .node .label text:contains('.') {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+
+    .node text,
+    .node tspan,
+    .label text,
+    .label tspan {
+        fill: #e5eefc !important;
+        stroke: none !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+    }
+
+    .node foreignObject div,
+    .node foreignObject span,
+    .label foreignObject div,
+    .label foreignObject span {
+        background: transparent !important;
+        color: #e5eefc !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+        line-height: 1.35 !important;
+        box-shadow: none !important;
     }
     
     /* Arrowheads */
@@ -77,6 +116,8 @@ const customStyles = `
         fill: #94a3b8 !important;
     }
 `;
+
+const RENDER_DEBOUNCE_MS = 140;
 
 function formatMermaidError(err: unknown) {
     let message = "Unknown Mermaid error";
@@ -271,9 +312,12 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     const mermaidRef = useRef<typeof import('mermaid').default | null>(null);
     const initializedRef = useRef(false);
     const hasRenderedRef = useRef(false);
+    const renderRequestIdRef = useRef(0);
 
     useEffect(() => {
         let cancelled = false;
+        const requestId = renderRequestIdRef.current + 1;
+        renderRequestIdRef.current = requestId;
 
         const initAndRender = async () => {
             if (!code || typeof document === 'undefined') return;
@@ -292,9 +336,9 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                 mermaidInstance.initialize({
                     startOnLoad: false,
                     theme: 'base',
-                    securityLevel: 'loose',
+                    securityLevel: 'strict',
                     flowchart: {
-                        htmlLabels: true,
+                        htmlLabels: false,
                         curve: 'basis',
                         padding: 20,
                         nodeSpacing: 50,
@@ -326,50 +370,46 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                 initializedRef.current = true;
             }
 
-            // Validate syntax first to avoid mermaid injecting error popups into the DOM
-            let renderCode = code;
-            try {
-                await mermaidInstance.parse(code);
-            } catch (parseError) {
-                const sanitized = sanitizeMermaidCode(code);
-                if (sanitized.changed) {
-                    try {
-                        await mermaidInstance.parse(sanitized.code);
-                        renderCode = sanitized.code;
-                        autoCorrected = true;
-                    } catch (sanitizedError) {
-                        if (cancelled) return;
-                        const message = formatMermaidError(sanitizedError);
-                        if (hasRenderedRef.current) {
-                            setWarning(`Using last valid diagram: ${message}`);
-                            return;
-                        }
-                        setError(message);
-                        setWarning(null);
-                        return;
-                    }
-                } else {
-                    if (cancelled) return;
-                    const message = formatMermaidError(parseError);
-                    if (hasRenderedRef.current) {
-                        setWarning(`Using last valid diagram: ${message}`);
-                        return;
-                    }
-                    setError(message);
-                    setWarning(null);
+            // Always sanitize first so we fix escaped newlines and malformed subgraphs
+            // before Mermaid gets a chance to render unstable HTML labels or partial syntax.
+            const sanitized = sanitizeMermaidCode(code);
+            const candidates = Array.from(new Set([sanitized.code, code.trim()].filter(Boolean)));
+            let renderCode = candidates[0] || code;
+            let parseFailure: unknown = null;
+
+            for (const candidate of candidates) {
+                try {
+                    await mermaidInstance.parse(candidate);
+                    renderCode = candidate;
+                    autoCorrected = candidate !== code.trim();
+                    parseFailure = null;
+                    break;
+                } catch (candidateError) {
+                    parseFailure = candidateError;
+                }
+            }
+
+            if (parseFailure) {
+                if (cancelled || requestId !== renderRequestIdRef.current) return;
+                const message = formatMermaidError(parseFailure);
+                if (hasRenderedRef.current) {
+                    setWarning(`Using last valid diagram: ${message}`);
                     return;
                 }
+                setError(message);
+                setWarning(null);
+                return;
             }
 
             const tempElement = document.createElement('div');
             try {
-                const id = `mermaid-${Date.now()}`;
+                const id = `mermaid-${requestId}-${Date.now()}`;
                 tempElement.id = id;
                 document.body.appendChild(tempElement);
 
                 const { svg: newSvg } = await mermaidInstance.render(id, renderCode);
 
-                if (cancelled) return;
+                if (cancelled || requestId !== renderRequestIdRef.current) return;
 
                 const styledSvg = newSvg.replace(
                     '<style>',
@@ -381,7 +421,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                 setWarning(autoCorrected ? "Diagram had syntax issues and was auto-corrected." : null);
                 hasRenderedRef.current = true;
             } catch (renderError) {
-                if (cancelled) return;
+                if (cancelled || requestId !== renderRequestIdRef.current) return;
                 console.debug("Mermaid render error:", renderError);
                 const message = formatMermaidError(renderError);
                 if (hasRenderedRef.current) {
@@ -397,9 +437,14 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
             }
         };
 
-        initAndRender();
+        const timeoutId = window.setTimeout(() => {
+            void initAndRender();
+        }, RENDER_DEBOUNCE_MS);
 
-        return () => { cancelled = true; };
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timeoutId);
+        };
     }, [code]);
 
     useEffect(() => {
