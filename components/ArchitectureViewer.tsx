@@ -1,6 +1,7 @@
 ﻿
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from "react-dom";
 import { Maximize2, Minimize2 } from "lucide-react";
 import type { WorkspaceLanguage } from "@/lib/project-language";
 
@@ -650,7 +651,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         }
         : undefined;
 
-    return (
+    const viewerContent = (
         <div
             ref={viewerRef}
             className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 ${
@@ -781,6 +782,12 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
             )}
         </div>
     );
+
+    if (isExpanded && typeof document !== "undefined") {
+        return createPortal(viewerContent, document.body);
+    }
+
+    return viewerContent;
 }
 
 
