@@ -1271,6 +1271,79 @@ function stripWrappingQuotes(value: string) {
     return value.replace(/^["']|["']$/g, "").trim();
 }
 
+const STRUCTURED_RESPONSE_TAGS = [
+    "thinking",
+    "stage",
+    "density",
+    "question",
+    "options",
+    "diagram",
+    "analysis_clarified",
+    "analysis_missing",
+    "architecture_pack",
+    "decision_records",
+    "guardrails",
+    "readiness",
+    "analysis_ui",
+    "analysis_ui_spec",
+    "is_ready",
+    "question_action",
+    "question_key",
+    "question_requirement_key"
+] as const;
+
+function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeStructuredResponseMarkup(raw: string) {
+    return raw
+        .replace(/\r\n/g, "\n")
+        .replace(/<\s*\/\s*([a-z_][\w-]*)\s*>/gi, (_, tag: string) => `</${tag.toLowerCase()}>`)
+        .replace(/<\s*([a-z_][\w-]*)\s*>/gi, (_, tag: string) => `<${tag.toLowerCase()}>`);
+}
+
+function extractStructuredBlock(raw: string, tag: string) {
+    const normalized = normalizeStructuredResponseMarkup(raw).trim();
+    if (!normalized) return null;
+
+    const escapedTag = escapeRegExp(tag);
+    const match = normalized.match(
+        new RegExp(
+            `<${escapedTag}>([\\s\\S]*?)(?:<\\/${escapedTag}>|(?=\\s*<(?!\\/?${escapedTag}\\b)[a-z_][\\w-]*\\s*>)|$)`,
+            "i"
+        )
+    );
+
+    return match?.[1] ?? null;
+}
+
+function stripStructuredResponseBlocks(raw: string) {
+    let normalized = normalizeStructuredResponseMarkup(raw);
+
+    for (const tag of STRUCTURED_RESPONSE_TAGS) {
+        const escapedTag = escapeRegExp(tag);
+        normalized = normalized.replace(
+            new RegExp(
+                `<${escapedTag}>[\\s\\S]*?(?:<\\/${escapedTag}>|(?=\\s*<(?!\\/?${escapedTag}\\b)[a-z_][\\w-]*\\s*>)|$)`,
+                "gi"
+            ),
+            " "
+        );
+    }
+
+    return normalized;
+}
+
+function normalizeOptionsBlockText(raw: string) {
+    const normalized = normalizeStructuredResponseMarkup(raw).trim();
+    if (!normalized) return "";
+
+    return normalized
+        .replace(/\s+(?=[^:\n<][^:\n<]{1,48}::)/g, "\n")
+        .replace(/\n{2,}/g, "\n");
+}
+
 function isGenericOptionLabel(label: string) {
     const normalized = label.trim().toLowerCase();
     if (!normalized) return true;
@@ -2973,42 +3046,24 @@ function ensureCommonQuestionOptions(
 function extractCompletedAssistantText(
     raw: string
 ) {
-    const normalized = raw.replace(/\r\n/g, "\n").trim();
-    if (!normalized) return "";
-
-    const questionMatch = normalized.match(/<question>([\s\S]*?)<\/question>/i);
-    if (!questionMatch?.[1]) return "";
-
-    return buildAssistantFinalContent(questionMatch[1]);
+    const questionText = extractStructuredBlock(raw, "question");
+    if (!questionText) return "";
+    return buildAssistantFinalContent(questionText);
 }
 
 function extractFallbackAssistantText(
     raw: string
 ) {
-    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    const normalized = normalizeStructuredResponseMarkup(raw).trim();
     if (!normalized) return "";
 
-    const questionMatch = normalized.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
-    if (questionMatch && questionMatch[1]) {
-        const questionText = buildAssistantFinalContent(questionMatch[1]);
+    const questionBlock = extractStructuredBlock(normalized, "question");
+    if (questionBlock) {
+        const questionText = buildAssistantFinalContent(questionBlock);
         if (questionText) return questionText;
     }
 
-    const plainText = normalized
-        .replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, " ")
-        .replace(/<diagram>[\s\S]*?(?:<\/diagram>|$)/gi, " ")
-        .replace(/<analysis_clarified>[\s\S]*?(?:<\/analysis_clarified>|$)/gi, " ")
-        .replace(/<analysis_missing>[\s\S]*?(?:<\/analysis_missing>|$)/gi, " ")
-        .replace(/<architecture_pack>[\s\S]*?(?:<\/architecture_pack>|$)/gi, " ")
-        .replace(/<decision_records>[\s\S]*?(?:<\/decision_records>|$)/gi, " ")
-        .replace(/<guardrails>[\s\S]*?(?:<\/guardrails>|$)/gi, " ")
-        .replace(/<readiness>[\s\S]*?(?:<\/readiness>|$)/gi, " ")
-        .replace(/<analysis_ui>[\s\S]*?(?:<\/analysis_ui>|$)/gi, " ")
-        .replace(/<analysis_ui_spec>[\s\S]*?(?:<\/analysis_ui_spec>|$)/gi, " ")
-        .replace(/<density>[\s\S]*?(?:<\/density>|$)/gi, " ")
-        .replace(/<is_ready>[\s\S]*?(?:<\/is_ready>|$)/gi, " ")
-        .replace(/<stage>[\s\S]*?(?:<\/stage>|$)/gi, " ")
-        .replace(/<options>[\s\S]*?(?:<\/options>|$)/gi, " ")
+    const plainText = stripStructuredResponseBlocks(normalized)
         .replace(/<\/?[^>]+>/g, " ")
         .replace(/\s+/g, " ")
         .trim();
@@ -3025,7 +3080,7 @@ function parseOptionActionToken(value: string): MessageAction | null {
 }
 
 function parseOptionsBlock(raw: string): MessageOption[] {
-    const parsed = raw
+    const parsed = normalizeOptionsBlockText(raw)
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
@@ -3076,13 +3131,14 @@ function parseOptionsBlock(raw: string): MessageOption[] {
             );
 
             return {
+                ...option,
                 label: shouldPromoteValueToLabel ? value : label,
                 value
             };
         })
         .filter((option) => {
             if (!option.label) return false;
-            const key = `${option.label.toLowerCase()}::${option.value.toLowerCase()}`;
+            const key = `${option.label.toLowerCase()}::${option.value.toLowerCase()}::${option.action || ""}`;
             if (dedupe.has(key)) return false;
             dedupe.add(key);
             return true;
@@ -3113,8 +3169,9 @@ function areMessageOptionsEqual(
 }
 
 function extractStreamingOptionsBlock(raw: string): string | null {
-    const match = raw.match(
-        /<options>([\s\S]*?)(<\/options>|(?=\r?\n\s*<(?!\/?options\b)[a-z_][\w-]*>)|$)/i
+    const normalized = normalizeStructuredResponseMarkup(raw);
+    const match = normalized.match(
+        /<options>([\s\S]*?)(<\/options>|(?=\s*<(?!\/?options\b)[a-z_][\w-]*\s*>)|$)/i
     );
     if (!match) return null;
 
@@ -4786,8 +4843,9 @@ function WizardContent() {
 
                 const chunk = decoder.decode(value, { stream: true });
                 buffer += chunk;
+                const parseBuffer = normalizeStructuredResponseMarkup(buffer);
 
-                const diagramMatch = buffer.match(/<diagram>([\s\S]*?)<\/diagram>/);
+                const diagramMatch = parseBuffer.match(/<diagram>([\s\S]*?)<\/diagram>/i);
                 if (diagramMatch && diagramMatch[1]) {
                     const rawContent = diagramMatch[1].trim();
                     let code = rawContent;
@@ -4821,19 +4879,18 @@ function WizardContent() {
                     }
                 }
 
-                const questionActionMatch = buffer.match(/<question_action>([\s\S]*?)<\/question_action>/i);
+                const questionActionMatch = parseBuffer.match(/<question_action>([\s\S]*?)<\/question_action>/i);
                 if (questionActionMatch?.[1]) {
                     currentQuestionAction = normalizeMessageAction(questionActionMatch[1].trim()) ?? currentQuestionAction;
                 }
 
-                const questionRequirementKeyMatch = buffer.match(/<question_requirement_key>([\s\S]*?)<\/question_requirement_key>/i);
+                const questionRequirementKeyMatch = parseBuffer.match(/<question_requirement_key>([\s\S]*?)<\/question_requirement_key>/i);
                 if (questionRequirementKeyMatch?.[1]) {
                     currentQuestionRequirementKey = normalizeReadinessRequirementKey(questionRequirementKeyMatch[1].trim()) ?? currentQuestionRequirementKey;
                 }
 
-                const questionMatch = buffer.match(/<question>([\s\S]*?)(?:<\/question>|$)/i);
-                if (questionMatch && questionMatch[1]) {
-                    const rawQuestion = questionMatch[1];
+                const rawQuestion = extractStructuredBlock(parseBuffer, "question");
+                if (rawQuestion) {
                     const q = normalizeSingleQuestion(rawQuestion);
                     if (q) {
                         latestQuestionText = q;
@@ -4884,7 +4941,7 @@ function WizardContent() {
                     }
                 }
 
-                const stageMatch = buffer.match(/<stage>([\s\S]*?)<\/stage>/i);
+                const stageMatch = parseBuffer.match(/<stage>([\s\S]*?)<\/stage>/i);
                 if (stageMatch?.[1]) {
                     const parsedStage = normalizeArchitectureStage(
                         stageMatch[1].trim(),
@@ -4896,27 +4953,27 @@ function WizardContent() {
                     currentEval.stage = parsedStage;
                 }
 
-                const densityMatch = buffer.match(/<density>\s*(\d+)\s*<\/density>/);
+                const densityMatch = parseBuffer.match(/<density>\s*(\d+)\s*<\/density>/i);
                 if (densityMatch) {
                     currentEval.density_score = parseInt(densityMatch[1]);
                 }
 
-                const readyMatch = buffer.match(/<is_ready>\s*(true|false)\s*<\/is_ready>/);
+                const readyMatch = parseBuffer.match(/<is_ready>\s*(true|false)\s*<\/is_ready>/i);
                 if (readyMatch) currentEval.is_ready = readyMatch[1] === 'true';
 
-                const clarifiedMatch = buffer.match(/<analysis_clarified>([\s\S]*?)<\/analysis_clarified>/);
+                const clarifiedMatch = parseBuffer.match(/<analysis_clarified>([\s\S]*?)<\/analysis_clarified>/i);
                 if (clarifiedMatch) {
                     currentEval.analysis.clarified = parseAnalysisList(clarifiedMatch[1]);
                 }
 
-                const missingMatch = buffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/);
+                const missingMatch = parseBuffer.match(/<analysis_missing>([\s\S]*?)<\/analysis_missing>/i);
                 if (missingMatch) {
                     currentEval.analysis.missing = parseAnalysisList(missingMatch[1])
                         .filter((item) => !resolvedQuestionKeys.has(normalizeQuestionKey(item)));
                     currentEval.openQuestions = currentEval.analysis.missing.slice(0, 8);
                 }
 
-                const uiSpecMatch = buffer.match(/<analysis_ui_spec>([\s\S]*?)<\/analysis_ui_spec>/i);
+                const uiSpecMatch = parseBuffer.match(/<analysis_ui_spec>([\s\S]*?)<\/analysis_ui_spec>/i);
                 if (uiSpecMatch) {
                     const parsedSpec = parseUiDesignSpecBlock(uiSpecMatch[1]);
                     if (parsedSpec) {
@@ -4925,13 +4982,13 @@ function WizardContent() {
                     }
                 }
 
-                const uiMatch = buffer.match(/<analysis_ui>([\s\S]*?)<\/analysis_ui>/i);
+                const uiMatch = parseBuffer.match(/<analysis_ui>([\s\S]*?)<\/analysis_ui>/i);
                 if (uiMatch) {
                     currentEval.analysis.ui = parseAnalysisUiBlock(uiMatch[1]);
                     setUiDesignSpec((prev) => prev ?? buildMinimalUiDesignSpec(currentEval.analysis.ui));
                 }
 
-                const architecturePackMatch = buffer.match(/<architecture_pack>([\s\S]*?)<\/architecture_pack>/i);
+                const architecturePackMatch = parseBuffer.match(/<architecture_pack>([\s\S]*?)<\/architecture_pack>/i);
                 if (architecturePackMatch) {
                     const parsedPack = parseJsonBlock(architecturePackMatch[1], (value) => normalizeArchitecturePack(value, currentEval.analysis.ui));
                     if (parsedPack) {
@@ -4939,7 +4996,7 @@ function WizardContent() {
                     }
                 }
 
-                const decisionsMatch = buffer.match(/<decision_records>([\s\S]*?)<\/decision_records>/i);
+                const decisionsMatch = parseBuffer.match(/<decision_records>([\s\S]*?)<\/decision_records>/i);
                 if (decisionsMatch) {
                     const parsedDecisions = parseJsonBlock(decisionsMatch[1], normalizeDecisionRecords);
                     if (parsedDecisions) {
@@ -4947,7 +5004,7 @@ function WizardContent() {
                     }
                 }
 
-                const guardrailsMatch = buffer.match(/<guardrails>([\s\S]*?)<\/guardrails>/i);
+                const guardrailsMatch = parseBuffer.match(/<guardrails>([\s\S]*?)<\/guardrails>/i);
                 if (guardrailsMatch) {
                     const parsedGuardrails = parseJsonBlock(guardrailsMatch[1], normalizeGuardrailChecklist);
                     if (parsedGuardrails) {
@@ -4960,7 +5017,7 @@ function WizardContent() {
                     currentEval.analysis.ui
                 );
 
-                const readinessMatch = buffer.match(/<readiness>([\s\S]*?)<\/readiness>/i);
+                const readinessMatch = parseBuffer.match(/<readiness>([\s\S]*?)<\/readiness>/i);
                 if (readinessMatch) {
                     const parsedReadiness = parseJsonBlock(readinessMatch[1], (value) => normalizeReadiness(
                         value,
