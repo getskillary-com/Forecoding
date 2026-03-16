@@ -7028,7 +7028,7 @@ Do you want to start scaffold generation now?`;
                     {/* PRD Tab */}
                     {activeTab === 'prd' && (
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-6">
-                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+                            <div className="mx-auto max-w-6xl space-y-4">
                                 <section className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
                                     <div className="flex items-center justify-between gap-3">
                                         <div>
