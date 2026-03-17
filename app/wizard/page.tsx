@@ -1362,6 +1362,15 @@ function normalizeStructuredResponseMarkup(raw: string) {
         .replace(/<\s*([a-z_][\w-]*)\s*>/gi, (_, tag: string) => `<${tag.toLowerCase()}>`);
 }
 
+const OPTION_ACTION_PATTERN = [
+    "generate_scaffold",
+    "open_prd",
+    "send_message",
+    "focus_requirement",
+    "fill_requirement",
+    "show_blockers"
+].map(escapeRegExp).join("|");
+
 function extractStructuredBlock(raw: string, tag: string) {
     const normalized = normalizeStructuredResponseMarkup(raw).trim();
     if (!normalized) return null;
@@ -1399,7 +1408,11 @@ function normalizeOptionsBlockText(raw: string) {
     if (!normalized) return "";
 
     return normalized
-        .replace(/\s+(?=[^:\n<][^:\n<]{1,48}::)/g, "\n")
+        .replace(
+            new RegExp(`(::(?:${OPTION_ACTION_PATTERN}))\\s+(?=(?:[-*]\\s*)?[^:\\n<][^:\\n<]{1,80}::)`, "gi"),
+            "$1\n"
+        )
+        .replace(/([.!?。！？]["')\]]?)\s+(?=(?:[-*]\s*)?[^:\n<][^:\n<]{1,80}::)/g, "$1\n")
         .replace(/\n{2,}/g, "\n");
 }
 
@@ -2977,34 +2990,41 @@ function parseOptionActionToken(value: string): MessageAction | null {
     return normalizeMessageAction(normalized);
 }
 
-function parseOptionsBlock(raw: string): MessageOption[] {
-    const parsed = normalizeOptionsBlockText(raw)
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => line.replace(/^[-*]\s*/, ""))
-        .map((line) => stripWrappingQuotes(line))
-        .map((line): MessageOption | null => {
-            const segments = line.split("::").map((segment) => stripWrappingQuotes(segment));
-            const [rawLabel, ...rest] = segments;
-            const label = stripWrappingQuotes(rawLabel || "");
-            const trailingAction = rest.length >= 2
-                ? parseOptionActionToken(rest[rest.length - 1] || "")
-                : null;
-            const valueSegments = trailingAction ? rest.slice(0, -1) : rest;
-            const valueRaw = stripWrappingQuotes(valueSegments.join("::"));
-            const value = valueRaw || label;
+function parseOptionLine(rawLine: string): MessageOption | null {
+    const line = stripWrappingQuotes(rawLine.replace(/^[-*]\s*/, "").trim());
+    if (!line) return null;
 
-            if (!label && !value) return null;
-            const option: MessageOption = {
-                label: label || value,
-                value
-            };
-            if (trailingAction) {
-                option.action = trailingAction;
-            }
-            return option;
-        })
+    const segments = line.split("::").map((segment) => stripWrappingQuotes(segment));
+    const [rawLabel, ...rest] = segments;
+    const label = stripWrappingQuotes(rawLabel || "");
+    const trailingAction = rest.length >= 2
+        ? parseOptionActionToken(rest[rest.length - 1] || "")
+        : null;
+    const valueSegments = trailingAction ? rest.slice(0, -1) : rest;
+    const valueRaw = stripWrappingQuotes(valueSegments.join("::"));
+    const value = valueRaw || label;
+
+    if (!label && !value) return null;
+
+    const option: MessageOption = {
+        label: label || value,
+        value
+    };
+
+    if (trailingAction) {
+        option.action = trailingAction;
+    }
+
+    return option;
+}
+
+function parseOptionsBlock(raw: string): MessageOption[] {
+    const normalized = normalizeOptionsBlockText(raw);
+    if (!normalized) return [];
+
+    const parsed = normalized
+        .split("\n")
+        .map((line) => parseOptionLine(line))
         .filter((item): item is MessageOption => item !== null);
 
     if (parsed.length === 0) return [];
