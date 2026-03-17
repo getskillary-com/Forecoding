@@ -30,5 +30,10 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "__review_scaffold",
+    "__release_flash_fix",
+    "__release_flash_fix.tar"
+  ]
 }

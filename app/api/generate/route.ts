@@ -23,7 +23,7 @@ export const runtime = "nodejs";
 type OutputLanguage = "zh" | "en";
 type OneClickMode = "strict_build_v1";
 type IdeProfile = "generic";
-type TemplateKindHint = "next_root" | "next_src" | "monorepo_multiapp";
+type TemplateKindHint = "next_root" | "next_src" | "react_vite" | "monorepo_multiapp";
 
 type GenerateRequestBody = {
     summary?: unknown;
@@ -83,7 +83,7 @@ function parseIdeProfile(value: unknown): IdeProfile | undefined {
 }
 
 function parseTemplateKindHint(value: unknown): TemplateKindHint | undefined {
-    if (value === "next_root" || value === "next_src" || value === "monorepo_multiapp") return value;
+    if (value === "next_root" || value === "next_src" || value === "react_vite" || value === "monorepo_multiapp") return value;
     return undefined;
 }
 

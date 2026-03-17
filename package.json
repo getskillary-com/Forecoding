@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "validate:generated": "node scripts/validate-generated-scaffold.mjs",
+    "validate:fixtures": "node scripts/validate-spec-pack-fixtures.mjs",
+    "smoke:generate-api": "node scripts/smoke-generate-api.mjs",
     "secrets:apphosting": "node scripts/apphosting-secrets.mjs",
     "demo:export": "node scripts/export-demo-workspace.mjs",
     "migrate:firebase": "node scripts/migrate-postgres-to-firebase.mjs"
@@ -17,6 +19,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "caniuse-lite": "^1.0.30001769",
     "clsx": "^2.1.1",
     "firebase": "^11.6.1",
     "firebase-admin": "^13.0.2",

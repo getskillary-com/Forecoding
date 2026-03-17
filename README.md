@@ -106,6 +106,18 @@ npm run lint
 npm run build
 ```
 
+For `spec-pack` generation changes, also run:
+
+```bash
+npm run validate:fixtures
+```
+
+For a local `/api/generate` route smoke test, run:
+
+```bash
+npm run smoke:generate-api
+```
+
 ## Demo and utilities
 
 - `/demo` shows a read-only exported workspace

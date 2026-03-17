@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Folder, FileCode, Download, ChevronRight, ChevronDown } from "lucide-react";
 import { FileNode } from "@/types";
 import type { WorkspaceLanguage } from "@/lib/project-language";
+import { parseManifestFromTree, shouldWriteRealSpecPackContent } from "@/lib/spec-pack";
 
 interface Props {
     content: FileNode[] | string;
@@ -146,27 +147,6 @@ export function FileTreeDisplay({
 }: Props) {
     const [isZipping, setIsZipping] = useState(false);
     const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-    const ZIP_REAL_CONTENT_FILES = new Set([
-        "package.json",
-        "tsconfig.json",
-        "next.config.ts",
-        "turbo.json",
-        ".env.example",
-        "README.md",
-        "IMPLEMENTATION_PLAN.md",
-        "_AI_PROMPT.md",
-        "ONE_CLICK_PROMPT.md",
-        "GENERATION_MANIFEST.json",
-        "app/globals.css",
-        "app/layout.tsx",
-        "app/page.tsx",
-        "src/app/globals.css",
-        "src/app/layout.tsx",
-        "src/app/page.tsx",
-        "apps/web/app/globals.css",
-        "apps/web/app/layout.tsx",
-        "apps/web/app/page.tsx"
-    ]);
     const resolvedProjectName = projectName?.trim();
     const zipFileNameBase = (resolvedProjectName && resolvedProjectName.length > 0 ? resolvedProjectName : "founder-scaffold")
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
@@ -192,6 +172,10 @@ export function FileTreeDisplay({
         if (!readme?.content) return language;
         return detectScaffoldLanguage(readme.content);
     }, [filesForPreview, language]);
+    const manifest = useMemo(
+        () => (typeof content === "string" ? null : parseManifestFromTree(content)),
+        [content]
+    );
 
     useEffect(() => {
         if (filesForPreview.length === 0) {
@@ -214,13 +198,7 @@ export function FileTreeDisplay({
         return `// GENERATION PENDING\n// Open ${promptPath} and ask AI to generate this file.\n\n// Content Hint:\n/*\n${hint}...\n*/`;
     };
 
-    const shouldWriteRealContent = (path: string, fileName: string) => {
-        if (ZIP_REAL_CONTENT_FILES.has(fileName) || ZIP_REAL_CONTENT_FILES.has(path)) return true;
-        if (fileName.endsWith("_AI_PROMPT.md")) return true;
-        if (path.startsWith("docs/")) return true;
-        if (path.startsWith("config/integrations/") && /\.template\./.test(fileName)) return true;
-        return false;
-    };
+    const shouldWriteRealContent = (path: string) => shouldWriteRealSpecPackContent(path, manifest);
 
     const handleDownload = async () => {
         if (typeof content === "string") return;
@@ -233,8 +211,7 @@ export function FileTreeDisplay({
             let zipPlaceholderFileCount = 0;
             const globalPlaceholderTargets = filesForPreview
                 .filter((file) => {
-                    const fileName = file.path.split("/").pop() || file.path;
-                    return !shouldWriteRealContent(file.path, fileName);
+                    return !shouldWriteRealContent(file.path);
                 })
                 .map((file) => ({
                     path: file.path,
@@ -279,7 +256,7 @@ export function FileTreeDisplay({
 
                     folderFiles.forEach((file) => {
                         const relativePath = `${currentPath}${file.name}`;
-                        const includeRawContent = shouldWriteRealContent(relativePath, file.name);
+                        const includeRawContent = shouldWriteRealContent(relativePath);
                         const promptPath = `${currentPath}_AI_PROMPT.md`;
 
                         promptContent += `## File: \`${file.name}\`\n`;

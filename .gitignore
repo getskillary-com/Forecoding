@@ -23,6 +23,13 @@
 # misc
 .DS_Store
 *.pem
+.gcloud/
+.tmp/
+.vscode/
+__release_flash_fix/
+__release_flash_fix.tar
+__review_scaffold/
+firebase-debug.log
 
 # debug
 npm-debug.log*

@@ -3,7 +3,9 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { CTO_SYSTEM_PROMPT, GENERAL_CHAT_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
 import type {
+    ExportContentKind,
     GenerationManifest,
+    GenerationManifestFile,
     GenerationTask,
     Message,
     OutputMode,
@@ -11,11 +13,13 @@ import type {
     PreflightIssue,
     PreflightReport,
     RuntimeReadiness,
+    SpecPackProfile,
     StructuredGenerationContext,
     TemplateKind,
     UiDesignSpec
 } from "@/types";
 import { buildDefaultToolStackMarkdown } from "@/lib/platforms";
+import { buildSpecPackProfile, classifySpecPackContentKind } from "@/lib/spec-pack";
 import { normalizeUiDesignSpec, validateUiDesignSpec } from "@/lib/ui-spec";
 
 type OutputLanguage = "zh" | "en";
@@ -1512,7 +1516,12 @@ const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
     "MISSING_ENV_EXAMPLE",
     "MISSING_CSS_BASELINE",
     "MISSING_PAGE_UI_REQUIREMENTS",
-    "MISSING_REQUIRED_DEPENDENCIES"
+    "MISSING_REQUIRED_DEPENDENCIES",
+    "SPEC_CONTENT_CONTAMINATED",
+    "INVALID_JSON_FILE",
+    "ROUTE_MAP_REFERENCE_MISSING",
+    "WORKSPACE_STRUCTURE_MISMATCH",
+    "README_STACK_MISMATCH"
 ] as const);
 
 export async function generateProjectResources(
@@ -1591,26 +1600,33 @@ export async function generateProjectResources(
             data.toolStack,
             history
         );
+        const specPackProfile = buildSpecPackProfile({
+            templateKind,
+            toolStack: data.toolStack,
+            history
+        });
         const { normalizedTree, fixCount: pathNormalizationFixCount } = normalizeProjectTreePaths(data.projectTree, templateKind);
 
-        // Ensure executable baseline config files + docs + one-click artifacts exist.
+        // Ensure spec-pack docs, safe config files, and one-click artifacts exist.
         data.projectTree = ensureCoreConfigFiles(
             normalizedTree,
             data.toolStack,
             history,
             resolvedProjectName || "generated-project",
             resolvedOutputLanguage,
+            resolvedOutputMode,
             templateKind,
+            specPackProfile,
             resolvedOneClickMode,
             resolvedIdeProfile
         );
-        data.projectTree = enhanceProjectTreeSpecs(data.projectTree, data.toolStack);
 
         let manifest = buildGenerationManifest({
             tree: data.projectTree,
             outputMode: resolvedOutputMode,
             outputLanguage: resolvedOutputLanguage,
             templateKind,
+            profile: specPackProfile,
             oneClickMode: resolvedOneClickMode,
             ideProfile: resolvedIdeProfile
         });
@@ -1647,6 +1663,7 @@ export async function generateProjectResources(
             outputLanguage: resolvedOutputLanguage,
             toolStack: data.toolStack,
             manifest,
+            profile: specPackProfile,
             pathNormalizationFixCount
         });
 
@@ -1659,6 +1676,7 @@ export async function generateProjectResources(
                 ensureMinimumActionableScaffold({
                     tree: data.projectTree,
                     templateKind,
+                    profile: specPackProfile,
                     outputLanguage: resolvedOutputLanguage,
                     projectName: resolvedProjectName || "generated-project",
                     history,
@@ -1668,14 +1686,9 @@ export async function generateProjectResources(
                     tree: data.projectTree,
                     outputLanguage: resolvedOutputLanguage,
                     projectName: resolvedProjectName || "generated-project",
+                    profile: specPackProfile,
                     toolStack: data.toolStack,
                     history
-                });
-                ensureCssRenderBaseline({
-                    tree: data.projectTree,
-                    templateKind,
-                    outputLanguage: resolvedOutputLanguage,
-                    projectName: resolvedProjectName || "generated-project"
                 });
                 ensurePageUiRequirementSections(data.projectTree);
 
@@ -1714,6 +1727,7 @@ export async function generateProjectResources(
                     outputMode: resolvedOutputMode,
                     outputLanguage: resolvedOutputLanguage,
                     templateKind,
+                    profile: specPackProfile,
                     oneClickMode: resolvedOneClickMode,
                     ideProfile: resolvedIdeProfile
                 });
@@ -1750,6 +1764,7 @@ export async function generateProjectResources(
                     outputLanguage: resolvedOutputLanguage,
                     toolStack: data.toolStack,
                     manifest,
+                    profile: specPackProfile,
                     pathNormalizationFixCount
                 });
             }
@@ -2022,6 +2037,7 @@ const ZIP_REAL_CONTENT_PATHS = new Set([
     "package.json",
     "tsconfig.json",
     "next.config.ts",
+    "vite.config.ts",
     "turbo.json",
     ".env.example",
     "README.md",
@@ -2029,23 +2045,22 @@ const ZIP_REAL_CONTENT_PATHS = new Set([
     "_AI_PROMPT.md",
     "ONE_CLICK_PROMPT.md",
     "GENERATION_MANIFEST.json",
-    "app/globals.css",
-    "app/layout.tsx",
-    "app/page.tsx",
-    "src/app/globals.css",
-    "src/app/layout.tsx",
-    "src/app/page.tsx",
-    "apps/web/app/globals.css",
-    "apps/web/app/layout.tsx",
-    "apps/web/app/page.tsx"
+    "index.html",
+    "apps/web/package.json",
+    "apps/backend/package.json",
+    "packages/domain/package.json"
 ]);
 
 function shouldWriteRealContentByPath(path: string) {
     if (ZIP_REAL_CONTENT_PATHS.has(path)) return true;
-    if (path.endsWith("_AI_PROMPT.md")) return true;
-    if (path.startsWith("docs/")) return true;
-    if (/^config\/integrations\/.+\.template\./.test(path)) return true;
-    return false;
+    return classifySpecPackContentKind(path) !== "placeholder";
+}
+
+function resolveContentKindForPath(path: string): ExportContentKind {
+    if (ZIP_REAL_CONTENT_PATHS.has(path)) {
+        return path.endsWith(".md") ? "doc" : "config";
+    }
+    return classifySpecPackContentKind(path);
 }
 
 function detectTemplateKind(
@@ -2054,7 +2069,7 @@ function detectTemplateKind(
     toolStack: string,
     history: string
 ): TemplateKind {
-    if (hint === "next_root" || hint === "next_src" || hint === "monorepo_multiapp") return hint;
+    if (hint === "next_root" || hint === "next_src" || hint === "react_vite" || hint === "monorepo_multiapp") return hint;
 
     const allPaths = collectFilePathsFromTree(Array.isArray(projectTree) ? projectTree : []);
     const topLevel = new Set(allPaths.map((path) => path.split("/")[0]).filter(Boolean));
@@ -2062,6 +2077,13 @@ function detectTemplateKind(
 
     const context = `${toolStack || ""}\n${history || ""}\n${allPaths.join("\n")}`.toLowerCase();
     if (/monorepo|turborepo|workspace|react native|expo/.test(context)) return "monorepo_multiapp";
+    if (
+        /\bvite\b|react-router|react router|firebase cloud functions|firestore|firebase auth/.test(context) ||
+        allPaths.some((path) => /^src\/(main|App)\.(ts|tsx|js|jsx)$/i.test(path)) ||
+        allPaths.some((path) => /^src\/pages\/.+\.(ts|tsx|js|jsx)$/i.test(path))
+    ) {
+        return "react_vite";
+    }
     if (topLevel.has("src") || /src\/app|src\/components|src\/lib/.test(context)) return "next_src";
     return "next_root";
 }
@@ -2080,8 +2102,8 @@ function normalizeGeneratedPath(rawPath: string, templateKind: TemplateKind): { 
         deduped.push(segment);
     }
 
-    const srcEligibleRoots = new Set(["app", "components", "lib", "types", "hooks", "store", "prisma"]);
-    if (templateKind === "next_src") {
+    const srcEligibleRoots = new Set(["app", "components", "lib", "types", "hooks", "store", "prisma", "pages", "services"]);
+    if (templateKind === "next_src" || templateKind === "react_vite") {
         if (deduped[0] && srcEligibleRoots.has(deduped[0]) && deduped[0] !== "src") {
             deduped.unshift("src");
             fixes += 1;
@@ -2153,18 +2175,20 @@ function ensureCoreConfigFiles(
     history: string,
     projectName: string,
     outputLanguage: OutputLanguage,
+    outputMode: OutputMode,
     templateKind: TemplateKind,
+    profile: SpecPackProfile,
     oneClickMode: OneClickMode,
     ideProfile: IdeProfile
 ): any[] {
     const tree = Array.isArray(projectTree) ? projectTree : [];
-    const treeText = collectProjectTreeText(tree);
-    const context = `${toolStack || ""}\n${history || ""}\n${treeText}`;
-    const usesNext = templateKind !== "monorepo_multiapp";
+    const context = `${toolStack || ""}\n${history || ""}`;
+    const usesNext = profile.framework === "next_app_router";
+    const usesVite = profile.framework === "react_vite_spa";
     const usesPhaser = /phaser/i.test(context);
     const dependencyClosure = deriveDependencyClosure({
         toolStack,
-        analysisText: `${history || ""}\n${treeText}`,
+        analysisText: history || "",
         templateKind
     });
     const finalTree = JSON.parse(JSON.stringify(tree)) as any[];
@@ -2179,7 +2203,7 @@ function ensureCoreConfigFiles(
             usesPhaser,
             projectName,
             toolStack,
-            analysisText: `${history || ""}\n${treeText}`,
+            analysisText: history || "",
             dependencyClosure
         });
 
@@ -2187,7 +2211,6 @@ function ensureCoreConfigFiles(
         framework: usesNext ? "next" : "react",
         templateKind
     });
-    const nextConfig = generateNextConfig({ usesPhaser });
     const envExample = generateEnvExample({
         outputLanguage,
         templateKind,
@@ -2196,14 +2219,30 @@ function ensureCoreConfigFiles(
 
     upsertFileByPath(finalTree, "package.json", packageJson);
     upsertFileByPath(finalTree, "tsconfig.json", tsconfig);
-    upsertFileByPath(finalTree, "next.config.ts", nextConfig);
     upsertFileByPath(finalTree, ".env.example", envExample);
+    if (usesNext) {
+        upsertFileByPath(finalTree, "next.config.ts", generateNextConfig({ usesPhaser }));
+        removeFileByPath(finalTree, "vite.config.ts");
+        removeFileByPath(finalTree, "index.html");
+    } else if (usesVite) {
+        upsertFileByPath(finalTree, "vite.config.ts", generateViteConfig());
+        upsertFileByPath(finalTree, "index.html", generateSpaIndexHtml(projectName));
+        removeFileByPath(finalTree, "next.config.ts");
+    } else {
+        removeFileByPath(finalTree, "next.config.ts");
+        removeFileByPath(finalTree, "vite.config.ts");
+        removeFileByPath(finalTree, "index.html");
+    }
     if (templateKind === "monorepo_multiapp") {
         upsertFileByPath(finalTree, "turbo.json", generateTurboConfigJson());
+        ensureMonorepoWorkspaceSkeleton(finalTree, projectName, dependencyClosure);
+    } else {
+        removeFileByPath(finalTree, "turbo.json");
     }
     ensureMinimumActionableScaffold({
         tree: finalTree,
         templateKind,
+        profile,
         outputLanguage,
         projectName,
         history
@@ -2212,15 +2251,20 @@ function ensureCoreConfigFiles(
         tree: finalTree,
         outputLanguage,
         projectName,
+        profile,
         toolStack,
         history
     });
-    ensureCssRenderBaseline({
-        tree: finalTree,
-        templateKind,
-        outputLanguage,
-        projectName
-    });
+    if (outputMode === "runnable_scaffold") {
+        ensureCssRenderBaseline({
+            tree: finalTree,
+            templateKind,
+            outputLanguage,
+            projectName
+        });
+    } else {
+        removeCssRenderBaseline(finalTree, templateKind);
+    }
     ensurePageUiRequirementSections(finalTree);
 
     const structuredReadme = ensureStructuredReadmeQualityStable(
@@ -2702,13 +2746,7 @@ function buildRouteMapDoc(tree: any[]) {
         lines.push("| / | app/page.tsx | Default route placeholder |");
     } else {
         pagePaths.slice(0, 60).forEach((path) => {
-            const route = path
-                .replace(/^src\//, "")
-                .replace(/^apps\/[^/]+\//, "")
-                .replace(/^app\//, "/")
-                .replace(/\/page\.(tsx|ts|jsx|js)$/i, "")
-                .replace(/^$/, "/");
-            lines.push(`| ${route === "" ? "/" : route} | ${path} | Derived from page spec |`);
+            lines.push(`| ${deriveRouteFromPagePath(path)} | ${path} | Derived from page spec |`);
         });
     }
     lines.push("");
@@ -2800,6 +2838,7 @@ function ensureArchitectureDocs(input: {
     projectName: string;
     history: string;
     toolStack: string;
+    profile: SpecPackProfile;
     outputLanguage: OutputLanguage;
 }) {
     const functionalArchitecture = getFileContentByPath(input.tree, "docs/FUNCTIONAL_ARCHITECTURE.md");
@@ -2865,7 +2904,11 @@ const DEPENDENCY_CATALOG: Array<{ match: RegExp; deps?: Record<string, string>; 
     { match: /prisma/, deps: { "@prisma/client": "^5.22.0" }, devDeps: { prisma: "^5.22.0" } },
     { match: /nextauth|next-auth|auth\.js|@auth\/core/, deps: { "next-auth": "^5.0.0-beta.25" } },
     { match: /stripe/, deps: { stripe: "^17.3.1", "@stripe/stripe-js": "^4.10.0" } },
+    { match: /\bfirebase\b|firestore|firebase auth|cloud functions/, deps: { firebase: "^11.6.1", "firebase-admin": "^13.0.2" } },
     { match: /supabase/, deps: { "@supabase/supabase-js": "^2.49.1", "@supabase/ssr": "^0.5.2" } },
+    { match: /vercel ai sdk/, deps: { ai: "^4.3.16", "@ai-sdk/openai": "^1.3.22", openai: "^4.86.1" } },
+    { match: /openai|responses api/, deps: { openai: "^4.86.1" } },
+    { match: /react-router|react router/, deps: { "react-router-dom": "^7.1.5" } },
     { match: /\bredis\b|ioredis/, deps: { ioredis: "^5.4.1" } },
     { match: /socket\.io|websocket/, deps: { "socket.io": "^4.8.1", "socket.io-client": "^4.8.1" } },
     { match: /\bexpress\b/, deps: { express: "^4.21.2" }, devDeps: { "@types/express": "^5.0.0" } },
@@ -2900,6 +2943,10 @@ function deriveDependencyClosure(input: {
     if (input.templateKind === "monorepo_multiapp") {
         devDeps.turbo = devDeps.turbo || "^2.4.2";
     }
+    if (input.templateKind === "react_vite") {
+        devDeps.vite = devDeps.vite || "^5.4.11";
+        devDeps["@vitejs/plugin-react"] = devDeps["@vitejs/plugin-react"] || "^4.3.4";
+    }
 
     return { deps, devDeps };
 }
@@ -2933,6 +2980,15 @@ function generateEnvExample(input: {
         lines.push("# Supabase");
         lines.push("NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co");
         lines.push("NEXT_PUBLIC_SUPABASE_ANON_KEY=replace_me");
+        lines.push("");
+    }
+    if (deps.firebase || deps["firebase-admin"]) {
+        lines.push("# Firebase");
+        lines.push("NEXT_PUBLIC_FIREBASE_API_KEY=replace_me");
+        lines.push("NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=replace_me.firebaseapp.com");
+        lines.push("NEXT_PUBLIC_FIREBASE_PROJECT_ID=replace_me");
+        lines.push("FIREBASE_CLIENT_EMAIL=replace_me");
+        lines.push("FIREBASE_PRIVATE_KEY=replace_me");
         lines.push("");
     }
     if (deps.stripe || deps["@stripe/stripe-js"]) {
@@ -2995,6 +3051,8 @@ function generatePackageJson(input: {
     const usesStripe = /stripe/.test(stack);
     const usesRecharts = /recharts|chart/.test(stack);
     const usesXlsx = /xlsx|excel/.test(stack);
+    const usesReactRouter = /react-router|react router/.test(stack);
+    const usesFirebase = /\bfirebase\b|firestore|firebase auth|cloud functions/.test(stack);
     const usesRedis = /\bredis\b|ioredis/.test(stack);
     const usesSocketIo = /socket\.io|websocket/.test(stack);
     const usesExpress = /\bexpress\b/.test(stack);
@@ -3015,6 +3073,8 @@ function generatePackageJson(input: {
     if (usesSWR) extraDeps["swr"] = "^2.2.5";
     if (usesSupabase) extraDeps["@supabase/supabase-js"] = "^2.49.1";
     if (usesSupabase) extraDeps["@supabase/ssr"] = "^0.5.2";
+    if (usesFirebase) extraDeps.firebase = "^11.6.1";
+    if (usesFirebase) extraDeps["firebase-admin"] = "^13.0.2";
     if (usesShadcn) extraDeps["class-variance-authority"] = "^0.7.1";
     if (usesShadcn) extraDeps["clsx"] = "^2.1.1";
     if (usesShadcn) extraDeps["tailwind-merge"] = "^2.6.0";
@@ -3023,6 +3083,7 @@ function generatePackageJson(input: {
     if (usesNextAuth) extraDeps["next-auth"] = "^5.0.0-beta.25";
     if (usesStripe) extraDeps["stripe"] = "^17.3.1";
     if (usesStripe) extraDeps["@stripe/stripe-js"] = "^4.10.0";
+    if (usesReactRouter) extraDeps["react-router-dom"] = "^7.1.5";
     if (usesRecharts) extraDeps["recharts"] = "^2.13.0";
     if (usesXlsx) extraDeps["xlsx"] = "^0.18.5";
     if (usesRedis) extraDeps["ioredis"] = "^5.4.1";
@@ -3039,6 +3100,7 @@ function generatePackageJson(input: {
         "@types/node": "^20",
         "@types/react": "^18",
         "@types/react-dom": "^18",
+        ...(input.framework === "react" ? { vite: "^5.4.11", "@vitejs/plugin-react": "^4.3.4" } : {}),
         ...(usesTailwind ? { tailwindcss: "^3.4.1", postcss: "^8", autoprefixer: "^10.0.1" } : {}),
         ...closureDevDeps
     };
@@ -3140,7 +3202,7 @@ function generateTsconfig(input: { framework: "next" | "react"; templateKind?: T
             moduleResolution: "bundler",
             esModuleInterop: true,
             noEmit: true,
-            jsx: "preserve",
+            jsx: input.framework === "next" ? "preserve" : "react-jsx",
             lib: ["dom", "dom.iterable", "esnext"]
         },
         include: ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
@@ -3155,6 +3217,15 @@ function generateTsconfig(input: { framework: "next" | "react"; templateKind?: T
             "@/lib/*": [`${basePath}lib/*`]
         };
         config.compilerOptions.plugins = [{ name: "next" }];
+    } else {
+        const basePath = input.templateKind === "react_vite" ? "./src/" : "./";
+        config.include = ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"];
+        config.compilerOptions.paths = {
+            "@/*": [`${basePath}*`],
+            "@/components/*": [`${basePath}components/*`],
+            "@/lib/*": [`${basePath}lib/*`],
+            "@/pages/*": [`${basePath}pages/*`]
+        };
     }
 
     return JSON.stringify(config, null, 2);
@@ -3180,6 +3251,108 @@ function generateNextConfig(input: { usesPhaser: boolean }) {
     lines.push("export default nextConfig;");
     lines.push("");
     return lines.join("\n");
+}
+
+function generateViteConfig() {
+    return [
+        "import { defineConfig } from \"vite\";",
+        "import react from \"@vitejs/plugin-react\";",
+        "",
+        "export default defineConfig({",
+        "  plugins: [react()]",
+        "});",
+        ""
+    ].join("\n");
+}
+
+function generateSpaIndexHtml(projectName: string) {
+    const title = projectName || "Forecoding Spec Pack";
+    return [
+        "<!doctype html>",
+        "<html lang=\"en\">",
+        "  <head>",
+        "    <meta charset=\"UTF-8\" />",
+        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />",
+        `    <title>${title}</title>`,
+        "  </head>",
+        "  <body>",
+        "    <div id=\"root\"></div>",
+        "    <script type=\"module\" src=\"/src/main.tsx\"></script>",
+        "  </body>",
+        "</html>",
+        ""
+    ].join("\n");
+}
+
+function generateWorkspacePackageJson(input: {
+    name: string;
+    extraDependencies?: Record<string, string>;
+    extraDevDependencies?: Record<string, string>;
+}) {
+    return JSON.stringify(
+        {
+            name: sanitizeProjectName(input.name),
+            version: "0.1.0",
+            private: true,
+            dependencies: {
+                ...(input.extraDependencies || {})
+            },
+            devDependencies: {
+                ...(input.extraDevDependencies || {})
+            }
+        },
+        null,
+        2
+    );
+}
+
+function ensureMonorepoWorkspaceSkeleton(tree: any[], projectName: string, dependencyClosure: DependencyClosure) {
+    upsertFileByPath(
+        tree,
+        "apps/web/package.json",
+        generateWorkspacePackageJson({
+            name: `${projectName || "generated-project"}-web`,
+            extraDependencies: {
+                next: "14.2.18",
+                react: "^18.3.1",
+                "react-dom": "^18.3.1"
+            },
+            extraDevDependencies: {
+                typescript: "^5",
+                "@types/node": "^20",
+                "@types/react": "^18",
+                "@types/react-dom": "^18"
+            }
+        })
+    );
+    upsertFileByPath(
+        tree,
+        "apps/backend/package.json",
+        generateWorkspacePackageJson({
+            name: `${projectName || "generated-project"}-backend`,
+            extraDependencies: {
+                ...Object.fromEntries(
+                    Object.entries(dependencyClosure.deps).filter(([key]) => (
+                        ["firebase-admin", "firebase-functions", "stripe", "express"].includes(key)
+                    ))
+                )
+            },
+            extraDevDependencies: {
+                typescript: "^5",
+                "@types/node": "^20"
+            }
+        })
+    );
+    upsertFileByPath(
+        tree,
+        "packages/domain/package.json",
+        generateWorkspacePackageJson({
+            name: `${projectName || "generated-project"}-domain`,
+            extraDevDependencies: {
+                typescript: "^5"
+            }
+        })
+    );
 }
 
 function sanitizeProjectName(name: string) {
@@ -3635,8 +3808,8 @@ function buildStructuredReadmeStable(input: {
     lines.push(`# ${projectName} Development Guide`);
     lines.push("");
     lines.push("## Project Overview");
-    lines.push(`This project is generated by Forecoding to provide an execution-ready scaffold for **${projectName}**.`);
-    lines.push("README is the shared entry for humans and AI IDE agents, covering goals, runtime setup, environment variables, acceptance standards, and execution order.");
+    lines.push(`This project is generated by Forecoding as a **spec pack** for **${projectName}**.`);
+    lines.push("README is the shared entry for humans and AI IDE agents, covering architecture intent, safe config files, task prompts, and execution order.");
     lines.push("");
     lines.push("## Target Users & Business Goals");
     lines.push("- Primary users: product owners, engineers, and AI IDE-assisted builders.");
@@ -3657,24 +3830,20 @@ function buildStructuredReadmeStable(input: {
     scopedPaths.forEach((path) => lines.push(`- \`${path}\``));
     lines.push("");
     lines.push("## Quick Start");
-    lines.push("### 1) Install dependencies");
-    lines.push("```bash");
-    lines.push("npm install");
-    lines.push("```");
+    lines.push("### 1) Read the execution docs");
+    lines.push("- Open `ONE_CLICK_PROMPT.md` first.");
+    lines.push("- Then inspect `GENERATION_MANIFEST.json` and `IMPLEMENTATION_PLAN.md`.");
     lines.push("");
-    lines.push("### 2) Run locally");
-    lines.push("```bash");
-    lines.push("npm run dev");
-    lines.push("```");
+    lines.push("### 2) Follow placeholder tasks");
+    lines.push("- Every placeholder file maps to a `promptPath` and phase.");
+    lines.push("- Generate final implementation in AI IDE by phase order, not raw directory order.");
     lines.push("");
-    lines.push("### 3) Build and start");
-    lines.push("```bash");
-    lines.push("npm run build");
-    lines.push("npm run start");
-    lines.push("```");
+    lines.push("### 3) Validate spec-pack consistency");
+    lines.push("- Keep config files parseable.");
+    lines.push("- Keep README, ROUTE_MAP, manifest, and placeholder prompts aligned.");
     lines.push("");
     lines.push("## Environment Variables");
-    lines.push("- Copy `.env.example` to `.env.local` before local execution.");
+    lines.push("- `.env.example` is reference configuration for later implementation, not a promise that the current ZIP is runnable.");
     lines.push("- Keep secrets server-side only.");
     lines.push("- Split config by environment (dev/staging/prod).");
     lines.push("");
@@ -3683,17 +3852,18 @@ function buildStructuredReadmeStable(input: {
     lines.push("- `GENERATION_MANIFEST.json` is the machine-readable task graph.");
     lines.push("- `IMPLEMENTATION_PLAN.md` is the only execution-order source.");
     lines.push("- For placeholder files, generate final code via directory-level `_AI_PROMPT.md`.");
+    lines.push("- Treat the current ZIP as a spec-first handoff, not a finished runnable app.");
     lines.push("");
     lines.push("## Acceptance Checklist");
-    lines.push("- [ ] Project installs and starts successfully.");
-    lines.push("- [ ] Outputs for Phase 0~6 are completed and validated.");
-    lines.push("- [ ] Key pages/APIs match requirement intent.");
-    lines.push("- [ ] README, IMPLEMENTATION_PLAN, and implementation stay aligned.");
+    lines.push("- [ ] Placeholder files map cleanly to manifest tasks and prompt files.");
+    lines.push("- [ ] Config files remain parseable and free of markdown-only guidance sections.");
+    lines.push("- [ ] Route map and package/workspace structure match the generated tree.");
+    lines.push("- [ ] README, IMPLEMENTATION_PLAN, manifest, and prompt files stay aligned.");
     lines.push("- [ ] No secret leakage in repository.");
     lines.push("");
     lines.push("## FAQ");
     lines.push("### 1) Why are some ZIP files placeholders?");
-    lines.push("Forecoding ships runnable baseline files and high-quality specs first, then lets AI IDE complete feature code by phase to reduce one-shot drift.");
+    lines.push("Forecoding ships high-quality specs and safe config files first, then lets AI IDE complete feature code by phase to reduce one-shot drift.");
     lines.push("");
     lines.push("### 2) What should I implement first?");
     lines.push("Do not follow raw directory order. Always follow `IMPLEMENTATION_PLAN.md` phase order.");
@@ -3757,14 +3927,20 @@ function classifyImplementationPhase(filePath: string): number {
     if (withoutSrc.startsWith("types/")) return 1;
     if (/\/(schema|model|entity|domain)\b/i.test(withoutSrc)) return 1;
     if (withoutSrc === "app/layout.tsx" || withoutSrc === "app/layout.ts") return 3;
+    if (withoutSrc === "App.tsx" || withoutSrc.startsWith("layouts/")) return 3;
     if (withoutSrc.startsWith("components/layout/")) return 3;
     if (withoutSrc.startsWith("app/api/")) return 5;
+    if (withoutSrc.startsWith("api/")) return 5;
+    if (/^functions\/(?:src\/)?.+\.(ts|js)$/i.test(normalized)) return 5;
     if (withoutSrc.startsWith("apps/") && /\/api\/|\/services\/|\/websockets\//i.test(withoutSrc)) return 5;
     if (/^app\/.+\/page\.(tsx|ts|jsx|js)$/i.test(withoutSrc) || withoutSrc === "app/page.tsx") return 4;
+    if (/^pages\/.+\.(tsx|ts|jsx|js)$/i.test(withoutSrc)) return 4;
     if (withoutSrc.startsWith("components/")) return 4;
     if (withoutSrc.startsWith("lib/") && /(store|service|utils|helper|core|actions)/i.test(withoutSrc)) return 2;
+    if (withoutSrc.startsWith("services/")) return 2;
     if (withoutSrc.startsWith("lib/")) return 2;
     if (/^apps\/.+\/src\/screens\/.+\.(tsx|ts|jsx|js)$/i.test(withoutSrc)) return 4;
+    if (/^apps\/.+\/src\/pages\/.+\.(tsx|ts|jsx|js)$/i.test(normalized)) return 4;
     if (normalized.startsWith("docs/")) return 6;
     return 4;
 }
@@ -3843,7 +4019,7 @@ function getPhaseMeta(outputLanguage: OutputLanguage) {
     }
 
     return [
-        { title: "Phase 0 - Bootstrap", goal: "Establish runnable baseline, configs, and onboarding docs.", output: "Runnable baseline with setup documentation.", done: "Dependencies install, app starts, docs are available." },
+        { title: "Phase 0 - Bootstrap", goal: "Establish spec-pack baseline, safe configs, and onboarding docs.", output: "Aligned docs, prompts, and parseable config files.", done: "Config files are parseable and docs/manifests stay aligned." },
         { title: "Phase 1 - Domain & Types", goal: "Define domain objects and type contracts before implementation.", output: "Stable type boundaries for feature work.", done: "Type contracts cover key business entities." },
         { title: "Phase 2 - State & Core Logic", goal: "Implement state transitions and core business logic.", output: "Callable core logic/state layer.", done: "Core flow is minimally executable locally." },
         { title: "Phase 3 - App Shell & Shared UI", goal: "Set up shared shell/layout and reusable structure.", output: "Stable layout and shared shell components.", done: "Pages can mount on consistent layout." },
@@ -3994,8 +4170,9 @@ function buildScaffoldSpecContent(input: {
     focus: string;
 }) {
     const fileName = input.filePath.split("/").pop() || input.filePath;
-    const isApi = /\/api\/|route\.(ts|js)$/i.test(input.filePath);
-    const isPage = /page\.(tsx|ts|jsx|js)$/i.test(fileName);
+    const normalizedPath = input.filePath.replace(/\\/g, "/");
+    const isApi = /\/api\/|route\.(ts|js)$/i.test(normalizedPath) || /^functions\/.+\.(ts|js)$/i.test(normalizedPath);
+    const isPage = isPageSpecPath(normalizedPath) || /^src\/App\.(tsx|ts|jsx|js)$/i.test(normalizedPath);
     const isLayout = /layout\.(tsx|ts|jsx|js)$/i.test(fileName);
     const isComponent = /components\//i.test(input.filePath);
     const isType = /types\//i.test(input.filePath) || /types?\.(ts|tsx)$/i.test(fileName);
@@ -4141,6 +4318,17 @@ function buildActionableFloorFiles(templateKind: TemplateKind, featureSlug: stri
         ];
     }
 
+    if (templateKind === "react_vite") {
+        return [
+            "src/main.tsx",
+            "src/App.tsx",
+            "src/pages/Home.tsx",
+            `src/components/${safeSlug}/${featureComponent}.tsx`,
+            `src/services/${safeSlug}.ts`,
+            `src/types/${safeSlug}.ts`
+        ];
+    }
+
     const base = templateKind === "next_src" ? "src/" : "";
     return [
         `${base}app/layout.tsx`,
@@ -4156,6 +4344,7 @@ function buildActionableFloorFiles(templateKind: TemplateKind, featureSlug: stri
 function ensureMinimumActionableScaffold(input: {
     tree: any[];
     templateKind: TemplateKind;
+    profile: SpecPackProfile;
     outputLanguage: OutputLanguage;
     projectName: string;
     history: string;
@@ -4185,6 +4374,7 @@ function ensureMinimumActionableScaffold(input: {
 }
 
 function resolveAppRouterBasePath(templateKind: TemplateKind) {
+    if (templateKind === "react_vite") return "src";
     if (templateKind === "next_src") return "src/app";
     if (templateKind === "monorepo_multiapp") return "apps/web/app";
     return "app";
@@ -4319,6 +4509,28 @@ function ensureCssRenderBaseline(input: {
     upsertFileByPath(input.tree, `${base}/page.tsx`, buildCssBaselinePage(input.outputLanguage));
 }
 
+function removeCssRenderBaseline(tree: any[], templateKind: TemplateKind) {
+    const base = resolveAppRouterBasePath(templateKind);
+    const baselinePaths = [
+        `${base}/globals.css`,
+        `${base}/layout.tsx`,
+        `${base}/page.tsx`
+    ];
+    for (const filePath of baselinePaths) {
+        const existing = getFileContentByPath(tree, filePath);
+        if (!existing.trim()) continue;
+        if (
+            /Renderable scaffold baseline generated by Forecoding/i.test(existing) ||
+            /Scaffold is ready/i.test(existing) ||
+            /This page guarantees baseline visual rendering/i.test(existing) ||
+            /hero-card/i.test(existing) ||
+            /--primary:\s*#2563eb/i.test(existing)
+        ) {
+            removeFileByPath(tree, filePath);
+        }
+    }
+}
+
 function resolvePromptPathForFile(filePath: string) {
     const normalized = filePath.replace(/\\/g, "/");
     const idx = normalized.lastIndexOf("/");
@@ -4330,7 +4542,7 @@ function resolvePromptPathForFile(filePath: string) {
 function buildTaskPromptContent(input: {
     task: GenerationTask;
     outputMode: OutputMode;
-    outputLanguage: OutputLanguage;
+    usesZod: boolean;
 }) {
     const lines: string[] = [];
     lines.push(`Implement \`${input.task.filePath}\` for ${input.task.phaseTitle}.`);
@@ -4338,10 +4550,34 @@ function buildTaskPromptContent(input: {
     if (input.outputMode === "runnable_scaffold") {
         lines.push("The result must compile cleanly and preserve the runnable baseline.");
     } else {
-        lines.push("Preserve architecture constraints even if some implementation remains scaffolded.");
+        lines.push("Preserve architecture constraints and keep non-placeholder config files parseable.");
     }
+    lines.push(buildTaskQualityHints(input.task.filePath, input.usesZod));
     (input.task.doneCriteria || []).forEach((item) => lines.push(item));
     return lines.join(" ");
+}
+
+function buildTaskQualityHints(filePath: string, usesZod: boolean) {
+    const hints: string[] = [];
+    if (/components\/|\.tsx$/i.test(filePath)) {
+        hints.push("Keep UI states explicit and preserve accessible labels, focus states, and typed props.");
+    }
+    if (isPageSpecPath(filePath)) {
+        hints.push("Document or implement loading, empty, error, and success states in the final page.");
+    }
+    if (/\/api\/|route\.(ts|js)$/i.test(filePath) || /^functions\/.+\.(ts|js)$/i.test(filePath)) {
+        hints.push("Validate request input and return stable, user-safe structured responses.");
+        if (usesZod) {
+            hints.push("Prefer Zod-backed input parsing where request contracts exist.");
+        }
+    }
+    if (/\.(json|config\.(ts|js)|package\.json|tsconfig\.json)$/i.test(filePath)) {
+        hints.push("Keep the output fully parseable and free of markdown commentary.");
+    }
+    if (hints.length === 0) {
+        hints.push("Keep module boundaries clear, typed, and easy to verify in isolation.");
+    }
+    return hints.join(" ");
 }
 
 function buildDirectoryPromptFile(input: {
@@ -4396,7 +4632,7 @@ function buildDirectoryPromptFile(input: {
     lines.push(`- oneClickMode: \`${input.oneClickMode}\``);
     lines.push(`- ideProfile: \`${input.ideProfile}\``);
     lines.push("- Replace scaffold placeholders with final implementation code.");
-    lines.push("- Do not break the root runnable baseline config.");
+    lines.push("- Do not invalidate root config contracts or manifest/doc references.");
     lines.push("");
     lines.push("## Task List");
     input.tasks.forEach((task) => {
@@ -4488,13 +4724,13 @@ function buildOneClickPrompt(input: {
         "## Hard Constraints",
         "- Mode: `strict_build_v1`.",
         "- Do not implement by raw directory traversal. Follow phases only.",
-        "- Do not rewrite core baseline config contracts (`package.json`, `tsconfig.json`, `next.config.ts`, `.env.example`).",
+        "- Keep generated config files parseable and free of markdown-only scaffold commentary.",
+        "- Do not rewrite core config contracts (`package.json`, `tsconfig.json`, `next.config.ts`, `vite.config.ts`, `.env.example`) unless the task explicitly requires it.",
         "",
         "## Final Gate",
-        "```bash",
-        "npm install",
-        "npm run build",
-        "```",
+        "- Confirm manifest task coverage is complete.",
+        "- Confirm route map and workspace/package structure still match the generated tree.",
+        "- Only treat the project as runnable after placeholder implementation is finished.",
         ""
     ].join("\n");
 }
@@ -4572,16 +4808,17 @@ function buildGenerationManifest(input: {
     outputMode: OutputMode;
     outputLanguage: OutputLanguage;
     templateKind: TemplateKind;
+    profile: SpecPackProfile;
     oneClickMode: OneClickMode;
     ideProfile: IdeProfile;
 }): GenerationManifest {
     const phasePlans = buildPhasePlansForTree(input.tree, input.outputLanguage);
-    const taskIdByPath = new Map<string, string>();
     const tasks: GenerationTask[] = [];
     const placeholderPaths = collectPlaceholderPaths(input.tree);
     const phaseByPath = new Map<string, number>();
     const phaseTitleByIndex = new Map<number, string>();
     const phaseValidationByIndex = new Map<number, string[]>();
+    const usesZod = /\bzod\b/i.test(input.profile.stackSignals.join(" "));
 
     for (const phase of phasePlans) {
         phaseTitleByIndex.set(phase.phase, phase.title);
@@ -4595,13 +4832,13 @@ function buildGenerationManifest(input: {
         const phase = phaseByPath.get(filePath) ?? classifyImplementationPhase(filePath);
         const phaseTitle = phaseTitleByIndex.get(phase) || `Phase ${phase}`;
         const taskId = `task_${tasks.length + 1}`;
-        taskIdByPath.set(filePath, taskId);
         tasks.push({
             id: taskId,
             phase,
             phaseTitle,
             filePath,
             taskType: "implementation",
+            contentKind: "placeholder",
             mustWriteCode: input.outputMode === "runnable_scaffold",
             doneCriteria: [
                 `Replace the scaffold placeholder for ${filePath} with a stable implementation.`,
@@ -4618,7 +4855,7 @@ function buildGenerationManifest(input: {
         task.promptContent = buildTaskPromptContent({
             task,
             outputMode: input.outputMode,
-            outputLanguage: input.outputLanguage
+            usesZod
         });
     });
 
@@ -4629,16 +4866,24 @@ function buildGenerationManifest(input: {
         task.dependencies = deps;
     }
 
+    const files: GenerationManifestFile[] = collectFilePathsFromTree(input.tree).map((path) => ({
+        path,
+        contentKind: resolveContentKindForPath(path),
+        promptPath: resolveContentKindForPath(path) === "placeholder" ? resolvePromptPathForFile(path) : undefined
+    }));
+
     return {
-        version: "one_click_manifest_v1",
+        version: "one_click_manifest_v2",
         templateKind: input.templateKind,
         outputMode: input.outputMode,
         outputLanguage: input.outputLanguage,
         oneClickMode: input.oneClickMode,
         ideProfile: input.ideProfile,
         generatedAt: new Date().toISOString(),
+        profile: input.profile,
         tasks,
-        phases: phasePlans
+        phases: phasePlans,
+        files
     };
 }
 
@@ -4695,6 +4940,179 @@ function validateNextConfigContent(text: string) {
     if (/```/.test(source)) return false;
     if (!/export\s+default\s+nextConfig/.test(source)) return false;
     return true;
+}
+
+function validateViteConfigContent(text: string) {
+    const source = (text || "").trim();
+    if (!source) return false;
+    if (/##\s+Quality Constraints/i.test(source)) return false;
+    if (/```/.test(source)) return false;
+    if (!/defineConfig/.test(source)) return false;
+    return true;
+}
+
+function getManifestContentKind(manifest: GenerationManifest, path: string): ExportContentKind {
+    const manifestEntry = manifest.files?.find((entry) => entry.path === path);
+    return manifestEntry?.contentKind || resolveContentKindForPath(path);
+}
+
+function isStructuredSpecContentContaminated(content: string) {
+    const source = (content || "").trim();
+    if (!source) return false;
+    return (
+        /##\s+Quality Constraints/i.test(source) ||
+        /##\s+Template Guidance/i.test(source) ||
+        /##\s+Anti-Patterns/i.test(source) ||
+        /##\s+Good\s+vs\s+Bad\s+Examples/i.test(source)
+    );
+}
+
+function collectStructuredContentContamination(input: { tree: any[]; manifest: GenerationManifest }) {
+    const matches: string[] = [];
+    for (const path of collectFilePathsFromTree(input.tree)) {
+        const kind = getManifestContentKind(input.manifest, path);
+        if (kind === "placeholder" || kind === "doc" || kind === "template") continue;
+        const content = getFileContentByPath(input.tree, path);
+        if (!content.trim()) continue;
+        if (isStructuredSpecContentContaminated(content)) {
+            matches.push(path);
+        }
+    }
+    return matches;
+}
+
+function collectInvalidJsonFiles(input: { tree: any[]; manifest: GenerationManifest }) {
+    const matches: string[] = [];
+    for (const path of collectFilePathsFromTree(input.tree)) {
+        const kind = getManifestContentKind(input.manifest, path);
+        if (kind === "placeholder") continue;
+        if (!/\.json$/i.test(path) && !/package\.json$/i.test(path)) continue;
+        const content = getFileContentByPath(input.tree, path);
+        if (!content.trim()) {
+            matches.push(path);
+            continue;
+        }
+        try {
+            JSON.parse(content);
+        } catch {
+            matches.push(path);
+        }
+    }
+    return matches;
+}
+
+function collectRouteMapReferenceIssues(tree: any[]) {
+    const routeMap = getFileContentByPath(tree, "docs/ROUTE_MAP.md");
+    if (!routeMap.trim()) return [] as string[];
+    const allPaths = new Set(collectFilePathsFromTree(tree));
+    return routeMap
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^\|/.test(line))
+        .slice(2)
+        .map((line) => {
+            const columns = line.split("|").map((part) => part.trim()).filter(Boolean);
+            return columns[1] || "";
+        })
+        .filter(Boolean)
+        .filter((path) => !allPaths.has(path));
+}
+
+function collectWorkspaceStructureIssues(tree: any[]) {
+    const packageJsonRaw = getFileContentByPath(tree, "package.json");
+    if (!packageJsonRaw.trim()) return [] as string[];
+    try {
+        const parsed = JSON.parse(packageJsonRaw) as { workspaces?: string[] };
+        if (!Array.isArray(parsed.workspaces) || parsed.workspaces.length === 0) return [] as string[];
+        const allPaths = collectFilePathsFromTree(tree);
+        const issues: string[] = [];
+        if (parsed.workspaces.includes("apps/*")) {
+            const appPackages = allPaths.filter((path) => /^apps\/[^/]+\/package\.json$/i.test(path));
+            if (appPackages.length === 0) issues.push("Missing workspace package.json files under apps/*");
+        }
+        if (parsed.workspaces.includes("packages/*")) {
+            const packageEntries = allPaths.filter((path) => /^packages\/[^/]+\/package\.json$/i.test(path));
+            if (packageEntries.length === 0) issues.push("Missing workspace package.json files under packages/*");
+        }
+        return issues;
+    } catch {
+        return ["Root package.json is invalid JSON"];
+    }
+}
+
+function collectPackageDependencyKeysFromTree(tree: any[]) {
+    const deps = new Set<string>();
+    for (const path of collectFilePathsFromTree(tree)) {
+        if (!/package\.json$/i.test(path)) continue;
+        const content = getFileContentByPath(tree, path);
+        parsePackageDependencyKeys(content).forEach((key) => deps.add(key));
+    }
+    return deps;
+}
+
+function collectReadmeStackMismatchIssues(input: {
+    tree: any[];
+    manifest: GenerationManifest;
+    profile: SpecPackProfile;
+}) {
+    const readme = getFileContentByPath(input.tree, "README.md").toLowerCase();
+    if (!readme.trim()) return [] as string[];
+    const deps = collectPackageDependencyKeysFromTree(input.tree);
+    const issues: string[] = [];
+    const expect = (condition: boolean, message: string) => {
+        if (!condition) issues.push(message);
+    };
+
+    if (/react\s*\+\s*vite|\bvite\b/.test(readme)) {
+        expect(
+            input.profile.framework === "react_vite_spa" || deps.has("vite"),
+            "README references Vite but generated profile/dependencies do not."
+        );
+    }
+    if (/next\.js|app router/.test(readme)) {
+        expect(
+            input.profile.framework === "next_app_router" || deps.has("next"),
+            "README references Next.js/App Router but generated profile/dependencies do not."
+        );
+    }
+    if (/firebase|firestore|firebase auth|cloud functions/.test(readme)) {
+        expect(
+            deps.has("firebase") || deps.has("firebase-admin"),
+            "README references Firebase but generated dependencies do not."
+        );
+    }
+    if (/prisma|postgresql/.test(readme)) {
+        expect(
+            deps.has("@prisma/client") || deps.has("prisma"),
+            "README references Prisma/PostgreSQL but generated dependencies do not."
+        );
+    }
+    if (/vercel ai sdk/.test(readme)) {
+        expect(
+            deps.has("ai") || deps.has("@ai-sdk/openai"),
+            "README references Vercel AI SDK but generated dependencies do not."
+        );
+    }
+    if (/\bopenai\b|responses api/.test(readme)) {
+        expect(
+            deps.has("openai") || deps.has("@ai-sdk/openai"),
+            "README references OpenAI but generated dependencies do not."
+        );
+    }
+    if (/stripe/.test(readme)) {
+        expect(
+            deps.has("stripe") || deps.has("@stripe/stripe-js"),
+            "README references Stripe but generated dependencies do not."
+        );
+    }
+    if (/react router/.test(readme)) {
+        expect(
+            deps.has("react-router-dom"),
+            "README references React Router but generated dependencies do not."
+        );
+    }
+
+    return issues;
 }
 
 function validateUiSpecContent(text: string) {
@@ -4777,7 +5195,44 @@ function isPageSpecPath(path: string) {
     if (/^app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
     if (/^src\/app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
     if (/^apps\/[^/]+\/app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
+    if (/^src\/pages\/.+\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
+    if (/^pages\/.+\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
+    if (/^apps\/[^/]+\/src\/pages\/.+\.(tsx|ts|jsx|js)$/i.test(normalized)) return true;
     return false;
+}
+
+function toRouteSegment(segment: string) {
+    const normalized = segment
+        .replace(/\.(tsx|ts|jsx|js)$/i, "")
+        .replace(/\[(.+?)\]/g, ":$1");
+    if (/^(index|home)$/i.test(normalized)) return "";
+    return normalized
+        .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+        .replace(/[^a-zA-Z0-9:_-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase();
+}
+
+function deriveRouteFromPagePath(path: string) {
+    const normalized = (path || "").replace(/\\/g, "/");
+    if (/\/app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized) || /^app\/(?:.+\/)?page\.(tsx|ts|jsx|js)$/i.test(normalized)) {
+        const route = normalized
+            .replace(/^src\//, "")
+            .replace(/^apps\/[^/]+\//, "")
+            .replace(/^app\//, "/")
+            .replace(/\/page\.(tsx|ts|jsx|js)$/i, "");
+        return route === "" ? "/" : route;
+    }
+
+    const match = normalized.match(/^(?:apps\/[^/]+\/)?(?:src\/)?pages\/(.+)\.(tsx|ts|jsx|js)$/i);
+    if (!match) return "/";
+    const route = match[1]
+        .split("/")
+        .map((segment) => toRouteSegment(segment))
+        .filter(Boolean)
+        .join("/");
+    return route ? `/${route}` : "/";
 }
 
 function hasPageUiRequirements(content: string) {
@@ -4811,11 +5266,11 @@ function collectPagesMissingUiRequirements(tree: any[]) {
     };
 }
 
-function deriveMissingDependencies(toolStack: string, packageJsonText: string) {
+function deriveMissingDependencies(toolStack: string, packageJsonText: string, templateKind: TemplateKind) {
     const closure = deriveDependencyClosure({
         toolStack,
         analysisText: toolStack,
-        templateKind: "next_root"
+        templateKind
     });
     const expected = new Set<string>([
         ...Object.keys(closure.deps || {}),
@@ -4832,11 +5287,14 @@ function runGenerationPreflight(input: {
     outputLanguage: OutputLanguage;
     toolStack: string;
     manifest: GenerationManifest;
+    profile: SpecPackProfile;
     pathNormalizationFixCount: number;
 }): PreflightReport {
     const issues: PreflightIssue[] = [];
     const nextConfig = getFileContentByPath(input.tree, "next.config.ts");
-    const nextConfigValid = validateNextConfigContent(nextConfig);
+    const viteConfig = getFileContentByPath(input.tree, "vite.config.ts");
+    const nextConfigValid = !nextConfig.trim() || validateNextConfigContent(nextConfig);
+    const viteConfigValid = !viteConfig.trim() || validateViteConfigContent(viteConfig);
     if (!nextConfigValid) {
         issues.push({
             code: "NEXT_CONFIG_CONTAMINATED",
@@ -4844,19 +5302,28 @@ function runGenerationPreflight(input: {
             message: "`next.config.ts` contains invalid scaffold text."
         });
     }
+    if (!viteConfigValid) {
+        issues.push({
+            code: "SPEC_CONTENT_CONTAMINATED",
+            severity: "error",
+            message: "`vite.config.ts` contains invalid scaffold text."
+        });
+    }
 
     const envExamplePresent = Boolean(getFileContentByPath(input.tree, ".env.example"));
-    if (!envExamplePresent) {
+    if (!envExamplePresent && input.outputMode === "runnable_scaffold") {
         issues.push({
             code: "MISSING_ENV_EXAMPLE",
             severity: "error",
             message: "`.env.example` is missing."
         });
     }
-    const cssBaseline = validateCssBaselineBundle({
-        tree: input.tree,
-        templateKind: input.manifest.templateKind
-    });
+    const cssBaseline = input.outputMode === "runnable_scaffold"
+        ? validateCssBaselineBundle({
+            tree: input.tree,
+            templateKind: input.manifest.templateKind
+        })
+        : { valid: true, missing: [] as string[] };
     if (!cssBaseline.valid) {
         issues.push({
             code: "MISSING_CSS_BASELINE",
@@ -4965,6 +5432,66 @@ function runGenerationPreflight(input: {
         });
     }
 
+    const contaminatedFiles = collectStructuredContentContamination({
+        tree: input.tree,
+        manifest: input.manifest
+    });
+    if (contaminatedFiles.length > 0) {
+        issues.push({
+            code: "SPEC_CONTENT_CONTAMINATED",
+            severity: "error",
+            message: "Structured config/code files contain spec-only guidance sections.",
+            details: contaminatedFiles.slice(0, 10).join(", ")
+        });
+    }
+
+    const invalidJsonFiles = collectInvalidJsonFiles({
+        tree: input.tree,
+        manifest: input.manifest
+    });
+    if (invalidJsonFiles.length > 0) {
+        issues.push({
+            code: "INVALID_JSON_FILE",
+            severity: "error",
+            message: "Structured JSON config files must be parseable.",
+            details: invalidJsonFiles.slice(0, 10).join(", ")
+        });
+    }
+
+    const routeMapIssues = collectRouteMapReferenceIssues(input.tree);
+    if (routeMapIssues.length > 0) {
+        issues.push({
+            code: "ROUTE_MAP_REFERENCE_MISSING",
+            severity: "error",
+            message: "Route map references files that do not exist in the final tree.",
+            details: routeMapIssues.slice(0, 10).join(", ")
+        });
+    }
+
+    const workspaceIssues = collectWorkspaceStructureIssues(input.tree);
+    if (workspaceIssues.length > 0) {
+        issues.push({
+            code: "WORKSPACE_STRUCTURE_MISMATCH",
+            severity: "error",
+            message: "Workspace declarations do not match generated package structure.",
+            details: workspaceIssues.slice(0, 10).join(", ")
+        });
+    }
+
+    const readmeStackIssues = collectReadmeStackMismatchIssues({
+        tree: input.tree,
+        manifest: input.manifest,
+        profile: input.profile
+    });
+    if (readmeStackIssues.length > 0) {
+        issues.push({
+            code: "README_STACK_MISMATCH",
+            severity: "error",
+            message: "README tech-stack descriptions drift from the generated profile/dependencies.",
+            details: readmeStackIssues.slice(0, 10).join(" | ")
+        });
+    }
+
     const readmeLanguage = detectDocumentLanguage(getFileContentByPath(input.tree, "README.md"));
     const rootPromptLanguage = detectDocumentLanguage(getFileContentByPath(input.tree, "_AI_PROMPT.md"));
     if (readmeLanguage !== rootPromptLanguage || readmeLanguage !== input.outputLanguage) {
@@ -4977,7 +5504,8 @@ function runGenerationPreflight(input: {
 
     const missingDeps = deriveMissingDependencies(
         input.toolStack,
-        getFileContentByPath(input.tree, "package.json")
+        getFileContentByPath(input.tree, "package.json"),
+        input.manifest.templateKind
     );
     if (missingDeps.length > 0) {
         issues.push({
@@ -4996,7 +5524,7 @@ function runGenerationPreflight(input: {
         pass: issues.every((issue) => issue.severity !== "error"),
         planCoveragePct,
         placeholderCount: placeholderPaths.length,
-        nextConfigValid,
+        nextConfigValid: nextConfigValid && viteConfigValid,
         envExamplePresent,
         pathNormalizationFixCount: input.pathNormalizationFixCount,
         missingDepsCount: missingDeps.length,
@@ -5009,6 +5537,26 @@ function buildRuntimeReadiness(input: {
     outputMode: OutputMode;
     preflight: PreflightReport;
 }): RuntimeReadiness {
+    if (input.outputMode === "virtual_spec") {
+        return {
+            outputMode: input.outputMode,
+            promptRefsValid: !input.preflight.issues.some((issue) => (
+                issue.code === "INVALID_PROMPT_REFERENCE" ||
+                issue.code === "MISSING_PROMPT_FILE" ||
+                issue.code === "MISSING_TASK_PROMPT"
+            )),
+            dependenciesResolved: !input.preflight.issues.some((issue) => (
+                issue.code === "MISSING_STACK_DEPENDENCIES" ||
+                issue.code === "MISSING_REQUIRED_DEPENDENCIES"
+            )),
+            installable: false,
+            typecheckable: false,
+            lintable: false,
+            buildable: false,
+            issues: input.preflight.issues
+        };
+    }
+
     const issueCodes = new Set(input.preflight.issues.map((issue) => issue.code));
     const promptRefsValid = !issueCodes.has("INVALID_PROMPT_REFERENCE") && !issueCodes.has("MISSING_PROMPT_FILE") && !issueCodes.has("MISSING_TASK_PROMPT");
     const dependenciesResolved = !issueCodes.has("MISSING_STACK_DEPENDENCIES") && !issueCodes.has("MISSING_REQUIRED_DEPENDENCIES");

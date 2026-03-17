@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    ".gcloud/**",
+    ".tmp/**",
+    ".vscode/**",
+    "__release_flash_fix/**",
+    "__review_scaffold/**",
   ]),
 ]);
 

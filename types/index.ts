@@ -342,8 +342,20 @@ export interface DiagramGovernance {
     lastDecisionAt?: number | null;
 }
 
-export type TemplateKind = "next_root" | "next_src" | "monorepo_multiapp";
+export type TemplateKind = "next_root" | "next_src" | "react_vite" | "monorepo_multiapp";
 export type OutputMode = "virtual_spec" | "runnable_scaffold";
+export type ExportContentKind = "doc" | "config" | "placeholder" | "template";
+export type SpecPackFramework = "next_app_router" | "react_vite_spa" | "monorepo_multiapp";
+
+export interface SpecPackProfile {
+    version: "spec_pack_profile_v1";
+    framework: SpecPackFramework;
+    templateKind: TemplateKind;
+    routeStyle: "next_app_router" | "react_router";
+    workspaceMode: "single_app" | "monorepo";
+    stackSignals: string[];
+    dependencyHints: string[];
+}
 
 export interface StructuredGenerationContext {
     version: "structured_generation_context_v1";
@@ -362,12 +374,19 @@ export interface GenerationTask {
     phaseTitle: string;
     filePath: string;
     taskType?: GenerationTaskType;
+    contentKind?: ExportContentKind;
     mustWriteCode?: boolean;
     doneCriteria?: string[];
     validationCommands?: string[];
     promptContent?: string;
     promptPath: string;
     dependencies?: string[];
+}
+
+export interface GenerationManifestFile {
+    path: string;
+    contentKind: ExportContentKind;
+    promptPath?: string;
 }
 
 export interface PhasePlan {
@@ -381,15 +400,17 @@ export interface PhasePlan {
 }
 
 export interface GenerationManifest {
-    version: "one_click_manifest_v1";
+    version: "one_click_manifest_v1" | "one_click_manifest_v2";
     templateKind: TemplateKind;
     outputMode: OutputMode;
     outputLanguage: "zh" | "en";
     oneClickMode: "strict_build_v1";
     ideProfile: "generic";
     generatedAt: string;
+    profile?: SpecPackProfile;
     tasks: GenerationTask[];
     phases: PhasePlan[];
+    files?: GenerationManifestFile[];
 }
 
 export interface PreflightIssue {
@@ -407,7 +428,12 @@ export interface PreflightIssue {
         | "MISSING_REQUIRED_DEPENDENCIES"
         | "MISSING_CSS_BASELINE"
         | "MISSING_PAGE_UI_REQUIREMENTS"
-        | "RUNTIME_BASELINE_INCOMPLETE";
+        | "RUNTIME_BASELINE_INCOMPLETE"
+        | "SPEC_CONTENT_CONTAMINATED"
+        | "INVALID_JSON_FILE"
+        | "ROUTE_MAP_REFERENCE_MISSING"
+        | "WORKSPACE_STRUCTURE_MISMATCH"
+        | "README_STACK_MISMATCH";
     severity: "warning" | "error";
     message: string;
     details?: string;

@@ -1301,7 +1301,7 @@ function hasMeaningfulDiagramChange(current: string, candidate: string): boolean
     return normalizeMermaidForComparison(current) !== normalizeMermaidForComparison(candidate);
 }
 
-function inferTemplateKindHintFromTree(tree?: FileNode[]): "next_root" | "next_src" | "monorepo_multiapp" | undefined {
+function inferTemplateKindHintFromTree(tree?: FileNode[]): "next_root" | "next_src" | "react_vite" | "monorepo_multiapp" | undefined {
     if (!tree || tree.length === 0) return undefined;
 
     const topLevel = new Set(
@@ -1311,6 +1311,27 @@ function inferTemplateKindHintFromTree(tree?: FileNode[]): "next_root" | "next_s
     );
 
     if (topLevel.has("apps") || topLevel.has("packages")) return "monorepo_multiapp";
+    const allPaths = new Set<string>();
+    const walk = (nodes: FileNode[], prefix = "") => {
+        nodes.forEach((node) => {
+            const path = prefix ? `${prefix}/${node.name}` : node.name;
+            if (node.type === "file") {
+                allPaths.add(path);
+                return;
+            }
+            if (node.children?.length) {
+                walk(node.children, path);
+            }
+        });
+    };
+    walk(tree);
+    if (
+        allPaths.has("vite.config.ts") ||
+        Array.from(allPaths).some((path) => /^src\/pages\/.+\.(ts|tsx|js|jsx)$/i.test(path)) ||
+        allPaths.has("src/main.tsx")
+    ) {
+        return "react_vite";
+    }
     if (topLevel.has("src")) return "next_src";
     if (topLevel.has("app")) return "next_root";
     return undefined;

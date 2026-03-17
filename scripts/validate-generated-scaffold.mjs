@@ -122,6 +122,83 @@ function isCodeFile(filePath) {
     return /\.(ts|tsx|js|jsx|mjs|cjs|css)$/i.test(filePath);
 }
 
+const ROOT_DOC_PATHS = new Set([
+    "README.md",
+    "IMPLEMENTATION_PLAN.md",
+    "ONE_CLICK_PROMPT.md",
+    "_AI_PROMPT.md"
+]);
+
+const ROOT_CONFIG_PATHS = new Set([
+    "package.json",
+    "tsconfig.json",
+    "next.config.ts",
+    "vite.config.ts",
+    "turbo.json",
+    ".env.example",
+    "GENERATION_MANIFEST.json",
+    "index.html",
+    "apps/web/package.json",
+    "apps/backend/package.json",
+    "packages/domain/package.json"
+]);
+
+function normalizePath(value) {
+    return String(value || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.?\//, "");
+}
+
+function classifyContentKind(pathValue) {
+    const filePath = normalizePath(pathValue);
+    if (!filePath) return "placeholder";
+    if (/^config\/integrations\/.+\.template\./i.test(filePath)) return "template";
+    if (ROOT_DOC_PATHS.has(filePath) || filePath.startsWith("docs/") || filePath.endsWith("/_AI_PROMPT.md")) return "doc";
+    if (
+        ROOT_CONFIG_PATHS.has(filePath) ||
+        /^apps\/[^/]+\/package\.json$/i.test(filePath) ||
+        /^apps\/[^/]+\/tsconfig\.json$/i.test(filePath) ||
+        /^packages\/[^/]+\/package\.json$/i.test(filePath) ||
+        /^packages\/[^/]+\/tsconfig\.json$/i.test(filePath)
+    ) {
+        return "config";
+    }
+    return "placeholder";
+}
+
+function collectFiles(nodes, prefix = "") {
+    const files = [];
+    for (const node of nodes || []) {
+        if (!node || typeof node !== "object" || typeof node.name !== "string") continue;
+        const relativePath = prefix ? `${prefix}/${node.name}` : node.name;
+        if (node.type === "folder") {
+            files.push(...collectFiles(node.children || [], relativePath));
+            continue;
+        }
+        files.push({
+            path: relativePath,
+            content: typeof node.content === "string" ? node.content : ""
+        });
+    }
+    return files;
+}
+
+function parseManifestFromTree(nodes) {
+    const manifestFile = collectFiles(nodes).find((entry) => normalizePath(entry.path) === "GENERATION_MANIFEST.json");
+    if (!manifestFile?.content) return null;
+    try {
+        return JSON.parse(manifestFile.content);
+    } catch {
+        return null;
+    }
+}
+
+function getManifestContentKind(manifest, filePath) {
+    const normalized = normalizePath(filePath);
+    const fileEntry = Array.isArray(manifest?.files)
+        ? manifest.files.find((entry) => normalizePath(entry.path) === normalized)
+        : null;
+    return fileEntry?.contentKind || classifyContentKind(normalized);
+}
+
 function isPlaceholderContent(filePath, content) {
     const source = (content || "").trim();
     if (!source) return false;
@@ -137,10 +214,11 @@ function isPlaceholderContent(filePath, content) {
 
 function normalizeInputPayload(payload) {
     if (Array.isArray(payload)) {
+        const manifest = parseManifestFromTree(payload);
         return {
-            outputMode: "runnable_scaffold",
+            outputMode: manifest?.outputMode === "virtual_spec" ? "virtual_spec" : "runnable_scaffold",
             projectTree: payload,
-            generationManifest: null
+            generationManifest: manifest
         };
     }
 
@@ -151,7 +229,7 @@ function normalizeInputPayload(payload) {
     return {
         outputMode: payload.outputMode === "virtual_spec" ? "virtual_spec" : "runnable_scaffold",
         projectTree: payload.projectTree,
-        generationManifest: payload.generationManifest || null
+        generationManifest: payload.generationManifest || parseManifestFromTree(payload.projectTree)
     };
 }
 
@@ -172,13 +250,19 @@ async function materializeTree(nodes, rootDir, prefix = "") {
     }
 }
 
-function collectPlaceholderFiles(nodes, prefix = "") {
+function collectPlaceholderFiles(nodes, manifest, prefix = "") {
+    if (manifest && Array.isArray(manifest.files)) {
+        return manifest.files
+            .filter((entry) => entry && entry.contentKind === "placeholder" && typeof entry.path === "string")
+            .map((entry) => normalizePath(entry.path))
+            .sort((left, right) => left.localeCompare(right));
+    }
     const matches = [];
     for (const node of nodes || []) {
         if (!node || typeof node !== "object" || typeof node.name !== "string") continue;
         const relativePath = prefix ? `${prefix}/${node.name}` : node.name;
         if (node.type === "folder") {
-            matches.push(...collectPlaceholderFiles(node.children || [], relativePath));
+            matches.push(...collectPlaceholderFiles(node.children || [], null, relativePath));
             continue;
         }
         if (node.type === "file" && isPlaceholderContent(relativePath, node.content || "")) {
@@ -186,6 +270,170 @@ function collectPlaceholderFiles(nodes, prefix = "") {
         }
     }
     return matches.sort((left, right) => left.localeCompare(right));
+}
+
+function isStructuredContentContaminated(content) {
+    const source = (content || "").trim();
+    if (!source) return false;
+    return (
+        /##\s+Quality Constraints/i.test(source) ||
+        /##\s+Template Guidance/i.test(source) ||
+        /##\s+Anti-Patterns/i.test(source) ||
+        /##\s+Good\s+vs\s+Bad\s+Examples/i.test(source)
+    );
+}
+
+function collectStructuralIssues(nodes, manifest) {
+    const files = collectFiles(nodes);
+    const allPaths = new Set(files.map((entry) => normalizePath(entry.path)));
+    const issues = [];
+    const dependencyKeys = new Set();
+
+    files
+        .filter((entry) => /package\.json$/i.test(normalizePath(entry.path)))
+        .forEach((entry) => {
+            try {
+                const parsed = JSON.parse(entry.content || "{}");
+                Object.keys(parsed.dependencies || {}).forEach((key) => dependencyKeys.add(key));
+                Object.keys(parsed.devDependencies || {}).forEach((key) => dependencyKeys.add(key));
+            } catch {
+                // invalid JSON handled below
+            }
+        });
+
+    const contaminated = files
+        .filter((entry) => {
+            const kind = getManifestContentKind(manifest, entry.path);
+            return kind !== "placeholder" && kind !== "doc" && kind !== "template" && isStructuredContentContaminated(entry.content);
+        })
+        .map((entry) => normalizePath(entry.path));
+    if (contaminated.length > 0) {
+        issues.push({
+            code: "SPEC_CONTENT_CONTAMINATED",
+            message: "Structured config/code files contain markdown-only scaffold guidance.",
+            details: contaminated.slice(0, 20).join(", ")
+        });
+    }
+
+    const invalidJson = files
+        .filter((entry) => {
+            const kind = getManifestContentKind(manifest, entry.path);
+            if (kind === "placeholder") return false;
+            return /\.json$/i.test(entry.path);
+        })
+        .filter((entry) => {
+            try {
+                JSON.parse(entry.content || "");
+                return false;
+            } catch {
+                return true;
+            }
+        })
+        .map((entry) => normalizePath(entry.path));
+    if (invalidJson.length > 0) {
+        issues.push({
+            code: "INVALID_JSON_FILE",
+            message: "Structured JSON files must remain parseable.",
+            details: invalidJson.slice(0, 20).join(", ")
+        });
+    }
+
+    const routeMap = files.find((entry) => normalizePath(entry.path) === "docs/ROUTE_MAP.md");
+    if (routeMap?.content) {
+        const missingRouteRefs = routeMap.content
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => /^\|/.test(line))
+            .slice(2)
+            .map((line) => line.split("|").map((part) => part.trim()).filter(Boolean)[1] || "")
+            .filter(Boolean)
+            .filter((ref) => !allPaths.has(ref));
+        if (missingRouteRefs.length > 0) {
+            issues.push({
+                code: "ROUTE_MAP_REFERENCE_MISSING",
+                message: "Route map references files that do not exist in the final tree.",
+                details: missingRouteRefs.slice(0, 20).join(", ")
+            });
+        }
+    }
+
+    const rootPackage = files.find((entry) => normalizePath(entry.path) === "package.json");
+    if (!rootPackage) {
+        issues.push({
+            code: "MISSING_PACKAGE_JSON",
+            message: "Materialized scaffold is missing package.json."
+        });
+        return issues;
+    }
+
+    try {
+        const parsed = JSON.parse(rootPackage.content);
+        if (Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
+            if (parsed.workspaces.includes("apps/*")) {
+                const appPackages = files.filter((entry) => /^apps\/[^/]+\/package\.json$/i.test(normalizePath(entry.path)));
+                if (appPackages.length === 0) {
+                    issues.push({
+                        code: "WORKSPACE_STRUCTURE_MISMATCH",
+                        message: "Workspace config expects apps/* package.json files."
+                    });
+                }
+            }
+            if (parsed.workspaces.includes("packages/*")) {
+                const packageEntries = files.filter((entry) => /^packages\/[^/]+\/package\.json$/i.test(normalizePath(entry.path)));
+                if (packageEntries.length === 0) {
+                    issues.push({
+                        code: "WORKSPACE_STRUCTURE_MISMATCH",
+                        message: "Workspace config expects packages/* package.json files."
+                    });
+                }
+            }
+        }
+    } catch {
+        issues.push({
+            code: "INVALID_JSON_FILE",
+            message: "Root package.json must remain parseable."
+        });
+    }
+
+    const readme = (files.find((entry) => normalizePath(entry.path) === "README.md")?.content || "").toLowerCase();
+    const profile = manifest?.profile || null;
+    const stackIssues = [];
+    const expect = (condition, message) => {
+        if (!condition) stackIssues.push(message);
+    };
+    if (/react\s*\+\s*vite|\bvite\b/.test(readme)) {
+        expect(profile?.framework === "react_vite_spa" || dependencyKeys.has("vite"), "README references Vite without matching profile/dependencies.");
+    }
+    if (/next\.js|app router/.test(readme)) {
+        expect(profile?.framework === "next_app_router" || dependencyKeys.has("next"), "README references Next.js/App Router without matching profile/dependencies.");
+    }
+    if (/firebase|firestore|firebase auth|cloud functions/.test(readme)) {
+        expect(dependencyKeys.has("firebase") || dependencyKeys.has("firebase-admin"), "README references Firebase without matching dependencies.");
+    }
+    if (/prisma|postgresql/.test(readme)) {
+        expect(dependencyKeys.has("@prisma/client") || dependencyKeys.has("prisma"), "README references Prisma/PostgreSQL without matching dependencies.");
+    }
+    if (/vercel ai sdk/.test(readme)) {
+        expect(dependencyKeys.has("ai") || dependencyKeys.has("@ai-sdk/openai"), "README references Vercel AI SDK without matching dependencies.");
+    }
+    if (/\bopenai\b|responses api/.test(readme)) {
+        expect(dependencyKeys.has("openai") || dependencyKeys.has("@ai-sdk/openai"), "README references OpenAI without matching dependencies.");
+    }
+    if (/stripe/.test(readme)) {
+        expect(dependencyKeys.has("stripe") || dependencyKeys.has("@stripe/stripe-js"), "README references Stripe without matching dependencies.");
+    }
+    if (/react router/.test(readme)) {
+        expect(dependencyKeys.has("react-router-dom"), "README references React Router without matching dependencies.");
+    }
+    if (stackIssues.length > 0) {
+        issues.push({
+            code: "README_STACK_MISMATCH",
+            message: "README tech-stack descriptions drift from generated dependencies/profile.",
+            details: stackIssues.slice(0, 20).join(" | ")
+        });
+    }
+
+    return issues;
 }
 
 async function readPackageJsonManifest(rootDir) {
@@ -302,7 +550,7 @@ async function main() {
 
     const rawInput = await fsp.readFile(args.input, "utf8");
     const payload = normalizeInputPayload(JSON.parse(rawInput));
-    const placeholderFiles = collectPlaceholderFiles(payload.projectTree);
+    const placeholderFiles = collectPlaceholderFiles(payload.projectTree, payload.generationManifest);
     const report = {
         version: "generated_scaffold_validation_v1",
         outputMode: payload.outputMode,
@@ -318,7 +566,9 @@ async function main() {
         issues: []
     };
 
-    if (placeholderFiles.length > 0) {
+    report.issues.push(...collectStructuralIssues(payload.projectTree, payload.generationManifest));
+
+    if (payload.outputMode !== "virtual_spec" && placeholderFiles.length > 0) {
         report.issues.push({
             code: "PLACEHOLDERS_REMAINING",
             message: "Generated scaffold still contains placeholder/spec source files.",
@@ -340,6 +590,19 @@ async function main() {
 
     await fsp.mkdir(materializedDir, { recursive: true });
     await materializeTree(payload.projectTree, materializedDir);
+
+    if (payload.outputMode === "virtual_spec") {
+        report.pass = report.issues.length === 0;
+        await maybeWriteReport(args.report, report);
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+        if (!report.pass) {
+            process.exitCode = 1;
+        }
+        if (!report.keptDirectory) {
+            await fsp.rm(materializedDir, { recursive: true, force: true });
+        }
+        return;
+    }
 
     const packageJsonPath = path.join(materializedDir, "package.json");
     if (!fs.existsSync(packageJsonPath)) {
