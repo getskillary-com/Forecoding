@@ -117,6 +117,9 @@ const customStyles = `
 `;
 
 const RENDER_DEBOUNCE_MS = 140;
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 5;
+const WHEEL_ZOOM_SENSITIVITY = 0.0015;
 
 function formatMermaidError(err: unknown) {
     let message = "Unknown Mermaid error";
@@ -306,10 +309,20 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     const [hoveredNode, setHoveredNode] = useState<HoveredNodeState>(null);
     const dragOriginRef = useRef({ x: 0, y: 0 });
     const dragMovedRef = useRef(false);
+    const zoomRef = useRef(1);
+    const panRef = useRef({ x: 0, y: 0 });
     const mermaidRef = useRef<typeof import('mermaid').default | null>(null);
     const initializedRef = useRef(false);
     const hasRenderedRef = useRef(false);
     const renderRequestIdRef = useRef(0);
+
+    useEffect(() => {
+        zoomRef.current = zoom;
+    }, [zoom]);
+
+    useEffect(() => {
+        panRef.current = pan;
+    }, [pan]);
 
     useEffect(() => {
         let cancelled = false;
@@ -521,12 +534,47 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         };
     }, [svg, error, fitDiagramToViewport]);
 
-    const handleWheel = (e: React.WheelEvent) => {
-        if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            const scale = e.deltaY > 0 ? 0.9 : 1.1;
-            setZoom(z => Math.min(Math.max(z * scale, 0.1), 5));
+    const updateViewport = useCallback((nextZoom: number, nextPan: { x: number; y: number }) => {
+        zoomRef.current = nextZoom;
+        panRef.current = nextPan;
+        setZoom(nextZoom);
+        setPan(nextPan);
+    }, []);
+
+    const zoomAroundPoint = useCallback((clientX: number, clientY: number, scaleFactor: number) => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const rect = container.getBoundingClientRect();
+        const currentZoom = zoomRef.current;
+        const currentPan = panRef.current;
+        const nextZoom = Math.min(Math.max(currentZoom * scaleFactor, MIN_ZOOM), MAX_ZOOM);
+
+        if (Math.abs(nextZoom - currentZoom) < 0.0001) {
+            return;
         }
+
+        const pointerX = clientX - rect.left;
+        const pointerY = clientY - rect.top;
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        const zoomRatio = nextZoom / currentZoom;
+        const nextPan = {
+            x: pointerX - centerX - (pointerX - centerX - currentPan.x) * zoomRatio,
+            y: pointerY - centerY - (pointerY - centerY - currentPan.y) * zoomRatio
+        };
+
+        updateViewport(nextZoom, nextPan);
+    }, [updateViewport]);
+
+    const handleWheel = (e: React.WheelEvent) => {
+        if (!svg || error) return;
+
+        e.preventDefault();
+        setHoveredNode(null);
+
+        const scale = Math.exp(-e.deltaY * WHEEL_ZOOM_SENSITIVITY);
+        zoomAroundPoint(e.clientX, e.clientY, scale);
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
@@ -573,8 +621,20 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         setIsDragging(false);
     };
 
-    const handleZoomIn = () => setZoom(z => Math.min(z * 1.2, 5));
-    const handleZoomOut = () => setZoom(z => Math.max(z * 0.8, 0.1));
+    const handleZoomIn = () => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const rect = container.getBoundingClientRect();
+        zoomAroundPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, 1.2);
+    };
+    const handleZoomOut = () => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const rect = container.getBoundingClientRect();
+        zoomAroundPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, 0.8);
+    };
     const handleReset = () => {
         setHoveredNode(null);
         fitDiagramToViewport();
