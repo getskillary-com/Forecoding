@@ -1547,7 +1547,7 @@ function buildCommonFallbackOptions(
 
     if (language === "zh") {
         return [
-            { label: "按推荐方案继续", value: "按你推荐的默认方案继续。" },
+            { label: "给我补充模板", value: "请给我一个高质量补充模板，我来补齐这项信息。" },
             { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
             { label: "给我常见选项", value: "请给我 2 到 3 个常见方案并说明取舍。" },
             { label: "暂时不确定", value: "我暂时不确定，请按最稳妥的默认方案推进。" }
@@ -1555,7 +1555,7 @@ function buildCommonFallbackOptions(
     }
 
     return [
-        { label: "Proceed with your recommendation", value: "Proceed with your recommended default approach." },
+        { label: "Give me a template", value: "Give me a high-quality template so I can fill the missing detail." },
         { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
         { label: "Show me common options", value: "Please show me 2 or 3 common options and explain the tradeoffs." },
         { label: "I'm not sure yet", value: "I'm not sure yet. Please continue with the safest default approach." }
@@ -1794,6 +1794,398 @@ function getReadinessRequirementLabel(
     return labels[requirementKey][language];
 }
 
+function buildRequirementCaptureTemplateQuestion(
+    language: "zh" | "en",
+    requirementKey: ReadinessRequirementKey,
+    architecturePack: ArchitecturePack
+) {
+    const label = getReadinessRequirementLabel(requirementKey, language);
+    const knownGoal = architecturePack.businessContext.productGoal.trim();
+    const templates: Record<ReadinessRequirementKey, { intro: string; lines: string[] }> = language === "zh"
+        ? {
+            "business_context.product_goal": {
+                intro: "这项内容不能靠默认模板代填。为了达到生产级，我们需要明确业务目标、衡量方式和范围边界。",
+                lines: [
+                    "目标用户是谁？",
+                    "他们当前最痛的 1 个问题是什么？",
+                    "这个产品在 v1 要帮他们完成什么结果？",
+                    "什么指标会让你判断这版有效？",
+                    "这一版明确不做什么？"
+                ]
+            },
+            "business_context.platforms": {
+                intro: "平台策略必须直接约束后续架构，所以需要确认首发平台和必须覆盖的运行环境。",
+                lines: [
+                    "首发平台是什么？",
+                    "必须覆盖哪些终端或运行环境？",
+                    "为什么这一版优先选这个平台？",
+                    "是否有必须支持的分发渠道或部署环境？"
+                ]
+            },
+            "business_context.target_users": {
+                intro: "目标用户需要具体到“谁在用、谁受益、谁拍板”，不能只写泛泛的人群。",
+                lines: [
+                    "主要使用者是谁？",
+                    "谁是购买者、管理员或审批者？",
+                    "他们现在怎么解决这个问题？",
+                    "使用频率和典型规模是什么？",
+                    "为什么他们会优先采用你的方案？"
+                ]
+            },
+            "business_context.user_journeys": {
+                intro: "用户旅程至少要能支持后续页面、接口和验收设计，所以需要写到可执行的粒度。",
+                lines: [
+                    "谁发起这条流程？",
+                    "触发条件是什么？",
+                    "关键步骤 1、2、3 是什么？",
+                    "成功输出是什么？",
+                    "失败或中断时用户怎么恢复？"
+                ]
+            },
+            "business_context.constraints_or_risks": {
+                intro: "生产级需求必须把约束和风险说透，否则后面的技术方案会失真。",
+                lines: [
+                    "时间、预算或团队约束是什么？",
+                    "合规、隐私或安全边界是什么？",
+                    "性能、稳定性或成本上限是什么？",
+                    "最担心的上线风险是什么？",
+                    "如果风险发生，最坏影响是什么？"
+                ]
+            },
+            "boundaries.bounded_contexts": {
+                intro: "限界上下文不能靠通用词硬凑，需要从真实业务边界出发。",
+                lines: [
+                    "这个上下文名称是什么？",
+                    "它独立负责什么？",
+                    "它明确不负责什么？",
+                    "它拥有哪些核心数据或状态？",
+                    "它依赖哪些外部上下文？"
+                ]
+            },
+            "boundaries.module_responsibilities": {
+                intro: "模块职责要能直接指导实现拆分，所以请明确输入、输出和边界。",
+                lines: [
+                    "模块名称是什么？",
+                    "模块唯一责任是什么？",
+                    "它接收哪些输入？",
+                    "它输出什么结果？",
+                    "它不能碰哪些职责或状态？"
+                ]
+            },
+            "boundaries.data_ownership": {
+                intro: "数据归属会直接影响隐私、同步和权限设计，不能用默认规则代替真实业务约束。",
+                lines: [
+                    "这类数据是什么？",
+                    "谁拥有它？",
+                    "谁可以读取、修改或导出？",
+                    "默认保留期多久？",
+                    "删除、审计或合规要求是什么？"
+                ]
+            },
+            "decisions.decision_records": {
+                intro: "架构决策必须带理由和取舍，否则只是口号。",
+                lines: [
+                    "你要锁定的决策是什么？",
+                    "为什么现在就要这样定？",
+                    "放弃了哪些替代方案？",
+                    "最大的代价或限制是什么？",
+                    "这个决策会影响哪些模块？"
+                ]
+            },
+            "decisions.integration_contracts": {
+                intro: "集成契约需要支撑接口设计和失败处理，必须具体到输入输出边界。",
+                lines: [
+                    "生产者和消费者分别是谁？",
+                    "触发时机是什么？",
+                    "核心 payload 字段有哪些？",
+                    "同步还是异步？",
+                    "失败时怎么重试、降级或回滚？"
+                ]
+            },
+            "decisions.non_functional_requirements": {
+                intro: "非功能性需求必须尽量可衡量，至少要说明目标、范围和代价。",
+                lines: [
+                    "类别是什么？例如性能 / 安全 / 隐私 / 可用性。",
+                    "具体要求是什么？尽量带指标或阈值。",
+                    "适用范围是什么？",
+                    "为什么这条要求重要？",
+                    "如果达不到，业务影响是什么？"
+                ]
+            },
+            "guardrails.implementation_order": {
+                intro: "实现顺序应该反映真实交付主线，而不是通用模板。",
+                lines: [
+                    "Phase 1 先做什么？",
+                    "为什么它必须先做？",
+                    "Phase 2 接着做什么？",
+                    "每个阶段的退出条件是什么？"
+                ]
+            },
+            "guardrails.acceptance_criteria": {
+                intro: "验收标准必须可测试、可观察、可拒收，不能只是功能复述。",
+                lines: [
+                    "触发前提是什么？",
+                    "用户执行什么动作？",
+                    "系统必须返回什么结果？",
+                    "什么情况下算失败？",
+                    "谁来判定通过？"
+                ]
+            },
+            "guardrails.test_strategy": {
+                intro: "测试策略需要覆盖真实风险，不是简单写上 unit / e2e 就算完成。",
+                lines: [
+                    "最关键的风险场景是什么？",
+                    "哪条流程要做端到端测试？",
+                    "哪部分逻辑适合单元测试？",
+                    "哪些接口或契约需要集成测试？",
+                    "上线前必须人工回归什么？"
+                ]
+            },
+            "ui.key_screens": {
+                intro: "关键界面需要能支撑用户主流程，而不是为了过门槛凑页面数量。",
+                lines: [
+                    "界面名称是什么？",
+                    "谁会使用这个界面？",
+                    "这个界面的主要任务是什么？",
+                    "最关键的状态有哪些？",
+                    "和上下游界面的关系是什么？"
+                ]
+            },
+            "ui.shared_components": {
+                intro: "共享组件必须有复用场景和状态变化说明，不能只列 UI 名词。",
+                lines: [
+                    "组件名称是什么？",
+                    "会被哪些界面复用？",
+                    "它解决什么交互问题？",
+                    "有哪些关键状态或变体？"
+                ]
+            },
+            "ui.responsive_strategy": {
+                intro: "响应式策略必须说明布局和交互怎么变，而不是只写“支持移动端”。",
+                lines: [
+                    "桌面布局是什么？",
+                    "移动端怎么重排？",
+                    "哪些操作在小屏上要简化？",
+                    "是否有必须保留的关键信息层级？"
+                ]
+            }
+        }
+        : {
+            "business_context.product_goal": {
+                intro: "This cannot be safely filled with a generic default. To reach production quality, we need the business outcome, success signal, and scope boundary.",
+                lines: [
+                    "Who is the user?",
+                    "What is the single painful problem today?",
+                    "What exact result should v1 deliver?",
+                    "What metric tells you this version worked?",
+                    "What is explicitly out of scope?"
+                ]
+            },
+            "business_context.platforms": {
+                intro: "Platform strategy must constrain the downstream architecture, so we need the launch platform and required runtime coverage.",
+                lines: [
+                    "What is the launch platform?",
+                    "Which devices or runtimes must be supported?",
+                    "Why is this the right platform for v1?",
+                    "Are there required distribution or hosting constraints?"
+                ]
+            },
+            "business_context.target_users": {
+                intro: "Target users need to be concrete enough to shape product and architecture choices.",
+                lines: [
+                    "Who is the primary user?",
+                    "Who buys, approves, or administers it?",
+                    "How do they solve this today?",
+                    "What is the expected usage frequency or scale?",
+                    "Why would they adopt this version first?"
+                ]
+            },
+            "business_context.user_journeys": {
+                intro: "User journeys need enough detail to drive pages, APIs, and acceptance criteria.",
+                lines: [
+                    "Who starts the flow?",
+                    "What triggers it?",
+                    "What are the key steps?",
+                    "What is the success outcome?",
+                    "How does the user recover from failure?"
+                ]
+            },
+            "business_context.constraints_or_risks": {
+                intro: "Production-grade discovery needs explicit constraints and failure risks, not just feature intent.",
+                lines: [
+                    "What are the team, budget, or timeline constraints?",
+                    "What compliance, privacy, or security boundaries matter?",
+                    "What performance, reliability, or cost limits matter?",
+                    "What is the biggest launch risk?",
+                    "What is the worst business impact if that risk happens?"
+                ]
+            },
+            "boundaries.bounded_contexts": {
+                intro: "Bounded contexts should come from real business boundaries, not generic placeholder labels.",
+                lines: [
+                    "What is the context name?",
+                    "What is its unique responsibility?",
+                    "What is explicitly out of scope for it?",
+                    "What data or state does it own?",
+                    "Which external contexts does it depend on?"
+                ]
+            },
+            "boundaries.module_responsibilities": {
+                intro: "Module responsibilities should directly drive implementation slicing.",
+                lines: [
+                    "What is the module name?",
+                    "What is its single responsibility?",
+                    "What inputs does it consume?",
+                    "What outputs does it produce?",
+                    "What responsibilities must stay outside this module?"
+                ]
+            },
+            "boundaries.data_ownership": {
+                intro: "Data ownership directly affects privacy, permissions, and lifecycle design, so it should be explicit.",
+                lines: [
+                    "What data object are we talking about?",
+                    "Who owns it?",
+                    "Who can read, update, or export it?",
+                    "What is the default retention period?",
+                    "What audit, deletion, or compliance rules apply?"
+                ]
+            },
+            "decisions.decision_records": {
+                intro: "Architecture decisions need rationale and rejected alternatives, otherwise they are not stable enough for production.",
+                lines: [
+                    "What decision are you locking?",
+                    "Why does it need to be made now?",
+                    "What alternatives are being rejected?",
+                    "What cost or limitation does this choice create?",
+                    "Which parts of the system are most affected?"
+                ]
+            },
+            "decisions.integration_contracts": {
+                intro: "Integration contracts should be specific enough to shape APIs and failure handling.",
+                lines: [
+                    "Who produces and consumes it?",
+                    "What triggers the exchange?",
+                    "What are the core payload fields?",
+                    "Is it sync or async?",
+                    "What is the retry, fallback, or rollback behavior on failure?"
+                ]
+            },
+            "decisions.non_functional_requirements": {
+                intro: "Non-functional requirements should be measurable whenever possible, with scope and business consequence.",
+                lines: [
+                    "What category is it? Performance, security, privacy, availability, and so on.",
+                    "What exact target or threshold matters?",
+                    "Where does this requirement apply?",
+                    "Why is it important?",
+                    "What happens if we miss it?"
+                ]
+            },
+            "guardrails.implementation_order": {
+                intro: "Implementation order should reflect the real delivery path, not a generic template.",
+                lines: [
+                    "What should Phase 1 deliver?",
+                    "Why must it come first?",
+                    "What should happen next?",
+                    "What is the exit criterion for each phase?"
+                ]
+            },
+            "guardrails.acceptance_criteria": {
+                intro: "Acceptance criteria must be testable and rejectable, not just feature restatements.",
+                lines: [
+                    "What is the precondition?",
+                    "What action does the user take?",
+                    "What must the system return?",
+                    "What counts as failure?",
+                    "Who decides it passes?"
+                ]
+            },
+            "guardrails.test_strategy": {
+                intro: "Test strategy should cover real product risk, not just name test levels.",
+                lines: [
+                    "What is the highest-risk scenario?",
+                    "Which journey needs an end-to-end test?",
+                    "Which logic deserves unit tests?",
+                    "Which contracts need integration tests?",
+                    "What must be manually checked before release?"
+                ]
+            },
+            "ui.key_screens": {
+                intro: "Key screens should map to real user journeys, not invented pages to satisfy a checklist.",
+                lines: [
+                    "What is the screen name?",
+                    "Who uses it?",
+                    "What is the primary task on it?",
+                    "What states matter most?",
+                    "How does it connect to previous and next screens?"
+                ]
+            },
+            "ui.shared_components": {
+                intro: "Shared UI components should include reuse context and state variations, not only names.",
+                lines: [
+                    "What is the component name?",
+                    "Which screens reuse it?",
+                    "What interaction problem does it solve?",
+                    "What key states or variants does it have?"
+                ]
+            },
+            "ui.responsive_strategy": {
+                intro: "Responsive strategy should explain how layout and interaction change across breakpoints.",
+                lines: [
+                    "What is the desktop layout?",
+                    "How does it reflow on mobile?",
+                    "Which actions need simplification on small screens?",
+                    "What information hierarchy must remain visible?"
+                ]
+            }
+        };
+
+    const template = templates[requirementKey];
+    const questionText = language === "zh"
+        ? `请补充${label}的生产级细节。`
+        : `Please provide production-grade detail for ${label}.`;
+
+    return {
+        content: [
+            template.intro,
+            knownGoal
+                ? (language === "zh" ? `当前已知产品目标：${knownGoal}` : `Current product goal: ${knownGoal}`)
+                : "",
+            "",
+            language === "zh" ? "请尽量按下面结构回复：" : "Please reply roughly in this structure:",
+            ...template.lines.map((line, index) => `${index + 1}. ${line}`)
+        ].filter(Boolean).join("\n"),
+        options: language === "zh"
+            ? [
+                { label: "我按模板回答", value: `我来按这个模板补充${label}。` },
+                { label: "给我高质量示例", value: `先给我一个高质量的${label}示例，再告诉我如何改成适合我的版本。` },
+                { label: "继续追问最关键问题", value: `请继续只问我一个最关键的问题，帮助我补齐${label}。`, action: "focus_requirement" as const, requirementKey }
+            ]
+            : [
+                { label: "I will answer using the template", value: `I will fill ${label} using that structure.` },
+                { label: "Show a high-quality example", value: `Show me a high-quality example for ${label}, then tell me how to adapt it to my case.` },
+                { label: "Ask the single highest-impact question", value: `Please ask me the single highest-impact question to complete ${label}.`, action: "focus_requirement" as const, requirementKey }
+            ],
+        questionKey: normalizeQuestionKey(questionText),
+        questionAction: "focus_requirement" as const,
+        questionRequirementKey: requirementKey
+    };
+}
+
+function shouldAllowDeterministicRequirementResolution(
+    requirementKey: ReadinessRequirementKey,
+    architecturePack: ArchitecturePack,
+    messages: Message[]
+) {
+    if (requirementKey === "business_context.platforms") return true;
+    if (
+        requirementKey === "ui.key_screens" &&
+        isSingleScreenScopeCandidate(architecturePack, messages)
+    ) {
+        return true;
+    }
+    return false;
+}
+
 function isSingleScreenScopeCandidate(
     architecturePack: ArchitecturePack,
     messages: Message[]
@@ -1831,31 +2223,31 @@ function buildFocusedRequirementQuestion(
         const content = language === "zh"
             ? `当前判断：
 - 现在只缺一条明确的数据归属规则，后面的隐私边界和保留策略才有依据。
-- 我推荐默认采用“用户拥有提交的想法与分析结果，平台仅为提供服务而处理，默认保留 30 天”的方案。
+- 我建议先把“谁拥有数据、谁可以消费、保留多久、删除如何触发”说清楚，再继续往下走。
 
 需要确认：
-是否按推荐应用这条数据归属默认规则？`
+要不要我先给你一个高质量的数据归属补充模板？`
             : `Current view:
 - We still need one explicit data ownership rule so the privacy and retention boundary stays clear.
-- I recommend the default policy that users own submitted ideas and analysis results, while the product only processes them to deliver the service with a default 30-day retention window.
+- I recommend clarifying who owns the data, who can consume it, how long it is retained, and what triggers deletion before we move on.
 
 Please confirm:
-Should I apply this default data ownership rule now?`;
+Should I give you a high-quality data-ownership template now?`;
 
         const questionText = language === "zh"
-            ? "是否按推荐应用这条数据归属默认规则？"
-            : "Should I apply this default data ownership rule now?";
+            ? "要不要我先给你一个高质量的数据归属补充模板？"
+            : "Should I give you a high-quality data-ownership template now?";
 
         return {
             content,
             options: language === "zh"
                 ? [
-                    { label: "按推荐应用", value: "请按推荐应用这条数据归属默认规则。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的数据归属补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来指定规则", value: "我来指定自定义的数据归属与保留期。" },
                     { label: "列出当前阻塞项", value: "请列出当前阻塞项。", action: "show_blockers" as const, requirementKey }
                 ]
                 : [
-                    { label: "Apply the default", value: "Apply the default data ownership rule.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality data-ownership template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will define a custom ownership and retention policy." },
                     { label: "List blockers", value: "List the current blockers.", action: "show_blockers" as const, requirementKey }
                 ],
@@ -1883,12 +2275,12 @@ I recommend locking one high-frequency user group first so the scope does not dr
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐先补齐目标用户。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的目标用户补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动描述目标用户。" },
                     { label: "给我示例", value: "先给我 2 个具体的目标用户示例。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Use your recommended default target users.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality target-user template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will describe the target users myself." },
                     { label: "Show examples", value: "Show me 2 concrete target-user examples first." }
                 ],
@@ -1914,12 +2306,12 @@ I recommend covering at least how a user starts a task and what they do after th
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐关键用户旅程。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的用户旅程补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己描述", value: "我来手动描述两条关键用户旅程。" },
                     { label: "给我示例", value: "先给我两条参考用户旅程。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the key user journeys using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality user-journey template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will describe them", value: "I will describe the two key user journeys myself." },
                     { label: "Show examples", value: "Show me two reference user journeys first." }
                 ],
@@ -1945,12 +2337,12 @@ I recommend prioritizing delivery boundaries, cost or performance pressure, or q
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐约束与风险。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的约束与风险补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动描述约束与风险。" },
                     { label: "给我示例", value: "先给我两个常见约束与风险示例。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the constraints and risks using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality constraints-and-risks template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define them", value: "I will describe the constraints and risks myself." },
                     { label: "Show examples", value: "Show me two common constraint and risk examples first." }
                 ],
@@ -1976,12 +2368,12 @@ I recommend locking at least one bounded context such as workspace, generation e
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐限界上下文。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的限界上下文补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己拆分", value: "我来手动定义限界上下文。" },
                     { label: "给我示例", value: "先给我 2 到 3 个常见的限界上下文示例。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the bounded contexts using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality bounded-context template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will define the bounded contexts myself." },
                     { label: "Show examples", value: "Show me 2 or 3 common bounded-context examples first." }
                 ],
@@ -2007,12 +2399,12 @@ I recommend separating input or workspace concerns from generation or processing
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐模块职责。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的模块职责补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动描述模块职责。" },
                     { label: "给我示例", value: "先给我两个参考模块职责。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the module responsibilities using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality module-responsibility template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define them", value: "I will describe the module responsibilities myself." },
                     { label: "Show examples", value: "Show me two reference module responsibilities first." }
                 ],
@@ -2024,8 +2416,8 @@ ${questionText}`,
 
     if (requirementKey === "decisions.decision_records") {
         const questionText = language === "zh"
-            ? "这一步需要锁定关键架构决策。是否先按推荐把“工作区 / 编辑层”和“生成编排层”拆开？"
-            : "We need to lock a key architecture decision at this stage. Should we separate the workspace or editor layer from the generation-orchestration layer?";
+            ? "这一步需要锁定关键架构决策。要不要我先给你一个高质量补充模板？"
+            : "We need to lock a key architecture decision at this stage. Should I give you a high-quality template first?";
         return {
             content: language === "zh"
                 ? `接下来先锁一条高影响架构决策。
@@ -2038,12 +2430,12 @@ I recommend deciding whether the workspace or editor interaction layer should st
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐记录", value: "请按推荐补齐这条架构决策。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的架构决策补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动描述这条架构决策。" },
                     { label: "给我 2 个方向", value: "先给我两条常见的第二架构决策方向。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Add the recommended second architecture decision.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality architecture-decision template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will describe the architecture decision myself." },
                     { label: "Show options", value: "Show me two common directions for the second architecture decision first." }
                 ],
@@ -2055,8 +2447,8 @@ ${questionText}`,
 
     if (requirementKey === "decisions.integration_contracts") {
         const questionText = language === "zh"
-            ? "要不要先按默认方式记一条关键输入输出契约？"
-            : "Should I record a default key input-output contract now?";
+            ? "要不要我先给你一版高质量的关键输入输出契约模板？"
+            : "Should I give you a high-quality key input-output contract template now?";
         return {
             content: language === "zh"
                 ? `再补一条关键集成契约，这样后面的模块边界才不会发散。
@@ -2069,12 +2461,12 @@ I recommend defining the input-output contract for submitting a request and rece
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐集成契约。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的集成契约补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动描述关键集成契约。" },
                     { label: "给我示例", value: "先给我一个参考契约示例。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the integration contract using your recommended default.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality integration-contract template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will describe the key integration contract myself." },
                     { label: "Show example", value: "Show me a reference integration contract first." }
                 ],
@@ -2089,26 +2481,26 @@ ${questionText}`,
             ? `再补齐非功能性要求，这样第一版的质量边界才清楚。
 我建议优先把“响应速度”和“结果稳定性 / 可信度”这类会直接影响体验的要求写进去。
 
-是否按推荐补齐这项非功能性要求？`
+要不要我先给你一版高质量的非功能性需求模板？`
             : `Let's finish the non-functional requirements so the v1 quality bar is explicit.
 I recommend prioritizing response speed and output stability or confidence because they directly shape the user experience.
 
-Should I add the recommended non-functional requirement now?`;
+Should I give you a high-quality non-functional requirement template now?`;
 
         const questionText = language === "zh"
-            ? "是否按推荐补齐这项非功能性要求？"
-            : "Should I add the recommended non-functional requirement now?";
+            ? "要不要我先给你一版高质量的非功能性需求模板？"
+            : "Should I give you a high-quality non-functional requirement template now?";
 
         return {
             content,
             options: language === "zh"
                 ? [
-                    { label: "按推荐添加准确性", value: "请按推荐添加准确性。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的非功能性需求补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来指定其他需求", value: "我来指定另一个非功能性需求。" },
                     { label: "列出当前阻塞项", value: "请列出当前阻塞项。", action: "show_blockers" as const, requirementKey }
                 ]
                 : [
-                    { label: "Add accuracy", value: "Add accuracy as recommended.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality non-functional requirement template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will specify another one", value: "I will specify a different non-functional requirement." },
                     { label: "List blockers", value: "List the current blockers.", action: "show_blockers" as const, requirementKey }
                 ],
@@ -2120,8 +2512,8 @@ Should I add the recommended non-functional requirement now?`;
 
     if (requirementKey === "guardrails.implementation_order") {
         const questionText = language === "zh"
-            ? "要不要先按默认实施顺序把第一版拆出来？"
-            : "Should I break v1 down using the default implementation order now?";
+            ? "要不要我先给你一版高质量的实施顺序模板？"
+            : "Should I give you a high-quality implementation-order template now?";
         return {
             content: language === "zh"
                 ? `接下来把实施顺序钉住，避免大家同时开工却没有主线。
@@ -2134,12 +2526,12 @@ I recommend building the core flow first and then layering in result presentatio
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐实现顺序。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的实施顺序补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动定义实施顺序。" },
                     { label: "给我示例", value: "先给我一个参考实施顺序。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the implementation order using your recommended default.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality implementation-order template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will describe the implementation order myself." },
                     { label: "Show example", value: "Show me a reference implementation order first." }
                 ],
@@ -2151,8 +2543,8 @@ ${questionText}`,
 
     if (requirementKey === "guardrails.acceptance_criteria") {
         const questionText = language === "zh"
-            ? "要不要先按默认方式补齐验收标准？"
-            : "Should I add the default acceptance criteria now?";
+            ? "要不要我先给你一版高质量的验收标准模板？"
+            : "Should I give you a high-quality acceptance-criteria template now?";
         return {
             content: language === "zh"
                 ? `我们还需要一组可验收标准，避免后面只能靠“感觉差不多”来收尾。
@@ -2165,12 +2557,12 @@ I recommend anchoring them around whether one full core flow works and whether t
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐验收标准。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的验收标准补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动定义验收标准。" },
                     { label: "给我示例", value: "先给我 4 条参考验收标准。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the acceptance criteria using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality acceptance-criteria template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define them", value: "I will describe the acceptance criteria myself." },
                     { label: "Show examples", value: "Show me 4 reference acceptance criteria first." }
                 ],
@@ -2182,8 +2574,8 @@ ${questionText}`,
 
     if (requirementKey === "guardrails.test_strategy") {
         const questionText = language === "zh"
-            ? "要不要先按默认方式补齐测试策略？"
-            : "Should I add the default test strategy now?";
+            ? "要不要我先给你一版高质量的测试策略模板？"
+            : "Should I give you a high-quality test-strategy template now?";
         return {
             content: language === "zh"
                 ? `最后把测试策略补上，后面实现时就不容易漏掉关键验证。
@@ -2196,12 +2588,12 @@ I recommend covering one end-to-end happy path and then adding unit tests for th
 ${questionText}`,
             options: language === "zh"
                 ? [
-                    { label: "按推荐补齐", value: "请按推荐补齐测试策略。", action: "fill_requirement" as const, requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量的测试策略补充模板。", action: "fill_requirement" as const, requirementKey },
                     { label: "我来自己定义", value: "我来手动定义测试策略。" },
                     { label: "给我示例", value: "先给我两条参考测试策略。" }
                 ]
                 : [
-                    { label: "Use your default", value: "Fill the test strategy using your recommended defaults.", action: "fill_requirement" as const, requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality test-strategy template.", action: "fill_requirement" as const, requirementKey },
                     { label: "I will define it", value: "I will describe the test strategy myself." },
                     { label: "Show examples", value: "Show me two reference test-strategy items first." }
                 ],
@@ -2261,12 +2653,12 @@ I recommend filling it now, and then I will move us straight to the next real ga
         content,
         options: language === "zh"
             ? [
-                { label: "按推荐继续", value: "按推荐继续补齐这个缺口。", action: "fill_requirement" as const, requirementKey },
+                { label: "给我补充模板", value: "请给我一个高质量补充模板，我来补齐这个缺口。", action: "fill_requirement" as const, requirementKey },
                 { label: "列出当前阻塞项", value: "请列出所有当前阻塞项。", action: "show_blockers" as const, requirementKey },
                 { label: "我来手动补充", value: `我来手动补充${label}。` }
             ]
             : [
-                { label: "Proceed with recommendation", value: "Proceed with the recommended fix.", action: "fill_requirement" as const, requirementKey },
+                { label: "Give me a template", value: "Give me a high-quality template so I can fill this gap.", action: "fill_requirement" as const, requirementKey },
                 { label: "List blockers", value: "List all current blockers.", action: "show_blockers" as const, requirementKey },
                 { label: "I will fill it manually", value: `I will fill ${label} manually.` }
             ],
@@ -2338,7 +2730,7 @@ function getPrdLayoutUiText(language: "zh" | "en") {
             confirmedScopeDesc: "这里只保留已经稳定下来的产品范围与目标，不展示内部架构原文。",
             noConfirmedScope: "还没有足够的已确认范围，请继续补充产品目标、用户和核心流程。",
             pendingQuestionsTitle: "待确认事项",
-            pendingQuestionsDesc: "优先处理最影响架构质量的缺口；你可以继续追问，或直接按推荐补齐。",
+            pendingQuestionsDesc: "优先处理最影响架构质量的缺口；你可以继续追问，或直接索取高质量补充模板。",
             noPendingQuestions: "当前没有待确认事项，可以继续完善需求摘要或开始生成。",
             implementationReadinessTitle: "实施准备",
             implementationReadinessDesc: "只展示生成门槛、验收与测试准备摘要，不直接展开内部 guardrails 明细。",
@@ -2347,7 +2739,7 @@ function getPrdLayoutUiText(language: "zh" | "en") {
             noChangeLog: "还没有新的需求进度更新记录。",
             jumpToChatAction: "查看聊天",
             followUpAction: "继续追问",
-            fillAction: "按推荐补齐"
+            fillAction: "给我模板"
         }
         : {
             pageDesc: "The requirements view shows user-facing scope, progress, open decisions, and implementation readiness without exposing the raw internal architecture data.",
@@ -2355,7 +2747,7 @@ function getPrdLayoutUiText(language: "zh" | "en") {
             confirmedScopeDesc: "This keeps only the stable product scope and intent, not the raw internal architecture content.",
             noConfirmedScope: "There is not enough confirmed scope yet. Continue clarifying the product goal, users, and key journeys.",
             pendingQuestionsTitle: "Pending Decisions",
-            pendingQuestionsDesc: "Focus on the gaps with the highest architecture impact. You can continue the discussion or apply the recommendation directly.",
+            pendingQuestionsDesc: "Focus on the gaps with the highest architecture impact. You can continue the discussion or ask for a structured fill-in template.",
             noPendingQuestions: "There are no pending decisions right now. You can keep polishing the requirements summary or start generation.",
             implementationReadinessTitle: "Implementation Readiness",
             implementationReadinessDesc: "This section shows only the generation gate, acceptance summary, and test readiness instead of the raw internal guardrails.",
@@ -2364,7 +2756,7 @@ function getPrdLayoutUiText(language: "zh" | "en") {
             noChangeLog: "No new requirements updates yet.",
             jumpToChatAction: "View in chat",
             followUpAction: "Continue in chat",
-            fillAction: "Apply default"
+            fillAction: "Get template"
         };
 }
 
@@ -2832,8 +3224,10 @@ Should we fill this gap first, or should I continue refining the architecture pa
                 {
                     label: primaryRequirement?.key === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)
                         ? "按推荐应用单屏例外"
-                        : "按默认方案继续完善",
-                    value: "按你推荐的默认方案继续完善架构包。",
+                        : "给我补充模板",
+                    value: primaryRequirement?.key === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)
+                        ? "按你推荐的方式应用单屏例外。"
+                        : "请给我一个高质量补充模板，我来补齐当前这个缺口。",
                     action: "fill_requirement" as const,
                     requirementKey: primaryRequirement?.key
                 }
@@ -2854,8 +3248,10 @@ Should we fill this gap first, or should I continue refining the architecture pa
                 {
                     label: primaryRequirement?.key === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)
                         ? "Apply single-screen exception"
-                        : "Keep refining",
-                    value: "Continue refining the architecture pack using your recommended default approach.",
+                        : "Give me a template",
+                    value: primaryRequirement?.key === "ui.key_screens" && isSingleScreenScopeCandidate(architecturePack, messages)
+                        ? "Apply the single-screen exception using your recommendation."
+                        : "Give me a production-grade template so I can close this gap properly.",
                     action: "fill_requirement" as const,
                     requirementKey: primaryRequirement?.key
                 }
@@ -5273,14 +5669,14 @@ Do you want to start scaffold generation now?`;
             content: buildBlockersSummary(language, workingScaffoldEligibility.readiness),
             options: language === "zh"
                 ? [
-                    { label: "按推荐继续", value: "按推荐继续。", action: "fill_requirement", requirementKey },
+                    { label: "给我补充模板", value: "请给我一个高质量补充模板，我来补齐这个缺口。", action: "fill_requirement", requirementKey },
                     { label: "我来手动补充", value: "我来手动补充。" }
                 ]
                 : [
-                    { label: "Proceed with recommendation", value: "Proceed with the recommendation.", action: "fill_requirement", requirementKey },
+                    { label: "Give me a template", value: "Give me a high-quality template so I can fill this gap.", action: "fill_requirement", requirementKey },
                     { label: "I will fill it manually", value: "I will fill it manually." }
                 ],
-            questionKey: normalizeQuestionKey(language === "zh" ? "是否按推荐继续补齐这个缺口？" : "Should I proceed with the recommended fix?"),
+            questionKey: normalizeQuestionKey(language === "zh" ? "要不要先给你一个高质量补充模板？" : "Should I give you a high-quality template first?"),
             questionAction: "fill_requirement",
             questionRequirementKey: requirementKey
         });
@@ -5312,12 +5708,26 @@ Do you want to start scaffold generation now?`;
             if (!normalized) return true;
             if (AFFIRMATIVE_RESPONSE_PATTERN.test(normalized)) return true;
             if (DEFER_RESPONSE_PATTERN.test(normalized)) return true;
-            return /阻塞项|blockers|补齐这个缺口|fill this gap|按推荐继续补齐这个缺口|按默认方案继续完善|show me 2 or 3|请给我 2 到 3 个常见方案|我来补充这个缺口|i will fill/i.test(normalized);
+            return /阻塞项|blockers|补齐这个缺口|fill this gap|给我补充模板|give me a template|high-quality template|production-grade template|show me 2 or 3|请给我 2 到 3 个常见方案|我来补充这个缺口|i will fill/i.test(normalized);
         };
         const meaningfulUserInputs = baseMessages
             .filter((message) => message.role === "user")
             .map((message) => message.content.trim())
             .filter((text) => text.length > 0 && !isSteeringReply(text));
+        const deterministicResolutionAllowed = shouldAllowDeterministicRequirementResolution(
+            requirementKey,
+            architecturePack,
+            baseMessages
+        );
+        if (!deterministicResolutionAllowed) {
+            return {
+                architecturePack,
+                guardrailChecklist,
+                readinessOverrides,
+                summary: "",
+                applied: false
+            };
+        }
         const mergeStringValues = (existing: string[], defaults: string[]) =>
             [...new Set([...existing.map((item) => item.trim()).filter(Boolean), ...defaults.map((item) => item.trim()).filter(Boolean)])];
         const mergeObjectsByKey = <T,>(existing: T[], defaults: T[], getKey: (item: T) => string) => {
@@ -6132,18 +6542,17 @@ Do you want to start scaffold generation now?`;
 
         const resolution = applyDefaultRequirementResolution(requirementKey, language, baseMessages);
         if (!resolution.applied) {
-            const focused = buildFocusedRequirementQuestion(
+            const captureTemplate = buildRequirementCaptureTemplateQuestion(
                 language,
                 requirementKey,
-                workingArchitectureState.architecturePack,
-                baseMessages
+                workingArchitectureState.architecturePack
             );
-            const assistantMessage = buildAssistantQuestionMessage(focused);
+            const assistantMessage = buildAssistantQuestionMessage(captureTemplate);
             appendDeterministicAssistantResponse(baseMessages, assistantMessage);
             appendPrdDelta({
                 action: "focus_requirement",
                 requirementKey,
-                questionKey: focused.questionKey,
+                questionKey: captureTemplate.questionKey,
                 sourceMessageId: assistantMessage.id
             });
             return true;
@@ -6233,8 +6642,8 @@ Do you want to start scaffold generation now?`;
         const textToSend = action === "fill_requirement"
             ? (
                 workspaceLanguage === "zh"
-                    ? `请按推荐补齐${requirementLabel}。`
-                    : `Apply the recommended default for ${requirementLabel}.`
+                    ? `请给我一个高质量补充模板，我来补齐${requirementLabel}。`
+                    : `Give me a production-grade template so I can fill ${requirementLabel}.`
             )
             : (
                 workspaceLanguage === "zh"

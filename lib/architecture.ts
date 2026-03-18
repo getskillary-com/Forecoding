@@ -60,6 +60,19 @@ function clipText(text: string, maxChars: number) {
 }
 
 const READINESS_PLACEHOLDER_PATTERN = /^(tbd|todo|unknown|n\/a|na|none|phase|item|items|thing|things|screen|screens|module|modules|component|components|user|users|journey|journeys|constraint|constraints|risk|risks|decision|decisions|contract|contracts|checklist)$/i;
+const READINESS_ACTOR_PATTERN = /\b(user|admin|manager|operator|customer|buyer|seller|traveler|planner|editor|approver|reviewer|analyst|founder|team|member|agent|guest)\b|用户|管理员|运营|客户|买家|卖家|旅行者|规划师|编辑|审批人|评审|分析师|创始人|团队|成员|代理|访客/i;
+const READINESS_TRIGGER_PATTERN = /\b(if|when|after|before|on|once|upon|during|submit(?:s|ted)?|click(?:s|ed)?|open(?:s|ed)?|create(?:s|d)?|start(?:s|ed)?|log(?:s|ged)? in|upload(?:s|ed)?|select(?:s|ed)?|request(?:s|ed)?)\b|当|如果|提交|点击|打开|创建|开始|登录|上传|选择|请求|进入|收到|保存后|发布后/i;
+const READINESS_OUTCOME_PATTERN = /\b(then|shows?|display(?:s|ed)?|return(?:s|ed)?|save(?:s|d)?|create(?:s|d)?|update(?:s|d)?|send(?:s|sent)?|receive(?:s|d)?|block(?:s|ed)?|allow(?:s|ed)?|persist(?:s|ed)?|redirect(?:s|ed)?|queue(?:s|d)?|retry|complete(?:s|d)?)\b|然后|显示|展示|返回|保存|创建|更新|发送|接收|阻止|允许|持久化|跳转|排队|重试|完成|生成|通知/i;
+const READINESS_ACTION_PATTERN = /\b(build|capture|collect|submit|review|generate|approve|manage|sync|track|configure|search|filter|sort|save|edit|delete|import|export|upload|login|pay|subscribe|create|update|retry|validate|monitor|notify|define|split|record|orchestrate|publish|consume|store|read|write)\b|构建|捕获|收集|提交|审核|生成|审批|管理|同步|跟踪|配置|搜索|筛选|排序|保存|编辑|删除|导入|导出|上传|登录|支付|订阅|创建|更新|重试|校验|监控|通知|定义|拆分|记录|编排|发布|消费|存储|读取|写入/i;
+const READINESS_MEASURABLE_PATTERN = /\b\d+(?:\.\d+)?\s?(?:ms|s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?|days?|weeks?|months?|years?|kb|mb|gb|tb|%|x|users?|requests?|req\/s|rps|qps|tps)\b|\bp\d{2}\b|\b(?:sla|slo|uptime|latency|throughput|retention|error rate|timeout)\b|\d+\s*(?:毫秒|秒|分钟|小时|天|周|月|年|次|条|个|并发|请求|用户|百分比|留存|成功率|错误率|超时|延迟|吞吐)/i;
+const READINESS_CONSEQUENCE_PATTERN = /\b(so that|in order to|because|otherwise|avoid|prevent|protect|reduce|ensure|impact|risk|failure|fallback|recovery|rollback|alert|degrade|violate)\b|以便|为了|因为|否则|避免|防止|确保|影响|风险|失败|回退|恢复|回滚|告警|降级|违反/i;
+const READINESS_BOUNDARY_PATTERN = /\b(owner|owns?|owned by|responsible for|source of truth|publishes?|consumes?|stores?|reads?|writes?|input|output|payload|depends on|boundary)\b|负责|拥有|归属|数据源|发布|消费|存储|读取|写入|输入|输出|载荷|依赖|边界/i;
+const READINESS_PURPOSE_PATTERN = /\b(for|used to|with|including|where|that lets|so users can)\b|用于|用来|包含|支持|展示|允许|负责|其中|以便/i;
+const READINESS_TEST_TYPE_PATTERN = /\b(unit|integration|e2e|end-to-end|contract|smoke|regression|load|stress|security|accessibility|manual)\b|单元|集成|端到端|契约|冒烟|回归|压测|压力|安全|无障碍|人工/i;
+const READINESS_UI_SURFACE_PATTERN = /\b(screen|page|panel|workspace|dashboard|wizard|form|modal|drawer|table|list|details?|editor|timeline)\b|界面|页面|面板|工作区|仪表盘|向导|表单|弹窗|抽屉|表格|列表|详情|编辑器|时间线/i;
+const READINESS_RESPONSIVE_PATTERN = /\b(mobile|tablet|desktop|breakpoint|viewport|width|narrow|wide|sidebar|stack|collapse|grid)\b|移动端|平板|桌面|断点|视口|宽度|窄屏|宽屏|侧边栏|堆叠|折叠|网格/i;
+const READINESS_GENERIC_ROLE_PATTERN = /^(user|users|admin|admins|customer|customers|manager|managers|operator|operators|member|members|用户|管理员|客户|运营|成员)$/i;
+const READINESS_VAGUE_ACCEPTANCE_PATTERN = /^(?:the\s+)?(?:page|feature|flow|system|screen)?\s*(?:works?|working|usable|supported|implemented|done|ready|okay|good enough)\.?$|^(?:正常工作|可用即可|支持即可|实现即可|完成即可|差不多|没问题)$/i;
 
 const SOURCE_ARTIFACT_SUMMARY_CHARS = 220;
 const SOURCE_ARTIFACT_EXCERPT_CHARS = 2400;
@@ -308,29 +321,171 @@ function countMeaningfulStrings(values: string[], minChars: number = 4) {
     return values.filter((value) => isMeaningfulText(value, minChars)).length;
 }
 
+function countMatchingStrings(values: string[], predicate: (value: string) => boolean) {
+    return values.filter((value) => predicate(value)).length;
+}
+
+function countMatchingItems<T>(values: T[], predicate: (value: T) => boolean) {
+    return values.filter((value) => predicate(value)).length;
+}
+
+function countEnglishWords(value: string) {
+    return (value.match(/[A-Za-z0-9]+/g) || []).length;
+}
+
+function countCjkChars(value: string) {
+    return (value.match(/[\u4e00-\u9fff]/g) || []).length;
+}
+
+function hasMultipleConcreteTerms(value: string) {
+    return countEnglishWords(value) >= 3 || countCjkChars(value) >= 6;
+}
+
+function hasStructuredFlow(value: string) {
+    return /->|=>|→|>|:|：|;|；|\bstep\s*\d+\b|\d+\./i.test(value);
+}
+
+function isConcreteTargetUser(value: string) {
+    return isMeaningfulText(value, 4) &&
+        !READINESS_GENERIC_ROLE_PATTERN.test(normalizeString(value)) &&
+        (hasMultipleConcreteTerms(value) || countCjkChars(value) >= 4 || READINESS_ACTOR_PATTERN.test(value));
+}
+
+function isConcreteJourney(value: string) {
+    return isMeaningfulText(value, 14) &&
+        READINESS_ACTOR_PATTERN.test(value) &&
+        READINESS_TRIGGER_PATTERN.test(value) &&
+        (READINESS_OUTCOME_PATTERN.test(value) || READINESS_CONSEQUENCE_PATTERN.test(value) || hasStructuredFlow(value));
+}
+
+function isConcreteConstraintOrRisk(value: string) {
+    return isMeaningfulText(value, 10) &&
+        (READINESS_CONSEQUENCE_PATTERN.test(value) || READINESS_MEASURABLE_PATTERN.test(value) || READINESS_ACTION_PATTERN.test(value));
+}
+
+function isConcreteBoundedContext(context: ArchitecturePack["boundedContexts"][number]) {
+    return isMeaningfulText(context.name, 4) &&
+        isMeaningfulText(context.responsibility, 10) &&
+        (
+            countMeaningfulStrings(context.owns, 3) >= 1 ||
+            countMeaningfulStrings(context.dependencies, 3) >= 1 ||
+            READINESS_BOUNDARY_PATTERN.test(context.responsibility)
+        );
+}
+
+function isConcreteModuleResponsibility(item: ArchitecturePack["moduleResponsibilities"][number]) {
+    return isMeaningfulText(item.module, 4) &&
+        isMeaningfulText(item.responsibility, 10) &&
+        (
+            countMeaningfulStrings(item.inputs, 3) >= 1 ||
+            countMeaningfulStrings(item.outputs, 3) >= 1 ||
+            READINESS_BOUNDARY_PATTERN.test(item.responsibility)
+        );
+}
+
+function isConcreteDataOwnership(item: ArchitecturePack["dataOwnership"][number]) {
+    return isMeaningfulText(item.data, 4) &&
+        isMeaningfulText(item.owner, 3) &&
+        (
+            countMeaningfulStrings(item.consumers, 3) >= 1 ||
+            isMeaningfulText(item.notes, 12)
+        );
+}
+
 function countMeaningfulDecisionRecords(records: DecisionRecord[]) {
     return records.filter((record) =>
         isMeaningfulText(record.title, 4) &&
         isMeaningfulText(record.decision, 6) &&
-        isMeaningfulText(record.rationale, 12)
+        isMeaningfulText(record.rationale, 12) &&
+        (
+            countMeaningfulStrings(record.alternativesRejected, 4) >= 1 ||
+            countMeaningfulStrings(record.consequences, 6) >= 1
+        )
     ).length;
 }
 
 function countMeaningfulIntegrationContracts(pack: ArchitecturePack) {
     return pack.integrationContracts.filter((contract) =>
         isMeaningfulText(contract.name, 4) &&
+        isMeaningfulText(contract.producer, 3) &&
+        isMeaningfulText(contract.consumer, 3) &&
         (
-            (isMeaningfulText(contract.producer, 3) && isMeaningfulText(contract.consumer, 3)) ||
-            isMeaningfulText(contract.payload, 8)
+            isMeaningfulText(contract.payload, 8) ||
+            isMeaningfulText(contract.notes, 10)
         )
     ).length;
 }
 
 function countMeaningfulNonFunctionalRequirements(pack: ArchitecturePack) {
     return pack.nonFunctionalRequirements.filter((item) =>
-        isMeaningfulText(item.requirement, 8) &&
-        (isMeaningfulText(item.rationale, 8) || isMeaningfulText(item.category, 3))
+        isMeaningfulText(item.requirement, 10) &&
+        isMeaningfulText(item.category, 3) &&
+        (
+            READINESS_MEASURABLE_PATTERN.test(`${item.requirement} ${item.rationale || ""}`) ||
+            READINESS_CONSEQUENCE_PATTERN.test(`${item.requirement} ${item.rationale || ""}`) ||
+            isMeaningfulText(item.rationale, 16)
+        )
     ).length;
+}
+
+function isConcreteImplementationStep(value: string) {
+    return isMeaningfulText(value, 10) &&
+        READINESS_ACTION_PATTERN.test(value) &&
+        (
+            READINESS_PURPOSE_PATTERN.test(value) ||
+            READINESS_CONSEQUENCE_PATTERN.test(value) ||
+            hasStructuredFlow(value) ||
+            hasMultipleConcreteTerms(value)
+        );
+}
+
+function isConcreteAcceptanceCriterion(value: string) {
+    return isMeaningfulText(value, 12) &&
+        !READINESS_VAGUE_ACCEPTANCE_PATTERN.test(value) &&
+        (
+            (READINESS_TRIGGER_PATTERN.test(value) && READINESS_OUTCOME_PATTERN.test(value)) ||
+            READINESS_MEASURABLE_PATTERN.test(value)
+        );
+}
+
+function isConcreteTestStrategy(value: string) {
+    return isMeaningfulText(value, 10) &&
+        READINESS_TEST_TYPE_PATTERN.test(value) &&
+        (
+            READINESS_TRIGGER_PATTERN.test(value) ||
+            READINESS_OUTCOME_PATTERN.test(value) ||
+            READINESS_CONSEQUENCE_PATTERN.test(value) ||
+            READINESS_MEASURABLE_PATTERN.test(value)
+        );
+}
+
+function isConcreteKeyScreen(value: string) {
+    return isMeaningfulText(value, 8) &&
+        (
+            (READINESS_UI_SURFACE_PATTERN.test(value) && (READINESS_PURPOSE_PATTERN.test(value) || hasMultipleConcreteTerms(value))) ||
+            READINESS_PURPOSE_PATTERN.test(value) ||
+            hasStructuredFlow(value) ||
+            hasMultipleConcreteTerms(value)
+        );
+}
+
+function isConcreteUiComponent(value: string) {
+    return isMeaningfulText(value, 6) &&
+        (
+            READINESS_PURPOSE_PATTERN.test(value) ||
+            READINESS_OUTCOME_PATTERN.test(value) ||
+            hasMultipleConcreteTerms(value)
+        );
+}
+
+function isConcreteResponsiveStrategy(value: string) {
+    return isMeaningfulText(value, 10) &&
+        READINESS_RESPONSIVE_PATTERN.test(value) &&
+        (
+            READINESS_OUTCOME_PATTERN.test(value) ||
+            READINESS_PURPOSE_PATTERN.test(value) ||
+            READINESS_MEASURABLE_PATTERN.test(value)
+        );
 }
 
 function normalizeReadinessRequirementKey(value: unknown): ReadinessRequirementKey | null {
@@ -470,10 +625,15 @@ export function createReadinessChecklist(
     readinessOverrides: ReadinessOverride[] = []
 ): ReadinessChecklist {
     const overrideIndex = buildReadinessOverrideIndex(normalizeReadinessOverrides(readinessOverrides));
-    const businessConstraintCount = countMeaningfulStrings([
+    const targetUserCount = countMatchingStrings(pack.businessContext.targetUsers, isConcreteTargetUser);
+    const userJourneyCount = countMatchingStrings(pack.businessContext.userJourneys, isConcreteJourney);
+    const businessConstraintCount = countMatchingStrings([
         ...pack.businessContext.constraints,
         ...pack.businessContext.risks
-    ], 4);
+    ], isConcreteConstraintOrRisk);
+    const boundedContextCount = countMatchingItems(pack.boundedContexts, isConcreteBoundedContext);
+    const moduleResponsibilityCount = countMatchingItems(pack.moduleResponsibilities, isConcreteModuleResponsibility);
+    const dataOwnershipCount = countMatchingItems(pack.dataOwnership, isConcreteDataOwnership);
     const businessContext = buildReadinessCriterion({
         key: "business_context",
         label: "Business context",
@@ -499,17 +659,17 @@ export function createReadinessChecklist(
             buildReadinessRequirement({
                 key: "business_context.target_users",
                 label: "Target users",
-                satisfiedCount: countMeaningfulStrings(pack.businessContext.targetUsers, 3),
+                satisfiedCount: targetUserCount,
                 requiredCount: 1,
-                missing: countMeaningfulStrings(pack.businessContext.targetUsers, 3) < 1 ? ["Name at least 1 specific target user group."] : [],
+                missing: targetUserCount < 1 ? ["Name at least 1 specific target user group."] : [],
                 override: overrideIndex.get("business_context.target_users")
             }),
             buildReadinessRequirement({
                 key: "business_context.user_journeys",
                 label: "User journeys",
-                satisfiedCount: countMeaningfulStrings(pack.businessContext.userJourneys, 8),
+                satisfiedCount: userJourneyCount,
                 requiredCount: 2,
-                missing: countMeaningfulStrings(pack.businessContext.userJourneys, 8) < 2 ? ["Capture at least 2 concrete user journeys."] : [],
+                missing: userJourneyCount < 2 ? ["Capture at least 2 concrete user journeys."] : [],
                 override: overrideIndex.get("business_context.user_journeys")
             }),
             buildReadinessRequirement({
@@ -530,25 +690,25 @@ export function createReadinessChecklist(
             buildReadinessRequirement({
                 key: "boundaries.bounded_contexts",
                 label: "Bounded contexts",
-                satisfiedCount: pack.boundedContexts.length,
+                satisfiedCount: boundedContextCount,
                 requiredCount: 1,
-                missing: pack.boundedContexts.length < 1 ? ["Define at least 1 bounded context."] : [],
+                missing: boundedContextCount < 1 ? ["Define at least 1 bounded context."] : [],
                 override: overrideIndex.get("boundaries.bounded_contexts")
             }),
             buildReadinessRequirement({
                 key: "boundaries.module_responsibilities",
                 label: "Module responsibilities",
-                satisfiedCount: pack.moduleResponsibilities.length,
+                satisfiedCount: moduleResponsibilityCount,
                 requiredCount: 2,
-                missing: pack.moduleResponsibilities.length < 2 ? ["Define at least 2 concrete module responsibilities."] : [],
+                missing: moduleResponsibilityCount < 2 ? ["Define at least 2 concrete module responsibilities."] : [],
                 override: overrideIndex.get("boundaries.module_responsibilities")
             }),
             buildReadinessRequirement({
                 key: "boundaries.data_ownership",
                 label: "Data ownership",
-                satisfiedCount: pack.dataOwnership.length,
+                satisfiedCount: dataOwnershipCount,
                 requiredCount: 1,
-                missing: pack.dataOwnership.length < 1 ? ["Define at least 1 explicit data ownership rule."] : [],
+                missing: dataOwnershipCount < 1 ? ["Define at least 1 explicit data ownership rule."] : [],
                 override: overrideIndex.get("boundaries.data_ownership")
             })
         ]
@@ -595,25 +755,25 @@ export function createReadinessChecklist(
             buildReadinessRequirement({
                 key: "guardrails.implementation_order",
                 label: "Implementation order",
-                satisfiedCount: countMeaningfulStrings(guardrails.implementationOrder, 4),
+                satisfiedCount: countMatchingStrings(guardrails.implementationOrder, isConcreteImplementationStep),
                 requiredCount: 3,
-                missing: countMeaningfulStrings(guardrails.implementationOrder, 4) < 3 ? ["Define at least 3 implementation-order steps."] : [],
+                missing: countMatchingStrings(guardrails.implementationOrder, isConcreteImplementationStep) < 3 ? ["Define at least 3 implementation-order steps."] : [],
                 override: overrideIndex.get("guardrails.implementation_order")
             }),
             buildReadinessRequirement({
                 key: "guardrails.acceptance_criteria",
                 label: "Acceptance criteria",
-                satisfiedCount: countMeaningfulStrings(guardrails.acceptanceCriteria, 4),
+                satisfiedCount: countMatchingStrings(guardrails.acceptanceCriteria, isConcreteAcceptanceCriterion),
                 requiredCount: 4,
-                missing: countMeaningfulStrings(guardrails.acceptanceCriteria, 4) < 4 ? ["Define at least 4 acceptance criteria."] : [],
+                missing: countMatchingStrings(guardrails.acceptanceCriteria, isConcreteAcceptanceCriterion) < 4 ? ["Define at least 4 acceptance criteria."] : [],
                 override: overrideIndex.get("guardrails.acceptance_criteria")
             }),
             buildReadinessRequirement({
                 key: "guardrails.test_strategy",
                 label: "Test strategy",
-                satisfiedCount: countMeaningfulStrings(guardrails.testStrategy, 4),
+                satisfiedCount: countMatchingStrings(guardrails.testStrategy, isConcreteTestStrategy),
                 requiredCount: 2,
-                missing: countMeaningfulStrings(guardrails.testStrategy, 4) < 2 ? ["Define at least 2 concrete test strategy items."] : [],
+                missing: countMatchingStrings(guardrails.testStrategy, isConcreteTestStrategy) < 2 ? ["Define at least 2 concrete test strategy items."] : [],
                 override: overrideIndex.get("guardrails.test_strategy")
             })
         ]
@@ -626,25 +786,25 @@ export function createReadinessChecklist(
             buildReadinessRequirement({
                 key: "ui.key_screens",
                 label: "Key screens",
-                satisfiedCount: countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4),
+                satisfiedCount: countMatchingStrings(pack.experienceConstraints.keyScreens, isConcreteKeyScreen),
                 requiredCount: 3,
-                missing: countMeaningfulStrings(pack.experienceConstraints.keyScreens, 4) < 3 ? ["Define at least 3 key screens."] : [],
+                missing: countMatchingStrings(pack.experienceConstraints.keyScreens, isConcreteKeyScreen) < 3 ? ["Define at least 3 key screens."] : [],
                 override: overrideIndex.get("ui.key_screens")
             }),
             buildReadinessRequirement({
                 key: "ui.shared_components",
                 label: "Shared UI components",
-                satisfiedCount: countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4),
+                satisfiedCount: countMatchingStrings(pack.experienceConstraints.uiComponents, isConcreteUiComponent),
                 requiredCount: 3,
-                missing: countMeaningfulStrings(pack.experienceConstraints.uiComponents, 4) < 3 ? ["Define at least 3 shared UI components."] : [],
+                missing: countMatchingStrings(pack.experienceConstraints.uiComponents, isConcreteUiComponent) < 3 ? ["Define at least 3 shared UI components."] : [],
                 override: overrideIndex.get("ui.shared_components")
             }),
             buildReadinessRequirement({
                 key: "ui.responsive_strategy",
                 label: "Responsive strategy",
-                satisfiedCount: countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4),
+                satisfiedCount: countMatchingStrings(pack.experienceConstraints.responsiveStrategy, isConcreteResponsiveStrategy),
                 requiredCount: 1,
-                missing: countMeaningfulStrings(pack.experienceConstraints.responsiveStrategy, 4) < 1 ? ["Define at least 1 responsive strategy rule."] : [],
+                missing: countMatchingStrings(pack.experienceConstraints.responsiveStrategy, isConcreteResponsiveStrategy) < 1 ? ["Define at least 1 responsive strategy rule."] : [],
                 override: overrideIndex.get("ui.responsive_strategy")
             })
         ]
