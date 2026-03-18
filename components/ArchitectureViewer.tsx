@@ -567,7 +567,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         updateViewport(nextZoom, nextPan);
     }, [updateViewport]);
 
-    const handleWheel = (e: React.WheelEvent) => {
+    const handleWheel = useCallback((e: WheelEvent) => {
         if (!svg || error) return;
 
         e.preventDefault();
@@ -575,7 +575,17 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
 
         const scale = Math.exp(-e.deltaY * WHEEL_ZOOM_SENSITIVITY);
         zoomAroundPoint(e.clientX, e.clientY, scale);
-    };
+    }, [error, svg, zoomAroundPoint]);
+
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        container.addEventListener("wheel", handleWheel, { passive: false });
+        return () => {
+            container.removeEventListener("wheel", handleWheel);
+        };
+    }, [handleWheel]);
 
     const handleMouseDown = (e: React.MouseEvent) => {
         setIsDragging(true);
@@ -703,7 +713,6 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
             <div
                 className="relative min-h-0 flex-1 overflow-hidden cursor-grab active:cursor-grabbing"
                 ref={containerRef}
-                onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}

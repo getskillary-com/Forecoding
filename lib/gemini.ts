@@ -2873,10 +2873,7 @@ function ensureArchitectureDocs(input: {
         );
     }
 
-    const routeMap = getFileContentByPath(input.tree, "docs/ROUTE_MAP.md");
-    if (!hasMinimumDocContent(routeMap)) {
-        upsertFileByPath(input.tree, "docs/ROUTE_MAP.md", buildRouteMapDoc(input.tree));
-    }
+    upsertFileByPath(input.tree, "docs/ROUTE_MAP.md", buildRouteMapDoc(input.tree));
 
     const deprecatedPaths = [
         "docs/UI_SPEC.md",
