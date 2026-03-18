@@ -14,6 +14,7 @@ type ProjectSnapshot = {
 };
 
 const CACHE_KEY = "__fc_workspace_cache";
+const PERSISTED_LOCAL_KEY = "__fc_workspace_projects_v1";
 const LEGACY_LOCAL_KEY = "fl_projects_v2";
 const REMOTE_FETCH_TTL_MS = 30_000;
 
@@ -52,6 +53,20 @@ export function readProjectsFromLocalStorage(): Project[] {
     const cache = getCache();
     if (cache) return cache.parsed;
 
+    const persistedRaw = localStorage.getItem(PERSISTED_LOCAL_KEY);
+    if (persistedRaw) {
+        try {
+            const parsed = normalizeProjects(JSON.parse(persistedRaw));
+            if (Array.isArray(parsed)) {
+                setCache(parsed);
+                return parsed;
+            }
+            localStorage.removeItem(PERSISTED_LOCAL_KEY);
+        } catch {
+            localStorage.removeItem(PERSISTED_LOCAL_KEY);
+        }
+    }
+
     // One-time migration: read old local persisted projects and then remove them.
     const legacyRaw = localStorage.getItem(LEGACY_LOCAL_KEY);
     if (!legacyRaw) return [];
@@ -63,6 +78,11 @@ export function readProjectsFromLocalStorage(): Project[] {
             return [];
         }
         setCache(parsed);
+        try {
+            localStorage.setItem(PERSISTED_LOCAL_KEY, JSON.stringify(parsed));
+        } catch {
+            // Ignore persistence errors and continue with the in-memory cache.
+        }
         localStorage.removeItem(LEGACY_LOCAL_KEY);
         return parsed;
     } catch {
@@ -73,7 +93,14 @@ export function readProjectsFromLocalStorage(): Project[] {
 
 export function writeProjectsToLocalStorage(projects: Project[]): void {
     if (typeof window === "undefined") return;
-    setCache(normalizeProjects(projects));
+    const normalizedProjects = normalizeProjects(projects);
+    setCache(normalizedProjects);
+
+    try {
+        localStorage.setItem(PERSISTED_LOCAL_KEY, JSON.stringify(normalizedProjects));
+    } catch {
+        // Keep the in-memory cache usable even if persistent storage is unavailable.
+    }
 }
 
 export function getCachedProject(projectId?: string | null): Project | null {
