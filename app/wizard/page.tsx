@@ -87,6 +87,8 @@ import {
 import {
     buildPlatformSummaryLine,
     hasConfirmedPlatformStrategy,
+    inferPlatformStrategyFromText,
+    mergePlatformStrategies,
     resolvePrimaryPlatformCategory
 } from "@/lib/platforms";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
@@ -566,6 +568,489 @@ function buildResolvedConfirmationLog(messages: Message[], maxItems: number = 12
     return [...resolvedByQuestionKey.values()].slice(-maxItems);
 }
 
+type ConversationSyncedState = {
+    architecturePack: ArchitecturePack;
+    decisionRecords: DecisionRecord[];
+    guardrailChecklist: GuardrailChecklist;
+};
+
+function normalizeConversationText(value: string | null | undefined) {
+    return (value || "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\u00a0/g, " ")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
+function mergeStringValues(existing: string[], additions: string[], maxItems: number = 24) {
+    return normalizeStringList([...existing, ...additions].map((item) => normalizeConversationText(item)), maxItems);
+}
+
+function mergeObjectsByStableKey<T>(
+    existing: T[],
+    additions: T[],
+    getKey: (item: T) => string
+) {
+    const seen = new Set(
+        existing
+            .map((item) => normalizeConversationText(getKey(item)).toLowerCase())
+            .filter(Boolean)
+    );
+    const merged = [...existing];
+    additions.forEach((item) => {
+        const key = normalizeConversationText(getKey(item)).toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        merged.push(item);
+    });
+    return merged;
+}
+
+function chooseMoreSpecificText(existing: string, candidate: string) {
+    const normalizedExisting = normalizeConversationText(existing);
+    const normalizedCandidate = normalizeConversationText(candidate);
+    if (!normalizedCandidate) return normalizedExisting;
+    if (!normalizedExisting) return normalizedCandidate;
+    return normalizedCandidate.length > normalizedExisting.length + 12
+        ? normalizedCandidate
+        : normalizedExisting;
+}
+
+function isSubstantiveConversationAnswer(answer: string) {
+    const normalized = normalizeConversationText(answer).toLowerCase();
+    if (!normalized || normalized.length < 4) return false;
+    if (/^(yes|yeah|yep|ok|okay|sure|continue|go ahead|same|agree|agreed|同意|继续|好的|好|可以|是的)$/.test(normalized)) {
+        return false;
+    }
+    return !(
+        /给我补充模板|高质量补充模板|give me a template|production-grade template|show me .*example|给我示例|show me common options|常见选项|列出当前阻塞项|list blockers|我来补充这个缺口|我来手动补充|我来自己描述|我来自己定义|i will fill|i will define|i will describe|我按模板回答|continue asking/i.test(normalized)
+    );
+}
+
+function inferRequirementKeyFromConversation(
+    question: string,
+    answer: string,
+    explicitRequirementKey: ReadinessRequirementKey | null
+): ReadinessRequirementKey | null {
+    if (explicitRequirementKey) return explicitRequirementKey;
+    const source = `${question}\n${answer}`.toLowerCase();
+
+    if (/product goal|产品目标|要做什么|build /i.test(source)) return "business_context.product_goal";
+    if (/platform|响应式 web|web 端|微信小程序|移动端 app|首发平台|平台发布|运行环境/i.test(source)) return "business_context.platforms";
+    if (/target user|核心用户|目标用户|谁是用户|audience/i.test(source)) return "business_context.target_users";
+    if (/user journey|workflow|旅程|流程|主流程|使用流程/i.test(source)) return "business_context.user_journeys";
+    if (/constraint|risk|预算|风格|约束|风险|特殊人群|交通偏好|必去景点/i.test(source)) return "business_context.constraints_or_risks";
+    if (/bounded context|限界上下文/i.test(source)) return "boundaries.bounded_contexts";
+    if (/module responsibility|模块职责|核心模块|module/i.test(source)) return "boundaries.module_responsibilities";
+    if (/data ownership|ownership|retention|账户归属|数据归属|保留期|匿名|登录体系/i.test(source)) return "boundaries.data_ownership";
+    if (/integration contract|输入输出契约|api contract|集成契约/i.test(source)) return "decisions.integration_contracts";
+    if (/non-functional|timeout|retry|超时|重试|性能|稳定性|可用性|隐私|latency|availability/i.test(source)) return "decisions.non_functional_requirements";
+    if (/implementation order|phase|开发计划|推进开发|顺序推进|三个阶段/i.test(source)) return "guardrails.implementation_order";
+    if (/acceptance criteria|验收标准|definition of done/i.test(source)) return "guardrails.acceptance_criteria";
+    if (/test strategy|测试策略|testing/i.test(source)) return "guardrails.test_strategy";
+    if (/key screen|关键界面|页面|screen/i.test(source)) return "ui.key_screens";
+    if (/shared component|共享 ui 组件|shared ui/i.test(source)) return "ui.shared_components";
+    if (/responsive|响应式/i.test(source)) return "ui.responsive_strategy";
+
+    return null;
+}
+
+function extractListLikeItems(answer: string, maxItems: number = 8) {
+    const normalized = normalizeConversationText(answer);
+    if (!normalized) return [];
+
+    const lineItems = normalized
+        .split("\n")
+        .map((line) => line.trim())
+        .map((line) => line.replace(/^[-*•]\s*/, "").replace(/^\d+[\.\)]\s*/, "").trim())
+        .filter((line) => line.length >= 8);
+    if (lineItems.length >= 2) return normalizeStringList(lineItems, maxItems);
+
+    const clauseItems = normalized
+        .split(/[；;]\s*/g)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= 8);
+    if (clauseItems.length >= 2) return normalizeStringList(clauseItems, maxItems);
+
+    return [];
+}
+
+function extractJourneyItems(answer: string) {
+    const normalized = normalizeConversationText(answer);
+    if (!normalized) return [];
+
+    const repeatedTemplateHeaderCount = (normalized.match(/谁发起这条流程|Who initiates this flow/gi) || []).length;
+    if (repeatedTemplateHeaderCount >= 2) {
+        const blocks = normalized
+            .split(/(?=(?:谁发起这条流程|Who initiates this flow))/i)
+            .map((block) => normalizeConversationText(block))
+            .filter((block) => block.length >= 24);
+        if (blocks.length >= 2) return normalizeStringList(blocks, 6);
+    }
+
+    const labeledBlocks = normalized
+        .split(/\n{2,}(?=(?:流程|旅程|Journey|Flow)\s*\d*[:：-]?)/i)
+        .map((block) => normalizeConversationText(block))
+        .filter((block) => block.length >= 24);
+    if (labeledBlocks.length >= 2) return normalizeStringList(labeledBlocks, 6);
+
+    const paragraphBlocks = normalized
+        .split(/\n{2,}/)
+        .map((block) => normalizeConversationText(block))
+        .filter((block) => block.length >= 24);
+    if (paragraphBlocks.length >= 2) return normalizeStringList(paragraphBlocks, 6);
+
+    const listItems = extractListLikeItems(normalized, 6);
+    if (listItems.length >= 2) return listItems;
+
+    return [normalized];
+}
+
+function deriveContextNameFromText(answer: string, fallback: string) {
+    const normalized = normalizeConversationText(answer);
+    const firstClause = normalized
+        .split(/[:：。.!?？；;]/)[0]
+        .trim()
+        .replace(/^[-*•]\s*/, "");
+    if (!firstClause) return fallback;
+    return clipText(firstClause, 40);
+}
+
+function maybeCreateDecisionRecordFromConversation(
+    question: string,
+    answer: string
+): DecisionRecord | null {
+    const source = `${question}\n${answer}`.toLowerCase();
+    if (!/分享|share|匿名|login|auth|token|地图|map|places|llm|大模型|database|数据库|localstorage|导出|export|pdf|长图|无状态|stateless|超时|timeout|重试|retry|流式|stream|api|gateway|拖拽|drag|局部重生成|wizard|多步向导/i.test(source)) {
+        return null;
+    }
+
+    const normalizedQuestion = normalizeConversationText(question).replace(/[?？]$/, "");
+    const normalizedAnswer = normalizeConversationText(answer);
+    if (!normalizedQuestion || !normalizedAnswer) return null;
+
+    return {
+        title: clipText(normalizedQuestion, 80),
+        decision: clipText(normalizedAnswer, 260),
+        rationale: clipText(`Confirmed during requirements discovery: ${normalizedQuestion}`, 220),
+        alternativesRejected: [],
+        consequences: ["This decision directly affects product scope, architecture boundaries, or delivery tradeoffs."]
+    };
+}
+
+function maybeCreateNfrFromConversation(
+    question: string,
+    answer: string
+) {
+    const source = `${question}\n${answer}`.toLowerCase();
+    if (!/timeout|retry|超时|重试|解析异常|格式错误|稳定性|resilien|latency|response time|可用性|availability/i.test(source)) {
+        return null;
+    }
+
+    const normalizedAnswer = normalizeConversationText(answer);
+    if (!normalizedAnswer) return null;
+
+    return {
+        category: /latency|response time|响应速度|延迟/i.test(source)
+            ? "performance"
+            : "resilience",
+        requirement: clipText(normalizedAnswer, 220),
+        rationale: clipText(`Confirmed during requirements discovery: ${normalizeConversationText(question)}`, 220)
+    };
+}
+
+function syncStructuredStateFromConversation(input: {
+    architecturePack: ArchitecturePack;
+    decisionRecords: DecisionRecord[];
+    guardrailChecklist: GuardrailChecklist;
+    analysis: EvaluationResponse["analysis"] | null | undefined;
+    messages: Message[];
+}): ConversationSyncedState {
+    const analysis = normalizeAnalysis(input.analysis);
+    const seededPack = seedArchitecturePackFromAnalysis(analysis, analysis.ui);
+
+    let architecturePack = normalizeArchitecturePack(input.architecturePack, analysis.ui);
+    let decisionRecords = normalizeDecisionRecords(input.decisionRecords);
+    let guardrailChecklist = normalizeGuardrailChecklist(input.guardrailChecklist);
+
+    architecturePack = normalizeArchitecturePack({
+        ...architecturePack,
+        businessContext: {
+            productGoal: chooseMoreSpecificText(architecturePack.businessContext.productGoal, seededPack.businessContext.productGoal),
+            targetUsers: mergeStringValues(architecturePack.businessContext.targetUsers, seededPack.businessContext.targetUsers, 8),
+            userJourneys: mergeStringValues(architecturePack.businessContext.userJourneys, seededPack.businessContext.userJourneys, 8),
+            constraints: mergeStringValues(architecturePack.businessContext.constraints, seededPack.businessContext.constraints, 10),
+            risks: mergeStringValues(architecturePack.businessContext.risks, seededPack.businessContext.risks, 10)
+        },
+        platformStrategy: mergePlatformStrategies(architecturePack.platformStrategy, seededPack.platformStrategy),
+        nonFunctionalRequirements: mergeObjectsByStableKey(
+            architecturePack.nonFunctionalRequirements,
+            seededPack.nonFunctionalRequirements,
+            (item) => `${item.category}::${item.requirement}`
+        ),
+        experienceConstraints: {
+            keyScreens: mergeStringValues(architecturePack.experienceConstraints.keyScreens, seededPack.experienceConstraints.keyScreens, 8),
+            uiComponents: mergeStringValues(architecturePack.experienceConstraints.uiComponents, seededPack.experienceConstraints.uiComponents, 10),
+            interactionStates: mergeStringValues(architecturePack.experienceConstraints.interactionStates, seededPack.experienceConstraints.interactionStates, 10),
+            responsiveStrategy: mergeStringValues(architecturePack.experienceConstraints.responsiveStrategy, seededPack.experienceConstraints.responsiveStrategy, 8)
+        }
+    }, analysis.ui);
+
+    const resolvedConfirmations = buildResolvedConfirmationLog(input.messages);
+
+    resolvedConfirmations.forEach((item) => {
+        const answer = normalizeConversationText(item.answer);
+        if (!isSubstantiveConversationAnswer(answer)) return;
+
+        const requirementKey = inferRequirementKeyFromConversation(item.question, answer, item.requirementKey);
+        const listItems = extractListLikeItems(answer);
+
+        switch (requirementKey) {
+            case "business_context.product_goal":
+                architecturePack = {
+                    ...architecturePack,
+                    businessContext: {
+                        ...architecturePack.businessContext,
+                        productGoal: chooseMoreSpecificText(architecturePack.businessContext.productGoal, answer)
+                    }
+                };
+                break;
+            case "business_context.platforms":
+                {
+                    const inferredFromAnswer = inferPlatformStrategyFromText(answer);
+                    const inferredPlatformStrategy = hasConfirmedPlatformStrategy(inferredFromAnswer)
+                        ? inferredFromAnswer
+                        : inferPlatformStrategyFromText(item.question);
+                architecturePack = {
+                    ...architecturePack,
+                    platformStrategy: mergePlatformStrategies(
+                        architecturePack.platformStrategy,
+                        inferredPlatformStrategy
+                    )
+                };
+                }
+                break;
+            case "business_context.target_users":
+                architecturePack = {
+                    ...architecturePack,
+                    businessContext: {
+                        ...architecturePack.businessContext,
+                        targetUsers: mergeStringValues(
+                            architecturePack.businessContext.targetUsers,
+                            listItems.length > 0 ? listItems : [answer],
+                            8
+                        )
+                    }
+                };
+                break;
+            case "business_context.user_journeys":
+                architecturePack = {
+                    ...architecturePack,
+                    businessContext: {
+                        ...architecturePack.businessContext,
+                        userJourneys: mergeStringValues(
+                            architecturePack.businessContext.userJourneys,
+                            extractJourneyItems(answer),
+                            8
+                        )
+                    }
+                };
+                break;
+            case "business_context.constraints_or_risks": {
+                const additions = listItems.length > 0 ? listItems : [answer];
+                const riskItems = additions.filter((entry) => /risk|风险|丢失|失败|错误|误差|中断/i.test(entry));
+                const constraintItems = additions.filter((entry) => !riskItems.includes(entry));
+                architecturePack = {
+                    ...architecturePack,
+                    businessContext: {
+                        ...architecturePack.businessContext,
+                        constraints: mergeStringValues(architecturePack.businessContext.constraints, constraintItems, 10),
+                        risks: mergeStringValues(architecturePack.businessContext.risks, riskItems, 10)
+                    }
+                };
+                break;
+            }
+            case "boundaries.bounded_contexts":
+                architecturePack = {
+                    ...architecturePack,
+                    boundedContexts: mergeObjectsByStableKey(
+                        architecturePack.boundedContexts,
+                        [{
+                            name: deriveContextNameFromText(answer, "Core planning context"),
+                            responsibility: answer,
+                            owns: [],
+                            dependencies: []
+                        }],
+                        (context) => context.name
+                    )
+                };
+                break;
+            case "boundaries.module_responsibilities":
+                architecturePack = {
+                    ...architecturePack,
+                    moduleResponsibilities: mergeObjectsByStableKey(
+                        architecturePack.moduleResponsibilities,
+                        [{
+                            module: deriveContextNameFromText(answer, "Core module"),
+                            responsibility: answer,
+                            inputs: [],
+                            outputs: []
+                        }],
+                        (module) => module.module
+                    )
+                };
+                break;
+            case "boundaries.data_ownership":
+                architecturePack = {
+                    ...architecturePack,
+                    dataOwnership: mergeObjectsByStableKey(
+                        architecturePack.dataOwnership,
+                        [{
+                            data: "Trip planning data",
+                            owner: /user|用户|创建者/i.test(answer) ? "User" : "Application",
+                            consumers: [],
+                            notes: answer
+                        }],
+                        (ownership) => `${ownership.data}::${ownership.owner}`
+                    )
+                };
+                break;
+            case "decisions.integration_contracts":
+                architecturePack = {
+                    ...architecturePack,
+                    integrationContracts: mergeObjectsByStableKey(
+                        architecturePack.integrationContracts,
+                        [{
+                            name: deriveContextNameFromText(item.question, "Primary integration contract"),
+                            kind: "api" as const,
+                            producer: "frontend",
+                            consumer: "ai_gateway",
+                            payload: answer,
+                            notes: item.question
+                        }],
+                        (contract) => contract.name
+                    )
+                };
+                break;
+            case "decisions.non_functional_requirements": {
+                const derivedNfr = maybeCreateNfrFromConversation(item.question, answer) ?? {
+                    category: "quality",
+                    requirement: clipText(answer, 220),
+                    rationale: clipText(`Confirmed during requirements discovery: ${normalizeConversationText(item.question)}`, 220)
+                };
+                architecturePack = {
+                    ...architecturePack,
+                    nonFunctionalRequirements: mergeObjectsByStableKey(
+                        architecturePack.nonFunctionalRequirements,
+                        [derivedNfr],
+                        (nfr) => `${nfr.category}::${nfr.requirement}`
+                    )
+                };
+                break;
+            }
+            case "guardrails.implementation_order":
+                guardrailChecklist = {
+                    ...guardrailChecklist,
+                    implementationOrder: mergeStringValues(
+                        guardrailChecklist.implementationOrder,
+                        listItems.length > 0 ? listItems : [answer],
+                        12
+                    )
+                };
+                break;
+            case "guardrails.acceptance_criteria":
+                guardrailChecklist = {
+                    ...guardrailChecklist,
+                    acceptanceCriteria: mergeStringValues(
+                        guardrailChecklist.acceptanceCriteria,
+                        listItems.length > 0 ? listItems : [answer],
+                        16
+                    )
+                };
+                break;
+            case "guardrails.test_strategy":
+                guardrailChecklist = {
+                    ...guardrailChecklist,
+                    testStrategy: mergeStringValues(
+                        guardrailChecklist.testStrategy,
+                        listItems.length > 0 ? listItems : [answer],
+                        12
+                    )
+                };
+                break;
+            case "ui.key_screens":
+                architecturePack = {
+                    ...architecturePack,
+                    experienceConstraints: {
+                        ...architecturePack.experienceConstraints,
+                        keyScreens: mergeStringValues(
+                            architecturePack.experienceConstraints.keyScreens,
+                            listItems.length > 0 ? listItems : [answer],
+                            8
+                        )
+                    }
+                };
+                break;
+            case "ui.shared_components":
+                architecturePack = {
+                    ...architecturePack,
+                    experienceConstraints: {
+                        ...architecturePack.experienceConstraints,
+                        uiComponents: mergeStringValues(
+                            architecturePack.experienceConstraints.uiComponents,
+                            listItems.length > 0 ? listItems : [answer],
+                            10
+                        )
+                    }
+                };
+                break;
+            case "ui.responsive_strategy":
+                architecturePack = {
+                    ...architecturePack,
+                    experienceConstraints: {
+                        ...architecturePack.experienceConstraints,
+                        responsiveStrategy: mergeStringValues(
+                            architecturePack.experienceConstraints.responsiveStrategy,
+                            listItems.length > 0 ? listItems : [answer],
+                            8
+                        )
+                    }
+                };
+                break;
+            default:
+                break;
+        }
+
+        const derivedDecisionRecord = maybeCreateDecisionRecordFromConversation(item.question, answer);
+        if (derivedDecisionRecord) {
+            decisionRecords = mergeObjectsByStableKey(
+                decisionRecords,
+                [derivedDecisionRecord],
+                (record) => `${record.title}::${record.decision}`
+            );
+        }
+
+        const derivedNfr = maybeCreateNfrFromConversation(item.question, answer);
+        if (derivedNfr) {
+            architecturePack = {
+                ...architecturePack,
+                nonFunctionalRequirements: mergeObjectsByStableKey(
+                    architecturePack.nonFunctionalRequirements,
+                    [derivedNfr],
+                    (nfr) => `${nfr.category}::${nfr.requirement}`
+                )
+            };
+        }
+    });
+
+    return {
+        architecturePack: normalizeArchitecturePack(architecturePack, analysis.ui),
+        decisionRecords: normalizeDecisionRecords(decisionRecords),
+        guardrailChecklist: normalizeGuardrailChecklist(guardrailChecklist)
+    };
+}
+
 function createEmptyUiRequirements(): UiRequirements {
     return {
         visualStyle: [],
@@ -606,13 +1091,21 @@ function normalizeAnalysis(raw: EvaluationResponse["analysis"] | null | undefine
 
 function normalizeEvaluation(
     value: EvaluationResponse | null | undefined,
-    readinessOverrides: ReadinessOverride[] = []
+    readinessOverrides: ReadinessOverride[] = [],
+    messages: Message[] = []
 ): EvaluationResponse | null {
     if (!value || typeof value !== "object") return null;
     const analysis = normalizeAnalysis(value.analysis);
-    const architecturePackDraft = normalizeArchitecturePack(value.architecturePackDraft, analysis.ui);
-    const decisionDrafts = normalizeDecisionRecords(value.decisionDrafts);
-    const guardrailDrafts = normalizeGuardrailChecklist(value.guardrailDrafts);
+    const syncedState = syncStructuredStateFromConversation({
+        architecturePack: normalizeArchitecturePack(value.architecturePackDraft, analysis.ui),
+        decisionRecords: normalizeDecisionRecords(value.decisionDrafts),
+        guardrailChecklist: normalizeGuardrailChecklist(value.guardrailDrafts),
+        analysis,
+        messages
+    });
+    const architecturePackDraft = syncedState.architecturePack;
+    const decisionDrafts = syncedState.decisionRecords;
+    const guardrailDrafts = syncedState.guardrailChecklist;
     const stage = normalizeArchitectureStage(
         value.stage,
         architecturePackDraft,
@@ -704,15 +1197,23 @@ function resolveWorkingArchitectureState(
     architecturePack: ArchitecturePack,
     decisionRecords: DecisionRecord[],
     guardrailChecklist: GuardrailChecklist,
-    readinessOverrides: ReadinessOverride[] = []
+    readinessOverrides: ReadinessOverride[] = [],
+    messages: Message[] = []
 ): WorkingArchitectureState {
     const normalizedAnalysis = normalizeAnalysis(evaluation?.analysis);
-    const resolvedPack = normalizeArchitecturePack(
-        evaluation?.architecturePackDraft ?? architecturePack,
-        normalizedAnalysis.ui
-    );
-    const resolvedDecisions = normalizeDecisionRecords(evaluation?.decisionDrafts ?? decisionRecords);
-    const resolvedGuardrails = normalizeGuardrailChecklist(evaluation?.guardrailDrafts ?? guardrailChecklist);
+    const syncedState = syncStructuredStateFromConversation({
+        architecturePack: normalizeArchitecturePack(
+            evaluation?.architecturePackDraft ?? architecturePack,
+            normalizedAnalysis.ui
+        ),
+        decisionRecords: normalizeDecisionRecords(evaluation?.decisionDrafts ?? decisionRecords),
+        guardrailChecklist: normalizeGuardrailChecklist(evaluation?.guardrailDrafts ?? guardrailChecklist),
+        analysis: normalizedAnalysis,
+        messages
+    });
+    const resolvedPack = syncedState.architecturePack;
+    const resolvedDecisions = syncedState.decisionRecords;
+    const resolvedGuardrails = syncedState.guardrailChecklist;
     const resolvedReadiness = applyArchitectureStageScoreFloor(
         normalizeReadiness(
             evaluation?.readiness,
@@ -1023,18 +1524,28 @@ function normalizePrdDeltas(
 function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
     const messages = normalizeMessages(data?.messages);
     const readinessOverrides = normalizeReadinessOverrides(data?.readinessOverrides);
-    const evaluation = normalizeEvaluation(data?.evaluation ?? null, readinessOverrides);
+    const evaluation = normalizeEvaluation(data?.evaluation ?? null, readinessOverrides, messages);
     const uiDesignSpec = normalizeUiDesignSpec(data?.uiDesignSpec, evaluation?.analysis?.ui);
     const uiDesignState = normalizeUiDesignState(data?.uiDesignState, evaluation, uiDesignSpec);
-    const architecturePack = normalizeArchitecturePack(
+    const baseArchitecturePack = normalizeArchitecturePack(
         data?.architecturePack ?? evaluation?.architecturePackDraft ?? seedArchitecturePackFromAnalysis(evaluation?.analysis, evaluation?.analysis?.ui)
     );
-    const decisionRecords = normalizeDecisionRecords(
+    const baseDecisionRecords = normalizeDecisionRecords(
         data?.decisionRecords ?? evaluation?.decisionDrafts
     );
-    const guardrailChecklist = normalizeGuardrailChecklist(
+    const baseGuardrailChecklist = normalizeGuardrailChecklist(
         data?.guardrailChecklist ?? evaluation?.guardrailDrafts
     );
+    const syncedState = syncStructuredStateFromConversation({
+        architecturePack: baseArchitecturePack,
+        decisionRecords: baseDecisionRecords,
+        guardrailChecklist: baseGuardrailChecklist,
+        analysis: evaluation?.analysis,
+        messages
+    });
+    const architecturePack = syncedState.architecturePack;
+    const decisionRecords = syncedState.decisionRecords;
+    const guardrailChecklist = syncedState.guardrailChecklist;
     const sourceArtifacts = normalizeSourceArtifacts(data?.sourceArtifacts);
     const scaffoldEligibility = computeScaffoldEligibility({
         architecturePack,
@@ -4145,7 +4656,8 @@ function WizardContent() {
         architecturePack,
         decisionRecords,
         guardrailChecklist,
-        readinessOverrides
+        readinessOverrides,
+        messages
     );
     const workingScaffoldEligibility = computeScaffoldEligibility({
         architecturePack: workingArchitectureState.architecturePack,
@@ -5369,37 +5881,48 @@ function WizardContent() {
                     currentEval.architecturePackDraft ?? seedArchitecturePackFromAnalysis(currentEval.analysis, currentEval.analysis.ui),
                     currentEval.analysis.ui
                 );
+                const syncedCurrentState = syncStructuredStateFromConversation({
+                    architecturePack: currentEval.architecturePackDraft,
+                    decisionRecords: currentEval.decisionDrafts ?? decisionRecords,
+                    guardrailChecklist: currentEval.guardrailDrafts ?? guardrailChecklist,
+                    analysis: currentEval.analysis,
+                    messages: requestMessages
+                });
+                currentEval.architecturePackDraft = syncedCurrentState.architecturePack;
+                currentEval.decisionDrafts = syncedCurrentState.decisionRecords;
+                currentEval.guardrailDrafts = syncedCurrentState.guardrailChecklist;
+                const syncedArchitecturePack = currentEval.architecturePackDraft;
+                const syncedDecisionDrafts = currentEval.decisionDrafts;
+                const syncedGuardrailDrafts = currentEval.guardrailDrafts;
 
+                let nextReadiness = createReadinessChecklist(
+                    syncedArchitecturePack,
+                    syncedDecisionDrafts,
+                    syncedGuardrailDrafts,
+                    readinessOverrides
+                );
                 const readinessMatch = parseBuffer.match(/<readiness>([\s\S]*?)<\/readiness>/i);
                 if (readinessMatch) {
                     const parsedReadiness = parseJsonBlock(readinessMatch[1], (value) => normalizeReadiness(
                         value,
-                        currentEval.architecturePackDraft ?? architecturePack,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        syncedArchitecturePack,
+                        syncedDecisionDrafts,
+                        syncedGuardrailDrafts,
                         readinessOverrides
                     ));
                     if (parsedReadiness) {
-                        currentEval.readiness = parsedReadiness;
+                        nextReadiness = parsedReadiness;
                     }
                 }
-
-                if (!currentEval.readiness) {
-                    currentEval.readiness = createReadinessChecklist(
-                        currentEval.architecturePackDraft,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
-                        readinessOverrides
-                    );
-                }
+                currentEval.readiness = nextReadiness;
                 currentEval.is_ready = currentEval.readiness.functionalReady && currentEval.readiness.uiReady;
                 currentEval.density_score = currentEval.readiness.score;
 
                 if (!currentEval.stage) {
                     currentEval.stage = inferArchitectureStage(
-                        currentEval.architecturePackDraft,
-                        currentEval.decisionDrafts ?? decisionRecords,
-                        currentEval.guardrailDrafts ?? guardrailChecklist,
+                        syncedArchitecturePack,
+                        syncedDecisionDrafts,
+                        syncedGuardrailDrafts,
                         readinessOverrides
                     );
                 }
@@ -5469,18 +5992,19 @@ function WizardContent() {
                     });
                 }
 
-                const normalizedEval = normalizeEvaluation({ ...currentEval }, readinessOverrides);
+                const normalizedEval = normalizeEvaluation({ ...currentEval }, readinessOverrides, requestMessages);
                 setEvaluation(normalizedEval);
             }
 
             if (evalRequestIdRef.current === requestId) {
-                const finalEvaluation = normalizeEvaluation({ ...currentEval }, readinessOverrides);
+                const finalEvaluation = normalizeEvaluation({ ...currentEval }, readinessOverrides, requestMessages);
                 const finalWorkingArchitectureState = resolveWorkingArchitectureState(
                     finalEvaluation,
                     architecturePack,
                     decisionRecords,
                     guardrailChecklist,
-                    readinessOverrides
+                    readinessOverrides,
+                    requestMessages
                 );
                 const resolvedPack = finalWorkingArchitectureState.architecturePack;
                 const resolvedDecisions = finalWorkingArchitectureState.decisionRecords;
@@ -6606,13 +7130,14 @@ Do you want to start scaffold generation now?`;
             openQuestions: normalizeStringList(baseEvaluation.openQuestions ?? baseEvaluation.analysis?.missing, 12),
             density_score: nextEligibility.readiness.score,
             is_ready: nextEligibility.readiness.functionalReady && nextEligibility.readiness.uiReady
-        }, resolution.readinessOverrides);
+        }, resolution.readinessOverrides, baseMessages);
         const nextWorkingArchitectureState = resolveWorkingArchitectureState(
             nextEvaluation,
             architecturePack,
             decisionRecords,
             guardrailChecklist,
-            resolution.readinessOverrides
+            resolution.readinessOverrides,
+            baseMessages
         );
         setEvaluation(nextEvaluation);
         commitArchitectureStageSnapshot(nextWorkingArchitectureState, resolution.readinessOverrides);
