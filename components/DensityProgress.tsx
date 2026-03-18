@@ -12,7 +12,7 @@ export function DensityProgress({ score }: Props) {
     return (
         <div className="w-full flex flex-col gap-2 p-4 bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
             <div className="flex justify-between text-sm font-medium text-gray-700 dark:text-gray-200">
-                <span>Information Density</span>
+                <span>Requirements Readiness</span>
                 <span className="font-bold">{score}/100</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 overflow-hidden">

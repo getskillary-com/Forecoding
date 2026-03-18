@@ -20,11 +20,11 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
             showEarlierMessages: (count: number, hidden: number) => `显示更早消息 ${count} 条（还有 ${hidden} 条）`,
             thinking: "思考中...",
             architectStage: "架构阶段",
-            readiness: "完成度",
+            readiness: "就绪度",
             scaffoldGenerated: "脚手架已生成",
             scaffoldGeneratedDesc: "脚手架已经生成完成。你仍然可以继续补充架构、更新 PRD 或调整方向。",
             checkingAccess: "正在检查访问权限...",
-            generateLockedUntilReady: "完成度未达生成要求，暂不可生成",
+            generateLockedUntilReady: "就绪度未达生成要求，暂不可生成",
             redirectingToPayment: "正在跳转支付...",
             architectingSolution: "正在生成方案...",
             generateScaffold: "生成脚手架",
@@ -32,9 +32,9 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
             proceedToPaymentWithAmount: (amount: string) => `前往支付（${amount}）`,
             proceedToPaymentCalculating: "前往支付（计算中...）",
             checkingPermissions: "正在检查权限...",
-            readinessNotReady: (blocker: string) => `当前完成度仍未达到生成要求。${blocker || "继续完善下方内容以补齐剩余缺口。"}`,
+            readinessNotReady: (blocker: string) => `当前就绪度仍未达到生成要求。${blocker || "继续完善下方内容以补齐剩余缺口。"}`,
             adminModeBypassEnabled: "管理员模式：已跳过支付",
-            readyToBuild: "架构完成度已达生成要求，可以开始构建或更新脚手架。",
+            readyToBuild: "架构就绪度已达生成要求，可以开始构建或更新脚手架。",
             estimatedQuote: (amount: string, tier: string) => `预计价格 ${amount}（${tier} 复杂度）。`,
             calculatingPrice: "正在按复杂度计算价格...",
             paymentRequired: "生成前需要先完成支付",
@@ -80,7 +80,7 @@ export function getWorkspaceUiText(language: WorkspaceLanguage) {
             projectCredit: "项目额度",
             unableToStartStripeCheckout: "无法启动 Stripe 支付。",
             failedToStartCheckout: "启动支付失败。",
-            completeReadinessBeforeGenerate: "请先补齐架构完成度要求，再生成脚手架。",
+            completeReadinessBeforeGenerate: "请先补齐架构就绪度要求，再生成脚手架。",
             loading: "加载中..."
         };
     }
@@ -191,7 +191,7 @@ export function translateReadinessText(language: WorkspaceLanguage, value: strin
         "Add more concrete detail.": "请补充更具体的细节。",
         "Proceed to scaffold generation when ready.": "准备就绪后进入脚手架生成。",
         "Proceed to scaffold generation.": "进入脚手架生成。",
-        "Complete the architecture readiness checklist before generating scaffold.": "请先补齐架构完成度要求，再生成脚手架。"
+        "Complete the architecture readiness checklist before generating scaffold.": "请先补齐架构就绪度要求，再生成脚手架。"
     };
 
     if (exactMap[value]) return exactMap[value];

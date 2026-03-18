@@ -677,8 +677,8 @@ export function UiDesignWorkbench({
                 </h3>
                 <p className="text-sm text-slate-600 dark:text-slate-300">
                     {uiDesignActive
-                        ? "UI design mode is active. Refine screens and interaction states until readiness reaches 100%."
-                        : "UI design unlocks after Information Density reaches 100."}
+                        ? "UI design mode is active. Refine screens and interaction states until UI readiness reaches 100%."
+                        : "UI design unlocks after requirements readiness reaches 100%."}
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                     Stage: {designStage.replace(/_/g, " ")} | UI readiness: {uiDesignState.readiness.score}%{uiDesignState.needsResync ? " | Needs resync" : ""}
@@ -714,7 +714,7 @@ export function UiDesignWorkbench({
                     </div>
                     <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">UI Design Mode Locked</p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                        Information Density must reach 100 to begin UI design. Current: {Math.round(densityScore)}%
+                        Requirements readiness must reach 100 to begin UI design. Current: {Math.round(densityScore)}%
                     </p>
                     {uiDesignState.needsResync && (
                         <p className="mt-2 text-xs text-amber-500">UI draft exists and needs resync after returning to functional architecture.</p>

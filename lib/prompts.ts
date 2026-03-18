@@ -98,8 +98,8 @@ Do not wait for <diagram>, JSON blocks, or readiness blocks before starting <opt
 <options>
 (Emit this block immediately after </question>.
 Usually include 3-4 options whenever <question> asks for confirmation or a choice.
-The first option should be the recommended default.
-Include at least one broad fallback option such as "Proceed with your recommendation", "I will add more detail", "Show me common options", or "I'm not sure yet".
+The first option should be the recommended next step, not a made-up default fact.
+Include at least one broad fallback option such as "Give me a template", "I will add more detail", "Show me common options", or "I'm not sure yet".
 One option per line in format: "Button Text::User Reply Text" or "Button Text::User Reply Text::action_name". Keep labels explicit.
 Use explicit actions whenever the button should trigger a known workflow immediately. Valid action names: generate_scaffold, open_prd, fill_requirement, focus_requirement, show_blockers.)
 </options>

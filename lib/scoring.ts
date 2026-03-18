@@ -15,7 +15,7 @@ export function getProgressColor(score: number): string {
 }
 
 export function getProgressLabel(score: number): string {
-    if (score < 50) return "Low Density (Need more info)";
-    if (score < 80) return "Medium Density (Getting closer)";
-    return "High Density (Ready to Launch)";
+    if (score < 50) return "Low Readiness (Need more detail)";
+    if (score < 80) return "Medium Readiness (Getting closer)";
+    return "High Readiness (Ready to Launch)";
 }

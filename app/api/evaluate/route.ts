@@ -138,10 +138,10 @@ function buildFallbackOptions(language: "zh" | "en") {
     }
 
     return [
-        "Proceed with your recommendation::Proceed with your recommendation.",
+        "Give me a template::Give me a high-quality template so I can fill the missing detail.",
         "I will add more detail::I will add more detail.",
         "Show me common options::Show me common options.",
-        "I am not sure yet::I am not sure yet. Please use the default approach."
+        "I am not sure yet::I am not sure yet. Please keep guiding me with the safest next questions."
     ];
 }
 
@@ -296,7 +296,7 @@ function buildStructuredFallbackQuestion(output: string, language: "zh" | "en"):
                 message: clipText(
                     language === "zh"
                         ? `我建议先按默认方案补齐“${label}”。是否现在先处理这一项？`
-                        : `I recommend resolving ${label} next using the default approach. Should I do that now?`,
+                        : `I recommend resolving ${label} next. Should I give you a high-quality template first?`,
                     EVALUATE_FALLBACK_QUESTION_MAX_CHARS
                 ),
                 questionAction: "fill_requirement",
@@ -324,18 +324,18 @@ function buildStructuredFallbackQuestion(output: string, language: "zh" | "en"):
 function buildStructuredFallbackOptions(language: "zh" | "en") {
     if (language === "zh") {
         return [
-            "\u6309\u4f60\u7684\u5efa\u8bae\u7ee7\u7eed::\u6309\u4f60\u63a8\u8350\u7684\u9ed8\u8ba4\u65b9\u6848\u7ee7\u7eed\u3002",
+            "\u7ed9\u6211\u8865\u5145\u6a21\u677f::\u8bf7\u7ed9\u6211\u4e00\u4e2a\u9ad8\u8d28\u91cf\u8865\u5145\u6a21\u677f\uff0c\u6211\u6765\u8865\u9f50\u8fd9\u9879\u4fe1\u606f\u3002",
             "\u6211\u6765\u8865\u5145\u7ec6\u8282::\u6211\u6765\u8865\u5145\u66f4\u591a\u5173\u952e\u4fe1\u606f\u3002",
             "\u7ed9\u6211\u5e38\u89c1\u9009\u9879::\u8bf7\u7ed9\u6211 2 \u5230 3 \u4e2a\u5e38\u89c1\u65b9\u6848\u5e76\u8bf4\u660e\u53d6\u820d\u3002",
-            "\u6211\u6682\u65f6\u4e0d\u786e\u5b9a::\u6211\u6682\u65f6\u4e0d\u786e\u5b9a\uff0c\u8bf7\u6309\u6700\u7a33\u59a5\u7684\u9ed8\u8ba4\u65b9\u6848\u63a8\u8fdb\u3002"
+            "\u6211\u6682\u65f6\u4e0d\u786e\u5b9a::\u6211\u6682\u65f6\u4e0d\u786e\u5b9a\uff0c\u8bf7\u7ee7\u7eed\u7528\u6700\u7a33\u59a5\u7684\u65b9\u5f0f\u8ffd\u95ee\u5173\u952e\u7ec6\u8282\u3002"
         ];
     }
 
     return [
-        "Proceed with your recommendation::Proceed with your recommendation.",
+        "Give me a template::Give me a high-quality template so I can fill the missing detail.",
         "I will add more detail::I will add more detail.",
         "Show me common options::Show me 2 or 3 common options and explain the tradeoffs.",
-        "I am not sure yet::I am not sure yet. Please use the safest default approach."
+        "I am not sure yet::I am not sure yet. Please keep guiding me with the safest next questions."
     ];
 }
 

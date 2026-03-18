@@ -1550,7 +1550,7 @@ function buildCommonFallbackOptions(
             { label: "给我补充模板", value: "请给我一个高质量补充模板，我来补齐这项信息。" },
             { label: "我来补充细节", value: "我来补充更多具体细节，请继续问我关键问题。" },
             { label: "给我常见选项", value: "请给我 2 到 3 个常见方案并说明取舍。" },
-            { label: "暂时不确定", value: "我暂时不确定，请按最稳妥的默认方案推进。" }
+            { label: "暂时不确定", value: "我暂时不确定，请先用最稳妥的方式继续追问我关键细节。" }
         ];
     }
 
@@ -1558,7 +1558,7 @@ function buildCommonFallbackOptions(
         { label: "Give me a template", value: "Give me a high-quality template so I can fill the missing detail." },
         { label: "I will add more detail", value: "I will add more specific detail. Please continue with the key questions." },
         { label: "Show me common options", value: "Please show me 2 or 3 common options and explain the tradeoffs." },
-        { label: "I'm not sure yet", value: "I'm not sure yet. Please continue with the safest default approach." }
+        { label: "I'm not sure yet", value: "I'm not sure yet. Please keep guiding me with the safest next questions." }
     ];
 }
 
@@ -2841,7 +2841,7 @@ function buildPrdProgressLine(
         96
     );
     return language === "zh"
-        ? `当前完成度 ${readinessText}${nextMilestone ? ` | 下一步：${nextMilestone}` : ""}`
+        ? `当前就绪度 ${readinessText}${nextMilestone ? ` | 下一步：${nextMilestone}` : ""}`
         : `Readiness ${readinessText}${nextMilestone ? ` | Next: ${nextMilestone}` : ""}`;
 }
 
@@ -2860,11 +2860,11 @@ function buildPrdChangeLog(
             if (item.action === "fill_requirement") {
                 return {
                     title: language === "zh"
-                        ? `已按推荐补齐：${targetLabel}`
-                        : `Applied default: ${targetLabel}`,
+                        ? `已更新：${targetLabel}`
+                        : `Updated: ${targetLabel}`,
                     detail: language === "zh"
-                        ? "已用推荐默认值更新需求进度，并自动推进到下一条关键缺口。"
-                        : "The requirements view was updated with the recommended default and advanced to the next important gap.",
+                        ? "已根据当前上下文更新这项内容，并重新计算需求就绪度。"
+                        : "This requirement was updated from the current context and the readiness score was recalculated.",
                     tone: "emerald" as const,
                     sourceMessageId: item.sourceMessageId ?? undefined
                 };
@@ -3050,6 +3050,32 @@ function buildPrdProjectionModel(
         ),
         120
     );
+    const acceptanceRequirement = findReadinessRequirement(readiness, "guardrails.acceptance_criteria");
+    const testStrategyRequirement = findReadinessRequirement(readiness, "guardrails.test_strategy");
+        const buildGuardrailRequirementCard = (
+        requirement: ReturnType<typeof findReadinessRequirement>,
+        label: { zh: string; en: string },
+        fallbackDetail: { zh: string; en: string }
+    ): PrdStatusCardItem => {
+        const status = requirement?.status ?? "missing";
+        const progress = requirement ? buildPrdStageTaskProgressLabel(language, requirement) : (language === "zh" ? "待补齐" : "Missing");
+        const detail = requirement?.status === "confirmed" || requirement?.status === "waived"
+            ? fallbackDetail[language]
+            : translateReadinessText(
+                language,
+                requirement?.missing[0] || fallbackDetail[language]
+            );
+        return {
+            label: label[language],
+            value: progress,
+            detail,
+            tone: status === "confirmed" || status === "waived"
+                ? "emerald"
+                : status === "partial"
+                    ? "amber"
+                    : "slate"
+        };
+    };
 
     const implementationReadiness: PrdStatusCardItem[] = [
         {
@@ -3078,42 +3104,30 @@ function buildPrdProjectionModel(
                 ),
             tone: readiness.functionalReady ? "emerald" : "amber"
         },
-        {
-            label: language === "zh" ? "验收准备" : "Acceptance readiness",
-            value: guardrailChecklist.acceptanceCriteria.length > 0
-                ? (
-                    language === "zh"
-                        ? `已沉淀 ${guardrailChecklist.acceptanceCriteria.length} 条验收标准`
-                        : `${guardrailChecklist.acceptanceCriteria.length} acceptance criteria captured`
-                )
-                : (language === "zh" ? "待补齐" : "Missing"),
-            detail: guardrailChecklist.acceptanceCriteria[0]
-                ? clipText(guardrailChecklist.acceptanceCriteria[0], 120)
-                : (
-                    language === "zh"
-                        ? "还没有可展示的验收标准摘要。"
-                        : "There is no acceptance summary yet."
-                ),
-            tone: guardrailChecklist.acceptanceCriteria.length > 0 ? "sky" : "slate"
-        },
-        {
-            label: language === "zh" ? "测试准备" : "Test readiness",
-            value: guardrailChecklist.testStrategy.length > 0
-                ? (
-                    language === "zh"
-                        ? `已沉淀 ${guardrailChecklist.testStrategy.length} 条测试策略`
-                        : `${guardrailChecklist.testStrategy.length} test strategy items captured`
-                )
-                : (language === "zh" ? "待补齐" : "Missing"),
-            detail: guardrailChecklist.testStrategy[0]
-                ? clipText(guardrailChecklist.testStrategy[0], 120)
-                : (
-                    language === "zh"
-                        ? "还没有可展示的测试策略摘要。"
-                        : "There is no test-strategy summary yet."
-                ),
-            tone: guardrailChecklist.testStrategy.length > 0 ? "sky" : "slate"
-        }
+        buildGuardrailRequirementCard(
+            acceptanceRequirement,
+            { zh: "验收准备", en: "Acceptance readiness" },
+            {
+                zh: guardrailChecklist.acceptanceCriteria[0]
+                    ? clipText(guardrailChecklist.acceptanceCriteria[0], 120)
+                    : "还没有可展示的验收标准摘要。",
+                en: guardrailChecklist.acceptanceCriteria[0]
+                    ? clipText(guardrailChecklist.acceptanceCriteria[0], 120)
+                    : "There is no acceptance summary yet."
+            }
+        ),
+        buildGuardrailRequirementCard(
+            testStrategyRequirement,
+            { zh: "测试准备", en: "Test readiness" },
+            {
+                zh: guardrailChecklist.testStrategy[0]
+                    ? clipText(guardrailChecklist.testStrategy[0], 120)
+                    : "还没有可展示的测试策略摘要。",
+                en: guardrailChecklist.testStrategy[0]
+                    ? clipText(guardrailChecklist.testStrategy[0], 120)
+                    : "There is no test-strategy summary yet."
+            }
+        )
     ];
 
     const currentStatus: PrdStatusCardItem[] = [
@@ -3196,7 +3210,7 @@ function buildBlockedGenerateQuestion(
         const content = language === "zh"
             ? `当前判断：
 - 现在还不能开始生成代码脚手架。
-- 当前阶段仍是 ${stageLabel}，Readiness ${Math.round(readiness.score)}%。主要阻塞项：${primaryBlocker}
+- 当前阶段仍是 ${stageLabel}，就绪度 ${Math.round(readiness.score)}%。主要阻塞项：${primaryBlocker}
 
 需要确认：
 请先补齐这个缺口，或者继续让我完善架构包。`
@@ -5980,11 +5994,11 @@ Do you want to start scaffold generation now?`;
                 guardrailChecklist,
                 readinessOverrides,
                 summary: language === "zh"
-                    ? `已按推荐补齐产品目标：${inferredProductGoal.trim()}`
-                    : `Filled the product goal using the recommended default: ${inferredProductGoal.trim()}`,
-                applied: true
-            };
-        }
+                    ? `已更新产品目标：${inferredProductGoal.trim()}`
+                    : `Updated the product goal: ${inferredProductGoal.trim()}`,
+                    applied: true
+                };
+            }
 
         if (requirementKey === "business_context.target_users") {
             const nextTargetUsers = mergeStringValues(architecturePack.businessContext.targetUsers, defaultTargetUsers);
@@ -6000,8 +6014,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐目标用户。"
-                        : "Filled the target users using the recommended defaults.",
+                        ? "已更新目标用户。"
+                        : "Updated the target users.",
                     applied: true
                 };
             }
@@ -6021,8 +6035,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐关键用户旅程。"
-                        : "Filled the key user journeys using the recommended defaults.",
+                        ? "已更新关键用户旅程。"
+                        : "Updated the key user journeys.",
                     applied: true
                 };
             }
@@ -6047,8 +6061,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐约束与风险。"
-                        : "Filled the constraints and risks using the recommended defaults.",
+                        ? "已更新约束与风险。"
+                        : "Updated the constraints and risks.",
                     applied: true
                 };
             }
@@ -6069,8 +6083,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐限界上下文。"
-                        : "Filled the bounded contexts using the recommended defaults.",
+                        ? "已更新限界上下文。"
+                        : "Updated the bounded contexts.",
                     applied: true
                 };
             }
@@ -6091,8 +6105,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐模块职责。"
-                        : "Filled the module responsibilities using the recommended defaults.",
+                        ? "已更新模块职责。"
+                        : "Updated the module responsibilities.",
                     applied: true
                 };
             }
@@ -6125,8 +6139,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐默认数据归属规则。"
-                        : "Added the recommended default data ownership rule.",
+                        ? "已更新数据归属规则。"
+                        : "Updated the data ownership policy.",
                     applied: true
                 };
             }
@@ -6147,8 +6161,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐集成契约。"
-                        : "Filled the integration contracts using the recommended defaults.",
+                        ? "已更新集成契约。"
+                        : "Updated the integration contracts.",
                     applied: true
                 };
             }
@@ -6244,8 +6258,8 @@ Do you want to start scaffold generation now?`;
                     readinessOverrides,
                     decisionRecords: normalizedDecisionRecords,
                     summary: language === "zh"
-                        ? `已按推荐补齐架构决策：${summaryParts.join("；")}。`
-                        : `Filled the architecture decisions using the recommended defaults: ${summaryParts.join("; ")}.`,
+                        ? `已记录架构决策：${summaryParts.join("；")}。`
+                        : `Recorded the architecture decisions: ${summaryParts.join("; ")}.`,
                     applied: true
                 };
             }
@@ -6305,8 +6319,8 @@ Do you want to start scaffold generation now?`;
                     },
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐实现顺序。"
-                        : "Filled the implementation order using the recommended defaults.",
+                        ? "已更新实现顺序。"
+                        : "Updated the implementation order.",
                     applied: true
                 };
             }
@@ -6323,8 +6337,8 @@ Do you want to start scaffold generation now?`;
                     },
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐验收标准。"
-                        : "Filled the acceptance criteria using the recommended defaults.",
+                        ? "已更新验收标准。"
+                        : "Updated the acceptance criteria.",
                     applied: true
                 };
             }
@@ -6341,8 +6355,8 @@ Do you want to start scaffold generation now?`;
                     },
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐测试策略。"
-                        : "Filled the test strategy using the recommended defaults.",
+                        ? "已更新测试策略。"
+                        : "Updated the test strategy.",
                     applied: true
                 };
             }
@@ -6387,8 +6401,8 @@ Do you want to start scaffold generation now?`;
                 guardrailChecklist,
                 readinessOverrides,
                 summary: language === "zh"
-                    ? "已按推荐补齐关键界面定义。"
-                    : "Filled the key screen definitions using the recommended defaults.",
+                    ? "已更新关键界面定义。"
+                    : "Updated the key screen definitions.",
                 applied: true
             };
         }
@@ -6407,8 +6421,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐共享 UI 组件。"
-                        : "Filled the shared UI components using the recommended defaults.",
+                        ? "已更新共享 UI 组件。"
+                        : "Updated the shared UI components.",
                     applied: true
                 };
             }
@@ -6431,8 +6445,8 @@ Do you want to start scaffold generation now?`;
                     guardrailChecklist,
                     readinessOverrides,
                     summary: language === "zh"
-                        ? "已按推荐补齐响应式策略。"
-                        : "Filled the responsive strategy using the recommended defaults.",
+                        ? "已更新响应式策略。"
+                        : "Updated the responsive strategy.",
                     applied: true
                 };
             }

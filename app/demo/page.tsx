@@ -306,7 +306,7 @@ export default function DemoPage() {
                                     <div>
                                         <h3 className="font-semibold text-blue-600 dark:text-blue-400 mb-2">Readiness</h3>
                                         <p className="text-sm text-slate-600 dark:text-slate-300">
-                                            Density: {evaluation?.density_score ?? 0} / 100 | Ready: {evaluation?.is_ready ? "Yes" : "No"}
+                                            Readiness: {evaluation?.readiness?.score ?? evaluation?.density_score ?? 0} / 100 | Ready: {evaluation?.is_ready ? "Yes" : "No"}
                                         </p>
                                     </div>
                                 </div>
