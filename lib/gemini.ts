@@ -1518,10 +1518,12 @@ const SCAFFOLD_HARD_BLOCKER_CODES = new Set<PreflightIssue["code"]>([
     "MISSING_PAGE_UI_REQUIREMENTS",
     "MISSING_REQUIRED_DEPENDENCIES",
     "SPEC_CONTENT_CONTAMINATED",
+    "INVALID_PLACEHOLDER_FORMAT",
     "INVALID_JSON_FILE",
     "ROUTE_MAP_REFERENCE_MISSING",
     "WORKSPACE_STRUCTURE_MISMATCH",
-    "README_STACK_MISMATCH"
+    "README_STACK_MISMATCH",
+    "SPEC_DOC_RUNTIME_DRIFT"
 ] as const);
 
 export async function generateProjectResources(
@@ -1718,7 +1720,8 @@ export async function generateProjectResources(
                     buildImplementationPlanStable({
                         outputLanguage: resolvedOutputLanguage,
                         projectName: resolvedProjectName || "generated-project",
-                        tree: data.projectTree
+                        tree: data.projectTree,
+                        outputMode: resolvedOutputMode
                     })
                 );
 
@@ -2191,6 +2194,10 @@ function ensureCoreConfigFiles(
         analysisText: history || "",
         templateKind
     });
+    const usesTailwind = Boolean(
+        dependencyClosure.deps.tailwindcss ||
+        dependencyClosure.devDeps.tailwindcss
+    );
     const finalTree = JSON.parse(JSON.stringify(tree)) as any[];
 
     const packageJson = templateKind === "monorepo_multiapp"
@@ -2220,6 +2227,16 @@ function ensureCoreConfigFiles(
     upsertFileByPath(finalTree, "package.json", packageJson);
     upsertFileByPath(finalTree, "tsconfig.json", tsconfig);
     upsertFileByPath(finalTree, ".env.example", envExample);
+    if (usesTailwind) {
+        upsertFileByPath(finalTree, "tailwind.config.ts", generateTailwindConfig(templateKind));
+        upsertFileByPath(finalTree, "postcss.config.mjs", generatePostcssConfig());
+    } else {
+        removeFileByPath(finalTree, "tailwind.config.ts");
+        removeFileByPath(finalTree, "tailwind.config.js");
+        removeFileByPath(finalTree, "postcss.config.mjs");
+        removeFileByPath(finalTree, "postcss.config.js");
+        removeFileByPath(finalTree, "postcss.config.cjs");
+    }
     if (usesNext) {
         upsertFileByPath(finalTree, "next.config.ts", generateNextConfig({ usesPhaser }));
         removeFileByPath(finalTree, "vite.config.ts");
@@ -2265,6 +2282,7 @@ function ensureCoreConfigFiles(
     } else {
         removeCssRenderBaseline(finalTree, templateKind);
     }
+    ensureCommentOnlyPlaceholderFiles(finalTree);
     ensurePageUiRequirementSections(finalTree);
 
     const structuredReadme = ensureStructuredReadmeQualityStable(
@@ -2286,7 +2304,8 @@ function ensureCoreConfigFiles(
     const implementationPlan = buildImplementationPlanStable({
         outputLanguage,
         projectName,
-        tree: finalTree
+        tree: finalTree,
+        outputMode
     });
     const oneClickPrompt = buildOneClickPrompt({
         outputLanguage,
@@ -2875,15 +2894,182 @@ function ensureArchitectureDocs(input: {
     }
 }
 
+type PlaceholderCommentStyle = "block" | "html" | "line";
+
+function getPlaceholderCommentStyle(filePath: string): PlaceholderCommentStyle | null {
+    const normalized = (filePath || "").replace(/\\/g, "/").toLowerCase();
+    if (/\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|prisma)$/i.test(normalized)) return "block";
+    if (/\.(html|htm|xml|svg)$/i.test(normalized)) return "html";
+    if (/\.(py|rb|sh|bash|zsh|ya?ml|toml|ini|cfg|conf)$/i.test(normalized)) return "line";
+    return null;
+}
+
+function requiresCommentOnlyPlaceholder(filePath: string) {
+    return getPlaceholderCommentStyle(filePath) !== null;
+}
+
+function sanitizePlaceholderSpecText(style: PlaceholderCommentStyle, text: string) {
+    let source = (text || "").replace(/\r\n/g, "\n").trim();
+    if (!source) return source;
+    if (style === "block") {
+        source = source.replace(/\*\//g, "* /");
+    } else if (style === "html") {
+        source = source.replace(/<!--/g, "<! --").replace(/-->/g, "-- >");
+    }
+    return source;
+}
+
+function cleanPlaceholderSpecLines(text: string) {
+    const normalized = (text || "")
+        .replace(/\r\n/g, "\n")
+        .replace(/^\/\*+\s*/, "")
+        .replace(/\*\/\s*$/, "")
+        .replace(/^\s*<!--\s*/, "")
+        .replace(/\s*-->\s*$/, "")
+        .trim();
+    if (!normalized) return "";
+
+    const strippedLines = normalized
+        .split("\n")
+        .map((line) => line.replace(/^\s*\*\s?/, "").replace(/^\s*(?:\/\/+|#)\s?/, ""))
+        .map((line) => line.replace(/^\s*\/\*\s?/, "").replace(/\s*\*\/\s*$/, ""))
+        .map((line) => line.trimEnd());
+
+    const filtered: string[] = [];
+    for (const line of strippedLines) {
+        const trimmed = line.trim();
+        if (!trimmed && filtered.length === 0) continue;
+        if (/^(?:待生成|generation pending)$/i.test(trimmed)) continue;
+        if (/^(?:打开|open)\s+.+_AI_PROMPT\.md/i.test(trimmed)) continue;
+        if (/^(?:内容提示|content hint|prompt file)[:：]?/i.test(trimmed)) continue;
+        filtered.push(line);
+    }
+
+    return filtered.join("\n").trim();
+}
+
+function extractPlaceholderSpecText(filePath: string, content: string) {
+    const source = (content || "").replace(/\r\n/g, "\n").trim();
+    if (!source) return "";
+
+    const style = getPlaceholderCommentStyle(filePath);
+    if (style === "block" && /^\/\*[\s\S]*\*\/$/.test(source)) {
+        return cleanPlaceholderSpecLines(source.slice(2, -2));
+    }
+    if (style === "html" && /^<!--[\s\S]*-->$/.test(source)) {
+        return cleanPlaceholderSpecLines(source.slice(4, -3));
+    }
+    if (
+        style === "line" &&
+        source
+            .split("\n")
+            .filter((line) => line.trim().length > 0)
+            .every((line) => /^\s*#/.test(line))
+    ) {
+        return cleanPlaceholderSpecLines(source);
+    }
+
+    const mixedBlockMatch = source.match(/\/\*([\s\S]*)\*\//);
+    if (mixedBlockMatch?.[1]) {
+        return cleanPlaceholderSpecLines(mixedBlockMatch[1]);
+    }
+    return cleanPlaceholderSpecLines(source);
+}
+
+function renderCommentOnlyPlaceholder(filePath: string, specText: string) {
+    const style = getPlaceholderCommentStyle(filePath);
+    if (!style) return (specText || "").trim();
+
+    const promptPath = resolvePromptPathForFile(filePath);
+    const inner = sanitizePlaceholderSpecText(style, specText);
+    const baseLines = [
+        "GENERATION PENDING",
+        `Prompt file: ${promptPath}`
+    ];
+    if (inner) {
+        baseLines.push("");
+        baseLines.push(...inner.split("\n"));
+    }
+
+    if (style === "html") {
+        return [
+            "<!--",
+            ...baseLines,
+            "-->"
+        ].join("\n");
+    }
+
+    if (style === "line") {
+        return baseLines
+            .map((line) => (line ? `# ${line}` : "#"))
+            .join("\n");
+    }
+
+    return [
+        "/*",
+        ...baseLines.map((line) => (line ? ` * ${line}` : " *")),
+        " */"
+    ].join("\n");
+}
+
+function hasValidPlaceholderCommentFormat(filePath: string, content: string) {
+    const source = (content || "").replace(/\r\n/g, "\n").trim();
+    if (!source) return false;
+    const style = getPlaceholderCommentStyle(filePath);
+    if (!style) return true;
+
+    let inner = "";
+    if (style === "block") {
+        if (!/^\/\*[\s\S]*\*\/$/.test(source)) return false;
+        inner = cleanPlaceholderSpecLines(source.slice(2, -2));
+    } else if (style === "html") {
+        if (!/^<!--[\s\S]*-->$/.test(source)) return false;
+        inner = cleanPlaceholderSpecLines(source.slice(4, -3));
+    } else {
+        const nonEmptyLines = source.split("\n").filter((line) => line.trim().length > 0);
+        if (nonEmptyLines.length === 0 || nonEmptyLines.some((line) => !/^\s*#/.test(line))) {
+            return false;
+        }
+        inner = cleanPlaceholderSpecLines(source);
+    }
+
+    return Boolean(inner);
+}
+
+function normalizePlaceholderContentForFile(filePath: string, content: string) {
+    if (!requiresCommentOnlyPlaceholder(filePath)) return (content || "").trim();
+    const specText = extractPlaceholderSpecText(filePath, content);
+    return renderCommentOnlyPlaceholder(filePath, specText);
+}
+
+function ensureCommentOnlyPlaceholderFiles(tree: any[]) {
+    const placeholderPaths = collectPlaceholderPaths(tree);
+    for (const filePath of placeholderPaths) {
+        if (!requiresCommentOnlyPlaceholder(filePath)) continue;
+        const existing = getFileContentByPath(tree, filePath);
+        if (!existing.trim()) continue;
+        const normalized = normalizePlaceholderContentForFile(filePath, existing);
+        if (normalized && normalized !== existing) {
+            upsertFileByPath(tree, filePath, normalized);
+        }
+    }
+}
+
+function normalizeSpecAnalysisText(filePath: string, content: string) {
+    const extracted = extractPlaceholderSpecText(filePath, content);
+    return extracted || (content || "").trim();
+}
+
 function ensurePageUiRequirementSections(tree: any[]) {
     const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
     for (const path of pagePaths) {
         const existing = getFileContentByPath(tree, path);
         if (!existing.trim()) continue;
-        if (!isSpecLikePageContent(existing)) continue;
-        if (hasPageUiRequirements(existing)) continue;
+        const analysisText = normalizeSpecAnalysisText(path, existing);
+        if (!isSpecLikePageContent(analysisText)) continue;
+        if (hasPageUiRequirements(analysisText)) continue;
         const appended = [
-            existing.trim(),
+            analysisText.trim(),
             "",
             "## UI Requirements",
             "- Define layout structure and visual hierarchy.",
@@ -2891,7 +3077,11 @@ function ensurePageUiRequirementSections(tree: any[]) {
             "- Specify loading, empty, error, and success states.",
             "- Describe responsive behavior for mobile/tablet/desktop."
         ].join("\n");
-        upsertFileByPath(tree, path, appended);
+        upsertFileByPath(
+            tree,
+            path,
+            requiresCommentOnlyPlaceholder(path) ? renderCommentOnlyPlaceholder(path, appended) : appended
+        );
     }
 }
 
@@ -2995,6 +3185,12 @@ function generateEnvExample(input: {
         lines.push("# Stripe");
         lines.push("STRIPE_SECRET_KEY=sk_test_replace_me");
         lines.push("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_replace_me");
+        lines.push("");
+    }
+    if (deps.openai || deps.ai || deps["@ai-sdk/openai"]) {
+        lines.push("# AI");
+        lines.push("OPENAI_API_KEY=replace_me");
+        lines.push("OPENAI_MODEL=gpt-5-mini");
         lines.push("");
     }
     if (deps.ioredis) {
@@ -3732,8 +3928,8 @@ function buildStructuredReadmeStable(input: {
         lines.push(`# ${projectName} 开发指南`);
         lines.push("");
         lines.push("## 项目概述");
-        lines.push(`该项目由 Forecoding 生成，目标是为 **${projectName}** 提供可执行的脚手架规范与实现顺序。`);
-        lines.push("README 作为团队与 AI IDE 的统一入口，重点说明业务目标、运行方式、环境变量、验收标准与执行顺序。");
+        lines.push(`该项目由 Forecoding 生成为 **${projectName}** 的 **spec-pack 规范包**。`);
+        lines.push("README 是团队与 AI IDE 的共享入口，用来说明架构意图、安全配置、占位任务和唯一执行顺序。");
         lines.push("");
         lines.push("## 目标用户与业务目标");
         lines.push("- 目标用户：业务负责人、产品经理、工程师、AI IDE 协作开发者。");
@@ -3754,24 +3950,20 @@ function buildStructuredReadmeStable(input: {
         scopedPaths.forEach((path) => lines.push(`- \`${path}\``));
         lines.push("");
         lines.push("## 快速开始");
-        lines.push("### 1) 安装依赖");
-        lines.push("```bash");
-        lines.push("npm install");
-        lines.push("```");
+        lines.push("### 1) 先阅读执行文档");
+        lines.push("- 先打开 `ONE_CLICK_PROMPT.md`。");
+        lines.push("- 再查看 `GENERATION_MANIFEST.json` 与 `IMPLEMENTATION_PLAN.md`。");
         lines.push("");
-        lines.push("### 2) 本地运行");
-        lines.push("```bash");
-        lines.push("npm run dev");
-        lines.push("```");
+        lines.push("### 2) 按占位任务推进实现");
+        lines.push("- 每个占位文件都映射到 `promptPath` 和 phase。");
+        lines.push("- 在 AI IDE 中按 phase 顺序补全实现，不要按目录顺序硬写。");
         lines.push("");
-        lines.push("### 3) 构建与启动");
-        lines.push("```bash");
-        lines.push("npm run build");
-        lines.push("npm run start");
-        lines.push("```");
+        lines.push("### 3) 校验 spec-pack 一致性");
+        lines.push("- 确保配置文件保持可解析。");
+        lines.push("- 确保 README、ROUTE_MAP、manifest 与 prompt 文件保持一致。");
         lines.push("");
         lines.push("## 环境变量");
-        lines.push("- 建议从 `.env.example` 复制到 `.env.local` 后再启动。");
+        lines.push("- `.env.example` 是后续实现阶段的参考配置，不代表当前 ZIP 已经可直接运行。");
         lines.push("- 所有密钥仅用于服务端，不要提交到仓库。");
         lines.push("- 按环境（dev/staging/prod）分离配置，避免跨环境污染。");
         lines.push("");
@@ -3780,17 +3972,18 @@ function buildStructuredReadmeStable(input: {
         lines.push("- `GENERATION_MANIFEST.json` 是机器可读任务图，按 phase 顺序执行。");
         lines.push("- `IMPLEMENTATION_PLAN.md` 是唯一实施顺序来源，不要按目录遍历。");
         lines.push("- 对于占位文件，使用对应目录 `_AI_PROMPT.md` 生成最终实现。");
+        lines.push("- 将当前 ZIP 视为规范交接包，而不是已经完成的可运行项目。");
         lines.push("");
         lines.push("## 验收清单");
-        lines.push("- [ ] 项目可安装并成功启动。");
-        lines.push("- [ ] Phase 0~6 输出物均完成并通过验证。");
-        lines.push("- [ ] 关键页面与 API 行为符合需求。");
-        lines.push("- [ ] README、IMPLEMENTATION_PLAN 与实现保持一致。");
+        lines.push("- [ ] 占位文件与 manifest 任务、prompt 文件一一对应。");
+        lines.push("- [ ] 配置文件保持可解析，且不混入 markdown 说明段。");
+        lines.push("- [ ] 路由图与 package/workspace 结构与最终树一致。");
+        lines.push("- [ ] README、IMPLEMENTATION_PLAN、manifest 与 prompt 保持一致。");
         lines.push("- [ ] 无敏感信息泄露。");
         lines.push("");
         lines.push("## 常见问题");
         lines.push("### 1) 为什么 ZIP 中有些文件是占位内容？");
-        lines.push("Forecoding 采用规范驱动策略：核心配置与文档直接可用，其余由 AI IDE 按阶段生成，降低一次性输出偏差。");
+        lines.push("Forecoding 先交付高质量规范与安全配置，再让 AI IDE 按 phase 完成功能代码，减少一次性生成漂移。");
         lines.push("");
         lines.push("### 2) 应先改哪个文件？");
         lines.push("不要按目录直觉修改，必须按 `IMPLEMENTATION_PLAN.md` 的 Phase 顺序执行。");
@@ -3799,7 +3992,7 @@ function buildStructuredReadmeStable(input: {
         lines.push("先更新 README 与 IMPLEMENTATION_PLAN，再同步实现。");
         lines.push("");
         lines.push("### 4) 如何保证交付质量？");
-        lines.push("每个阶段执行验证命令，并在合并前完成手工回归。");
+        lines.push("每个阶段先校验规范一致性，再在实现完成后执行静态检查与人工回归。");
         lines.push("");
         return lines.join("\n");
     }
@@ -3913,6 +4106,11 @@ function classifyImplementationPhase(filePath: string): number {
         "package.json",
         "tsconfig.json",
         "next.config.ts",
+        "tailwind.config.ts",
+        "tailwind.config.js",
+        "postcss.config.mjs",
+        "postcss.config.js",
+        "postcss.config.cjs",
         "turbo.json",
         ".env.example",
         "README.md",
@@ -3963,7 +4161,8 @@ function readPackageScripts(tree: any[]) {
 
 function buildPhaseValidationCommands(
     phaseIndex: number,
-    scripts: Record<string, string>
+    scripts: Record<string, string>,
+    outputMode: OutputMode = "runnable_scaffold"
 ) {
     const commands: string[] = [];
     const hasScript = (name: string) => typeof scripts[name] === "string" && scripts[name].trim().length > 0;
@@ -3972,8 +4171,13 @@ function buildPhaseValidationCommands(
     };
 
     if (phaseIndex === 0) {
-        commands.push("npm install");
-        pushScript("dev", "npm run dev");
+        if (outputMode === "virtual_spec") {
+            commands.push("node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\"");
+            commands.push("node -e \"JSON.parse(require('fs').readFileSync('GENERATION_MANIFEST.json','utf8'))\"");
+        } else {
+            commands.push("npm install");
+            pushScript("dev", "npm run dev");
+        }
         return commands;
     }
 
@@ -4008,7 +4212,7 @@ function collectActionableFilePaths(tree: any[]) {
 function getPhaseMeta(outputLanguage: OutputLanguage) {
     if (outputLanguage === "zh") {
         return [
-            { title: "Phase 0 - 启动与基线", goal: "建立可运行基线，确保安装、启动、配置文件完整。", output: "完成运行基线文档与配置，团队可启动项目。", done: "依赖安装通过，开发环境可启动，README 与计划文件可读。" },
+            { title: "Phase 0 - 启动与基线", goal: "建立 spec-pack 基线、安全配置与执行文档，确保规范可交接。", output: "对齐的文档、manifest、prompt 与可解析配置文件。", done: "配置可解析，README/计划/manifest 保持一致。" },
             { title: "Phase 1 - 领域模型与类型", goal: "先定义业务对象、类型边界和数据契约，避免后续返工。", output: "类型与领域模型稳定，供后续状态层与页面复用。", done: "关键类型可覆盖核心业务语义，类型检查通过。" },
             { title: "Phase 2 - 状态管理与核心逻辑", goal: "实现核心业务逻辑与状态流转，形成功能主干。", output: "状态层/服务层具备可调用能力。", done: "核心流程可在本地最小验证。" },
             { title: "Phase 3 - 应用壳层与共享布局", goal: "完善应用壳层和通用布局，统一导航与视觉骨架。", output: "可复用壳层和布局组件。", done: "页面基础布局稳定，可承载业务页面。" },
@@ -4029,7 +4233,11 @@ function getPhaseMeta(outputLanguage: OutputLanguage) {
     ] as const;
 }
 
-function buildPhasePlansForTree(tree: any[], outputLanguage: OutputLanguage): PhasePlan[] {
+function buildPhasePlansForTree(
+    tree: any[],
+    outputLanguage: OutputLanguage,
+    outputMode: OutputMode = "runnable_scaffold"
+): PhasePlan[] {
     const scripts = readPackageScripts(tree);
     const actionableFiles = collectActionableFilePaths(tree);
     const phases = new Map<number, string[]>();
@@ -4052,7 +4260,7 @@ function buildPhasePlansForTree(tree: any[], outputLanguage: OutputLanguage): Ph
             inputFiles: files,
             expectedOutput: phaseMeta.output,
             doneCriteria: phaseMeta.done,
-            validationCommands: buildPhaseValidationCommands(i, scripts)
+            validationCommands: buildPhaseValidationCommands(i, scripts, outputMode)
         });
     }
 
@@ -4141,8 +4349,13 @@ function buildImplementationPlanStable(input: {
     outputLanguage: OutputLanguage;
     projectName: string;
     tree: any[];
+    outputMode?: OutputMode;
 }) {
-    const phasePlans = buildPhasePlansForTree(input.tree, input.outputLanguage);
+    const phasePlans = buildPhasePlansForTree(
+        input.tree,
+        input.outputLanguage,
+        input.outputMode || "runnable_scaffold"
+    );
     const placeholderPaths = collectPlaceholderPaths(input.tree);
     if (placeholderPaths.length > 0) {
         const existing = new Set(phasePlans.flatMap((phase) => phase.inputFiles));
@@ -4181,7 +4394,7 @@ function buildScaffoldSpecContent(input: {
         : "UI copy should be English-first with concise wording.";
 
     if (isApi) {
-        return [
+        return renderCommentOnlyPlaceholder(input.filePath, [
             "# API Spec",
             "",
             "## Role & Responsibility",
@@ -4195,11 +4408,11 @@ function buildScaffoldSpecContent(input: {
             "- Return stable JSON schema.",
             "- Never leak raw stack traces.",
             `- ${languageHint}`
-        ].join("\n");
+        ].join("\n"));
     }
 
     if (isLayout) {
-        return [
+        return renderCommentOnlyPlaceholder(input.filePath, [
             "# Layout Spec",
             "",
             "## Role & Responsibility",
@@ -4209,11 +4422,11 @@ function buildScaffoldSpecContent(input: {
             "- Render global header/nav and content container.",
             "- Reserve global notice and error area.",
             `- ${languageHint}`
-        ].join("\n");
+        ].join("\n"));
     }
 
     if (isPage) {
-        return [
+        return renderCommentOnlyPlaceholder(input.filePath, [
             "# Page Spec",
             "",
             "## Role & Responsibility",
@@ -4229,11 +4442,11 @@ function buildScaffoldSpecContent(input: {
             "- Upload files, preview risks, export report.",
             "- Handle loading/failure/retry and history navigation.",
             `- ${languageHint}`
-        ].join("\n");
+        ].join("\n"));
     }
 
     if (isComponent) {
-        return [
+        return renderCommentOnlyPlaceholder(input.filePath, [
             "# Component Spec",
             "",
             "## Role & Responsibility",
@@ -4242,11 +4455,11 @@ function buildScaffoldSpecContent(input: {
             "## Core Interactions",
             "- Receive typed props and emit explicit callbacks.",
             "- Keep lightweight local state and lift business logic to services."
-        ].join("\n");
+        ].join("\n"));
     }
 
     if (isType) {
-        return [
+        return renderCommentOnlyPlaceholder(input.filePath, [
             "# Type Spec",
             "",
             "## Role & Responsibility",
@@ -4255,10 +4468,10 @@ function buildScaffoldSpecContent(input: {
             "## Output Constraints",
             "- Avoid `any`, prefer explicit interfaces/unions.",
             "- Keep names aligned with API payloads."
-        ].join("\n");
+        ].join("\n"));
     }
 
-    return [
+    return renderCommentOnlyPlaceholder(input.filePath, [
         "# Module Spec",
         "",
         "## Role & Responsibility",
@@ -4266,7 +4479,7 @@ function buildScaffoldSpecContent(input: {
         "",
         "## Core Interactions",
         "- Export testable functions/services."
-    ].join("\n");
+    ].join("\n"));
 }
 
 function toKebabToken(text: string) {
@@ -4699,13 +4912,13 @@ function buildOneClickPrompt(input: {
             "## 硬性约束",
             "- 执行模式：`strict_build_v1`。",
             "- 不要按目录遍历顺序实现，必须按 Phase。",
-            "- 不要改写核心配置文件协议（`package.json`、`tsconfig.json`、`next.config.ts`、`.env.example`）。",
+            "- 保持已生成配置文件可解析，且不要混入 markdown 说明段。",
+            "- 除非任务明确要求，否则不要改写核心配置文件协议（`package.json`、`tsconfig.json`、`next.config.ts`、`vite.config.ts`、`.env.example`）。",
             "",
             "## 最终验收",
-            "```bash",
-            "npm install",
-            "npm run build",
-            "```",
+            "- 确认 manifest 任务已全部覆盖并完成。",
+            "- 确认路由图、workspace/package 结构与最终树保持一致。",
+            "- 只有在占位实现全部完成后，才将项目视为可运行应用。",
             ""
         ].join("\n");
     }
@@ -4812,7 +5025,7 @@ function buildGenerationManifest(input: {
     oneClickMode: OneClickMode;
     ideProfile: IdeProfile;
 }): GenerationManifest {
-    const phasePlans = buildPhasePlansForTree(input.tree, input.outputLanguage);
+    const phasePlans = buildPhasePlansForTree(input.tree, input.outputLanguage, input.outputMode);
     const tasks: GenerationTask[] = [];
     const placeholderPaths = collectPlaceholderPaths(input.tree);
     const phaseByPath = new Map<string, number>();
@@ -5058,6 +5271,11 @@ function collectReadmeStackMismatchIssues(input: {
     const readme = getFileContentByPath(input.tree, "README.md").toLowerCase();
     if (!readme.trim()) return [] as string[];
     const deps = collectPackageDependencyKeysFromTree(input.tree);
+    const envExample = getFileContentByPath(input.tree, ".env.example");
+    const hasTailwindConfig = ["tailwind.config.ts", "tailwind.config.js"]
+        .some((path) => Boolean(getFileContentByPath(input.tree, path).trim()));
+    const hasPostcssConfig = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"]
+        .some((path) => Boolean(getFileContentByPath(input.tree, path).trim()));
     const issues: string[] = [];
     const expect = (condition: boolean, message: string) => {
         if (!condition) issues.push(message);
@@ -5110,6 +5328,88 @@ function collectReadmeStackMismatchIssues(input: {
             deps.has("react-router-dom"),
             "README references React Router but generated dependencies do not."
         );
+    }
+    if (/tailwind/.test(readme)) {
+        expect(
+            deps.has("tailwindcss"),
+            "README references Tailwind but generated dependencies do not."
+        );
+        expect(
+            hasTailwindConfig && hasPostcssConfig,
+            "README references Tailwind but tailwind/postcss config files are missing."
+        );
+    }
+    if (/vercel ai sdk|\bopenai\b|responses api/.test(readme)) {
+        expect(
+            /OPENAI_API_KEY=/.test(envExample),
+            "README references OpenAI/Vercel AI SDK but `.env.example` is missing `OPENAI_API_KEY`."
+        );
+    }
+
+    return issues;
+}
+
+function collectInvalidPlaceholderFormatIssues(tree: any[]) {
+    const placeholderPaths = collectPlaceholderPaths(tree);
+    return placeholderPaths.filter((filePath) => {
+        if (!requiresCommentOnlyPlaceholder(filePath)) return false;
+        const content = getFileContentByPath(tree, filePath);
+        if (!content.trim()) return false;
+        return !hasValidPlaceholderCommentFormat(filePath, content);
+    });
+}
+
+function collectSpecDocRuntimeDriftIssues(tree: any[]) {
+    const issues: string[] = [];
+    const readme = getFileContentByPath(tree, "README.md");
+    const implementationPlan = getFileContentByPath(tree, "IMPLEMENTATION_PLAN.md");
+    const oneClickPrompt = getFileContentByPath(tree, "ONE_CLICK_PROMPT.md");
+
+    const runtimePatterns: Array<{ path: string; content: string; patterns: RegExp[]; reason: string }> = [
+        {
+            path: "README.md",
+            content: readme,
+            patterns: [
+                /npm install/i,
+                /npm run dev/i,
+                /npm run build/i,
+                /npm run start/i,
+                /项目可安装并成功启动/,
+                /可执行的脚手架规范/,
+                /运行方式/
+            ],
+            reason: "README still describes virtual_spec as an immediately runnable project."
+        },
+        {
+            path: "IMPLEMENTATION_PLAN.md",
+            content: implementationPlan,
+            patterns: [
+                /建立可运行基线/,
+                /依赖安装通过/,
+                /开发环境可启动/,
+                /Establish runnable baseline/i,
+                /Dependencies install/i,
+                /app starts/i
+            ],
+            reason: "Implementation plan still frames Phase 0 as runnable-app bootstrap."
+        },
+        {
+            path: "ONE_CLICK_PROMPT.md",
+            content: oneClickPrompt,
+            patterns: [
+                /npm install/i,
+                /npm run build/i
+            ],
+            reason: "One-click prompt still uses runnable-app final gate commands for virtual_spec."
+        }
+    ];
+
+    for (const item of runtimePatterns) {
+        const source = (item.content || "").trim();
+        if (!source) continue;
+        if (item.patterns.some((pattern) => pattern.test(source))) {
+            issues.push(`${item.path}: ${item.reason}`);
+        }
     }
 
     return issues;
@@ -5258,8 +5558,14 @@ function isSpecLikePageContent(content: string) {
 
 function collectPagesMissingUiRequirements(tree: any[]) {
     const pagePaths = collectFilePathsFromTree(tree).filter((path) => isPageSpecPath(path));
-    const specPagePaths = pagePaths.filter((path) => isSpecLikePageContent(getFileContentByPath(tree, path)));
-    const missing = specPagePaths.filter((path) => !hasPageUiRequirements(getFileContentByPath(tree, path)));
+    const specPagePaths = pagePaths.filter((path) => {
+        const content = normalizeSpecAnalysisText(path, getFileContentByPath(tree, path));
+        return isSpecLikePageContent(content);
+    });
+    const missing = specPagePaths.filter((path) => {
+        const content = normalizeSpecAnalysisText(path, getFileContentByPath(tree, path));
+        return !hasPageUiRequirements(content);
+    });
     return {
         pagePaths: specPagePaths,
         missing
@@ -5344,6 +5650,16 @@ function runGenerationPreflight(input: {
         });
     }
 
+    const invalidPlaceholderFormats = collectInvalidPlaceholderFormatIssues(input.tree);
+    if (invalidPlaceholderFormats.length > 0) {
+        issues.push({
+            code: "INVALID_PLACEHOLDER_FORMAT",
+            severity: "error",
+            message: "Placeholder source files must be comment-only placeholders with no mixed executable content.",
+            details: invalidPlaceholderFormats.slice(0, 10).join(", ")
+        });
+    }
+
     const placeholderPaths = collectPlaceholderPaths(input.tree);
     if (placeholderPaths.length === 0) {
         issues.push({
@@ -5414,6 +5730,18 @@ function runGenerationPreflight(input: {
             severity: "error",
             message: "Manifest task count does not match placeholder file count."
         });
+    }
+
+    if (input.outputMode === "virtual_spec") {
+        const docRuntimeDrift = collectSpecDocRuntimeDriftIssues(input.tree);
+        if (docRuntimeDrift.length > 0) {
+            issues.push({
+                code: "SPEC_DOC_RUNTIME_DRIFT",
+                severity: "error",
+                message: "Spec-pack docs still describe the ZIP as a runnable app.",
+                details: docRuntimeDrift.slice(0, 10).join(" | ")
+            });
+        }
     }
 
     const duplicateSegmentPaths = collectFilePathsFromTree(input.tree).filter((path) => {
@@ -5772,6 +6100,52 @@ function buildQualitySection(filePath: string, input: { usesZod: boolean }) {
     }
 
     return lines.join("\n");
+}
+
+function generateTailwindConfig(templateKind: TemplateKind) {
+    const contentGlobs = templateKind === "monorepo_multiapp"
+        ? [
+            "./apps/web/app/**/*.{ts,tsx,js,jsx,mdx}",
+            "./apps/web/components/**/*.{ts,tsx,js,jsx,mdx}",
+            "./apps/web/lib/**/*.{ts,tsx,js,jsx,mdx}",
+            "./packages/**/*.{ts,tsx,js,jsx,mdx}"
+        ]
+        : templateKind === "react_vite"
+            ? [
+                "./index.html",
+                "./src/**/*.{ts,tsx,js,jsx}"
+            ]
+            : [
+                "./app/**/*.{ts,tsx,js,jsx,mdx}",
+                "./components/**/*.{ts,tsx,js,jsx,mdx}",
+                "./lib/**/*.{ts,tsx,js,jsx,mdx}",
+                "./src/**/*.{ts,tsx,js,jsx,mdx}"
+            ];
+
+    return [
+        "import type { Config } from \"tailwindcss\";",
+        "",
+        "const config: Config = {",
+        `  content: ${JSON.stringify(contentGlobs, null, 2).replace(/\n/g, "\n  ")},`,
+        "  theme: {",
+        "    extend: {}",
+        "  },",
+        "  plugins: []",
+        "};",
+        "",
+        "export default config;"
+    ].join("\n");
+}
+
+function generatePostcssConfig() {
+    return [
+        "export default {",
+        "  plugins: {",
+        "    tailwindcss: {},",
+        "    autoprefixer: {}",
+        "  }",
+        "};"
+    ].join("\n");
 }
 
 function buildTemplateSection(filePath: string, input: { usesZod: boolean }) {

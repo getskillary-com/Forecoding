@@ -430,10 +430,12 @@ export interface PreflightIssue {
         | "MISSING_PAGE_UI_REQUIREMENTS"
         | "RUNTIME_BASELINE_INCOMPLETE"
         | "SPEC_CONTENT_CONTAMINATED"
+        | "INVALID_PLACEHOLDER_FORMAT"
         | "INVALID_JSON_FILE"
         | "ROUTE_MAP_REFERENCE_MISSING"
         | "WORKSPACE_STRUCTURE_MISMATCH"
-        | "README_STACK_MISMATCH";
+        | "README_STACK_MISMATCH"
+        | "SPEC_DOC_RUNTIME_DRIFT";
     severity: "warning" | "error";
     message: string;
     details?: string;

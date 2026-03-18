@@ -134,6 +134,11 @@ const ROOT_CONFIG_PATHS = new Set([
     "tsconfig.json",
     "next.config.ts",
     "vite.config.ts",
+    "tailwind.config.js",
+    "tailwind.config.ts",
+    "postcss.config.js",
+    "postcss.config.mjs",
+    "postcss.config.cjs",
     "turbo.json",
     ".env.example",
     "GENERATION_MANIFEST.json",
@@ -212,6 +217,71 @@ function isPlaceholderContent(filePath, content) {
     );
 }
 
+function getPlaceholderCommentStyle(filePath) {
+    const normalized = normalizePath(filePath).toLowerCase();
+    if (/\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|prisma)$/i.test(normalized)) return "block";
+    if (/\.(html|htm|xml|svg)$/i.test(normalized)) return "html";
+    if (/\.(py|rb|sh|bash|zsh|ya?ml|toml|ini|cfg|conf)$/i.test(normalized)) return "line";
+    return null;
+}
+
+function requiresCommentOnlyPlaceholder(filePath) {
+    return getPlaceholderCommentStyle(filePath) !== null;
+}
+
+function cleanPlaceholderSpecLines(text) {
+    const normalized = String(text || "")
+        .replace(/\r\n/g, "\n")
+        .replace(/^\/\*+\s*/, "")
+        .replace(/\*\/\s*$/, "")
+        .replace(/^\s*<!--\s*/, "")
+        .replace(/\s*-->\s*$/, "")
+        .trim();
+    if (!normalized) return "";
+
+    const strippedLines = normalized
+        .split("\n")
+        .map((line) => line.replace(/^\s*\*\s?/, "").replace(/^\s*(?:\/\/+|#)\s?/, ""))
+        .map((line) => line.replace(/^\s*\/\*\s?/, "").replace(/\s*\*\/\s*$/, ""))
+        .map((line) => line.trimEnd());
+
+    const filtered = [];
+    for (const line of strippedLines) {
+        const trimmed = line.trim();
+        if (!trimmed && filtered.length === 0) continue;
+        if (/^(?:待生成|generation pending)$/i.test(trimmed)) continue;
+        if (/^(?:打开|open)\s+.+_AI_PROMPT\.md/i.test(trimmed)) continue;
+        if (/^(?:内容提示|content hint|prompt file)[:：]?/i.test(trimmed)) continue;
+        filtered.push(line);
+    }
+
+    return filtered.join("\n").trim();
+}
+
+function hasValidPlaceholderCommentFormat(filePath, content) {
+    const source = String(content || "").replace(/\r\n/g, "\n").trim();
+    if (!source) return false;
+    const style = getPlaceholderCommentStyle(filePath);
+    if (!style) return true;
+
+    let inner = "";
+    if (style === "block") {
+        if (!/^\/\*[\s\S]*\*\/$/.test(source)) return false;
+        inner = cleanPlaceholderSpecLines(source.slice(2, -2));
+    } else if (style === "html") {
+        if (!/^<!--[\s\S]*-->$/.test(source)) return false;
+        inner = cleanPlaceholderSpecLines(source.slice(4, -3));
+    } else {
+        const nonEmptyLines = source.split("\n").filter((line) => line.trim().length > 0);
+        if (nonEmptyLines.length === 0 || nonEmptyLines.some((line) => !/^\s*#/.test(line))) {
+            return false;
+        }
+        inner = cleanPlaceholderSpecLines(source);
+    }
+
+    return Boolean(inner);
+}
+
 function normalizeInputPayload(payload) {
     if (Array.isArray(payload)) {
         const manifest = parseManifestFromTree(payload);
@@ -283,7 +353,7 @@ function isStructuredContentContaminated(content) {
     );
 }
 
-function collectStructuralIssues(nodes, manifest) {
+function collectStructuralIssues(nodes, manifest, outputMode = manifest?.outputMode || "runnable_scaffold") {
     const files = collectFiles(nodes);
     const allPaths = new Set(files.map((entry) => normalizePath(entry.path)));
     const issues = [];
@@ -312,6 +382,20 @@ function collectStructuralIssues(nodes, manifest) {
             code: "SPEC_CONTENT_CONTAMINATED",
             message: "Structured config/code files contain markdown-only scaffold guidance.",
             details: contaminated.slice(0, 20).join(", ")
+        });
+    }
+
+    const invalidPlaceholderFormats = files
+        .filter((entry) => getManifestContentKind(manifest, entry.path) === "placeholder")
+        .filter((entry) => requiresCommentOnlyPlaceholder(entry.path))
+        .filter((entry) => (entry.content || "").trim().length > 0)
+        .filter((entry) => !hasValidPlaceholderCommentFormat(entry.path, entry.content))
+        .map((entry) => normalizePath(entry.path));
+    if (invalidPlaceholderFormats.length > 0) {
+        issues.push({
+            code: "INVALID_PLACEHOLDER_FORMAT",
+            message: "Placeholder source files must be comment-only placeholders.",
+            details: invalidPlaceholderFormats.slice(0, 20).join(", ")
         });
     }
 
@@ -396,7 +480,12 @@ function collectStructuralIssues(nodes, manifest) {
     }
 
     const readme = (files.find((entry) => normalizePath(entry.path) === "README.md")?.content || "").toLowerCase();
+    const envExample = files.find((entry) => normalizePath(entry.path) === ".env.example")?.content || "";
     const profile = manifest?.profile || null;
+    const hasTailwindConfig = ["tailwind.config.ts", "tailwind.config.js"]
+        .some((filePath) => allPaths.has(filePath));
+    const hasPostcssConfig = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"]
+        .some((filePath) => allPaths.has(filePath));
     const stackIssues = [];
     const expect = (condition, message) => {
         if (!condition) stackIssues.push(message);
@@ -425,12 +514,57 @@ function collectStructuralIssues(nodes, manifest) {
     if (/react router/.test(readme)) {
         expect(dependencyKeys.has("react-router-dom"), "README references React Router without matching dependencies.");
     }
+    if (/tailwind/.test(readme)) {
+        expect(dependencyKeys.has("tailwindcss"), "README references Tailwind without matching dependencies.");
+        expect(hasTailwindConfig && hasPostcssConfig, "README references Tailwind but tailwind/postcss config files are missing.");
+    }
+    if (/vercel ai sdk|\bopenai\b|responses api/.test(readme)) {
+        expect(/OPENAI_API_KEY=/.test(envExample), "README references OpenAI/Vercel AI SDK without `OPENAI_API_KEY` in `.env.example`.");
+    }
     if (stackIssues.length > 0) {
         issues.push({
             code: "README_STACK_MISMATCH",
             message: "README tech-stack descriptions drift from generated dependencies/profile.",
             details: stackIssues.slice(0, 20).join(" | ")
         });
+    }
+
+    if (outputMode === "virtual_spec") {
+        const specDocRuntimeDrift = [];
+        const runtimeChecks = [
+            {
+                path: "README.md",
+                content: files.find((entry) => normalizePath(entry.path) === "README.md")?.content || "",
+                patterns: [/npm install/i, /npm run dev/i, /npm run build/i, /npm run start/i, /项目可安装并成功启动/, /可执行的脚手架规范/, /运行方式/],
+                reason: "README still describes the ZIP as a runnable app."
+            },
+            {
+                path: "IMPLEMENTATION_PLAN.md",
+                content: files.find((entry) => normalizePath(entry.path) === "IMPLEMENTATION_PLAN.md")?.content || "",
+                patterns: [/建立可运行基线/, /依赖安装通过/, /开发环境可启动/, /Establish runnable baseline/i, /Dependencies install/i, /app starts/i],
+                reason: "Implementation plan still frames Phase 0 as runnable-app bootstrap."
+            },
+            {
+                path: "ONE_CLICK_PROMPT.md",
+                content: files.find((entry) => normalizePath(entry.path) === "ONE_CLICK_PROMPT.md")?.content || "",
+                patterns: [/npm install/i, /npm run build/i],
+                reason: "One-click prompt still uses runnable-app final gate commands."
+            }
+        ];
+
+        for (const item of runtimeChecks) {
+            if (item.patterns.some((pattern) => pattern.test(item.content || ""))) {
+                specDocRuntimeDrift.push(`${item.path}: ${item.reason}`);
+            }
+        }
+
+        if (specDocRuntimeDrift.length > 0) {
+            issues.push({
+                code: "SPEC_DOC_RUNTIME_DRIFT",
+                message: "Spec-pack docs drift back toward runnable-app wording.",
+                details: specDocRuntimeDrift.slice(0, 20).join(" | ")
+            });
+        }
     }
 
     return issues;
@@ -566,7 +700,7 @@ async function main() {
         issues: []
     };
 
-    report.issues.push(...collectStructuralIssues(payload.projectTree, payload.generationManifest));
+    report.issues.push(...collectStructuralIssues(payload.projectTree, payload.generationManifest, payload.outputMode));
 
     if (payload.outputMode !== "virtual_spec" && placeholderFiles.length > 0) {
         report.issues.push({
