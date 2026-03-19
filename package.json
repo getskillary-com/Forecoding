@@ -1,5 +1,5 @@
 {
-  "name": "founders-launchpad",
+  "name": "forecoding",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -7,9 +7,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "check:drift": "node scripts/check-platform-drift.mjs",
     "validate:generated": "node scripts/validate-generated-scaffold.mjs",
     "validate:fixtures": "node scripts/validate-spec-pack-fixtures.mjs",
     "smoke:generate-api": "node scripts/smoke-generate-api.mjs",
+    "smoke:admin-api": "node scripts/smoke-admin-api.mjs",
+    "smoke:admin-api:local": "node scripts/smoke-admin-api.mjs --spawn-dev-server --port 4041",
     "secrets:apphosting": "node scripts/apphosting-secrets.mjs",
     "demo:export": "node scripts/export-demo-workspace.mjs",
     "migrate:firebase": "node scripts/migrate-postgres-to-firebase.mjs"
@@ -34,7 +38,8 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.4.0",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss-animate": "^1.0.7",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

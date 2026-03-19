@@ -448,6 +448,39 @@ export interface GenerationManifest {
     files?: GenerationManifestFile[];
 }
 
+export interface ArtifactManifestEntry {
+    path: string;
+    nodeType: "file" | "folder";
+    contentKind?: ExportContentKind;
+    promptPath?: string;
+}
+
+export interface ArtifactManifest {
+    version: "artifact_manifest_v1";
+    workspaceSnapshotId: string;
+    projectId: string;
+    versionId: string;
+    outputMode: OutputMode;
+    templateKind?: TemplateKind | null;
+    generatedAt: number;
+    fileCount: number;
+    files: ArtifactManifestEntry[];
+}
+
+export interface ContractCoverage {
+    status: "unknown" | "partial" | "covered";
+    contractCount: number;
+    notes: string[];
+}
+
+export interface RemediationHint {
+    code: string;
+    severity: "info" | "warning" | "error";
+    message: string;
+    action?: string;
+    autoFixable?: boolean;
+}
+
 export interface PreflightIssue {
     code:
         | "NEXT_CONFIG_CONTAMINATED"
@@ -525,8 +558,13 @@ export interface GenerationResponse {
     toolStack: string; // Markdown table
     outputMode?: OutputMode;
     generationManifest?: GenerationManifest;
+    artifactManifest?: ArtifactManifest;
+    contractCoverage?: ContractCoverage;
     preflightReport?: PreflightReport;
     runtimeReadiness?: RuntimeReadiness;
+    remediationHints?: RemediationHint[];
+    generationJobId?: string;
+    job?: GenerationJob;
 }
 
 export interface GenerationArtifacts {
@@ -572,6 +610,113 @@ export interface PrdDelta {
     sourceMessageId?: string | null;
 }
 
+export interface EvidenceLink {
+    id: string;
+    type: "message" | "attachment" | "artifact" | "manual" | "system";
+    title: string;
+    summary: string;
+    sourceMessageId?: string | null;
+    attachmentName?: string | null;
+    artifactId?: string | null;
+    createdAt: number;
+}
+
+export interface RequirementRecord {
+    id: string;
+    title: string;
+    status: "confirmed" | "pending" | "blocked";
+    summary: string;
+    evidenceLinkIds: string[];
+    riskNotes?: string[];
+    updatedAt: number;
+}
+
+export interface AssumptionRecord {
+    id: string;
+    statement: string;
+    status: "active" | "validated" | "invalidated";
+    evidenceLinkIds: string[];
+    updatedAt: number;
+}
+
+export interface AcceptanceCase {
+    id: string;
+    title: string;
+    scenario: string;
+    status: "pending" | "ready" | "covered";
+    evidenceLinkIds: string[];
+    updatedAt: number;
+}
+
+export interface ContractSpec {
+    id: string;
+    name: string;
+    kind: "api" | "event" | "job" | "shared-library";
+    producer: string;
+    consumer: string;
+    schemaSummary: string;
+    status: "draft" | "active" | "deprecated";
+    updatedAt: number;
+}
+
+export interface TaskDefinition {
+    id: string;
+    title: string;
+    owner: string;
+    status: "pending" | "ready" | "blocked";
+    dependsOn: string[];
+    inputSummary: string;
+    outputSummary: string;
+    verifyCommand?: string;
+    rollbackHint?: string;
+}
+
+export interface TaskRun {
+    id: string;
+    taskId: string;
+    status: "queued" | "running" | "succeeded" | "failed" | "blocked";
+    startedAt?: number | null;
+    finishedAt?: number | null;
+    resultSummary?: string;
+    remediationHint?: string;
+}
+
+export interface ProviderRunLog {
+    id: string;
+    provider: "openai" | "gemini" | "claude" | "unknown";
+    operation: "evaluate" | "generate" | "fallback" | "preflight";
+    model: string;
+    status: "started" | "succeeded" | "failed" | "fallback";
+    costUsd?: number | null;
+    latencyMs?: number | null;
+    createdAt: number;
+    errorCode?: string | null;
+}
+
+export interface BillingEvent {
+    id: string;
+    provider: "stripe" | "manual";
+    eventType: string;
+    status: "pending" | "succeeded" | "failed" | "refunded";
+    amountCents: number;
+    currency: string;
+    createdAt: number;
+    relatedProjectId?: string | null;
+    metadata?: Record<string, string>;
+}
+
+export interface WebhookEventRecord {
+    provider: string;
+    eventId: string;
+    eventName: string;
+    payload: string;
+    processedAt: number;
+    replayCount?: number;
+    lastReplayedAt?: number | null;
+    lastReplayStatus?: "succeeded" | "failed" | null;
+    lastReplayError?: string | null;
+}
+
 // v2: Expanded Project Data
 export interface Task {
     id: string;
@@ -612,6 +757,15 @@ export interface ProjectVersionData {
     readinessOverrides?: ReadinessOverride[];
     prdDeltas?: PrdDelta[];
     pendingEvaluation?: PendingEvaluation | null;
+    requirements?: RequirementRecord[];
+    assumptions?: AssumptionRecord[];
+    acceptanceCases?: AcceptanceCase[];
+    evidenceLinks?: EvidenceLink[];
+    contractSpecs?: ContractSpec[];
+    taskDefinitions?: TaskDefinition[];
+    taskRuns?: TaskRun[];
+    providerRunLogs?: ProviderRunLog[];
+    billingEvents?: BillingEvent[];
 }
 
 // Represents a specific snapshot/iteration of a project
@@ -637,4 +791,168 @@ export interface Project {
     workspaceLanguage: "zh" | "en";
     description?: string;
     versions: ProjectVersion[];
+}
+
+export type WorkspaceChangeKind =
+    | "workspace_sync"
+    | "project_update"
+    | "system_migration"
+    | "payment_update"
+    | "generation_update"
+    | "release"
+    | "admin";
+
+export interface WorkspaceChangeSet {
+    id: string;
+    kind: WorkspaceChangeKind;
+    summary: string;
+    projectIds: string[];
+    activeVersionIds: string[];
+    actorId?: string | null;
+    actorEmail?: string | null;
+    createdAt: number;
+}
+
+export interface WorkspaceRevision {
+    id: string;
+    number: number;
+    createdAt: number;
+    snapshotId: string;
+    changeSet: WorkspaceChangeSet;
+}
+
+export interface WorkspaceSnapshot {
+    id: string;
+    revisionId: string;
+    createdAt: number;
+    summary: string;
+    projectIds: string[];
+    activeVersionIds: string[];
+    projects?: Project[];
+}
+
+export interface ReleaseTag {
+    id: string;
+    label: string;
+    snapshotId: string;
+    createdAt: number;
+    note?: string | null;
+}
+
+export interface WorkspaceEnvelope {
+    version: "workspace_envelope_v1";
+    ownerUserId: string;
+    projects: Project[];
+    revision: number;
+    revisionHistory: WorkspaceRevision[];
+    snapshots: WorkspaceSnapshot[];
+    releaseTags: ReleaseTag[];
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface AuditEvent {
+    id: string;
+    eventType: string;
+    severity: "info" | "warning" | "critical";
+    actorId?: string | null;
+    actorEmail?: string | null;
+    resourceType: string;
+    resourceId: string;
+    summary: string;
+    metadata?: Record<string, string>;
+    createdAt: number;
+}
+
+export interface FeatureFlag {
+    key: string;
+    description: string;
+    enabled: boolean;
+    scope: "global" | "tenant" | "workspace";
+    value?: string | number | boolean | null;
+    updatedAt: number;
+    updatedBy?: string | null;
+}
+
+export interface GenerationJob {
+    id: string;
+    status: "queued" | "running" | "succeeded" | "failed";
+    workspaceSnapshotId: string;
+    projectId?: string | null;
+    versionId?: string | null;
+    outputMode: string;
+    templateKind?: string | null;
+    releaseIntent?: string | null;
+    artifactManifest?: ArtifactManifest | null;
+    preflightReport?: PreflightReport | null;
+    remediationHints?: RemediationHint[];
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export type EvaluateSseEventName =
+    | "analysis.delta"
+    | "question"
+    | "conflict"
+    | "readiness.update"
+    | "trace"
+    | "remediation";
+
+export interface EvaluateTraceEvent {
+    kind: "start" | "chunk" | "complete";
+    requestId: string;
+    chunk?: string;
+    source?: "model" | "fallback" | "system";
+    note?: string;
+}
+
+export interface EvaluateQuestionEvent {
+    question: string;
+    questionAction?: MessageAction | null;
+    questionRequirementKey?: ReadinessRequirementKey | null;
+    optionsRaw?: string | null;
+    source: "model" | "fallback";
+}
+
+export interface EvaluateAnalysisDeltaEvent {
+    stage?: ArchitectureStage;
+    densityScore?: number;
+    isReady?: boolean;
+    clarified?: string[];
+    missing?: string[];
+    uiRaw?: string | null;
+    uiSpecRaw?: string | null;
+    architecturePackRaw?: string | null;
+    decisionRecordsRaw?: string | null;
+    guardrailsRaw?: string | null;
+}
+
+export interface EvaluateConflictEvent {
+    summary: string;
+    items: string[];
+}
+
+export interface EvaluateReadinessUpdateEvent {
+    raw: string;
+}
+
+export interface EvaluateRemediationEvent {
+    code: string;
+    severity: "info" | "warning" | "error";
+    message: string;
+    retrying?: boolean;
+    fallbackInjected?: boolean;
+    requestId?: string;
+}
+
+export interface Tenant {
+    id: string;
+    name: string;
+    slug: string;
+    status: "active" | "trial" | "suspended";
+    workspaceCount: number;
+    createdAt: number;
+    updatedAt: number;
 }

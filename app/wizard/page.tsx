@@ -6,6 +6,10 @@ import {
     ArchitecturePack,
     ArchitectureStage,
     DecisionRecord,
+    EvaluateQuestionEvent,
+    EvaluateReadinessUpdateEvent,
+    EvaluateRemediationEvent,
+    EvaluateTraceEvent,
     Message,
     MessageAction,
     EvaluateInteractionMode,
@@ -62,6 +66,7 @@ import {
     getCachedProjectSnapshot,
     prefetchWorkspaceRemote,
     readProjectsFromLocalStorage,
+    syncWorkspaceProjectsRemote,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
 import {
@@ -1474,6 +1479,62 @@ function normalizeUiDesignState(
 function areArrayValuesEqual(a: string[], b: string[]) {
     if (a.length !== b.length) return false;
     return a.every((item, idx) => item === b[idx]);
+}
+
+type ParsedSseFrame = {
+    event: string;
+    data: string;
+};
+
+function extractSseFrames(buffer: string) {
+    const normalized = buffer.replace(/\r\n/g, "\n");
+    const frames: ParsedSseFrame[] = [];
+    let cursor = 0;
+
+    while (cursor < normalized.length) {
+        const boundary = normalized.indexOf("\n\n", cursor);
+        if (boundary === -1) break;
+
+        const block = normalized.slice(cursor, boundary);
+        cursor = boundary + 2;
+
+        if (!block.trim()) continue;
+
+        const lines = block.split("\n");
+        let event = "message";
+        const dataLines: string[] = [];
+
+        for (const rawLine of lines) {
+            const line = rawLine.trimEnd();
+            if (!line || line.startsWith(":")) continue;
+            if (line.startsWith("event:")) {
+                event = line.slice("event:".length).trim() || "message";
+                continue;
+            }
+            if (line.startsWith("data:")) {
+                dataLines.push(line.slice("data:".length).trimStart());
+            }
+        }
+
+        if (dataLines.length === 0) continue;
+        frames.push({
+            event,
+            data: dataLines.join("\n")
+        });
+    }
+
+    return {
+        frames,
+        rest: normalized.slice(cursor)
+    };
+}
+
+function parseSsePayload<T>(data: string): T | null {
+    try {
+        return JSON.parse(data) as T;
+    } catch {
+        return null;
+    }
 }
 
 function normalizeSourceArtifacts(value: unknown): SourceArtifact[] {
@@ -4722,6 +4783,7 @@ function WizardContent() {
     const [isQuoteLoading, setIsQuoteLoading] = useState(false);
     const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
     const [generateError, setGenerateError] = useState<string | null>(null);
+    const [syncConflictMessage, setSyncConflictMessage] = useState<string | null>(null);
     const [isAdmin, setIsAdmin] = useState(false);
     const [isAdminStatusLoaded, setIsAdminStatusLoaded] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(420);
@@ -4839,15 +4901,18 @@ function WizardContent() {
     const collapsedChatHint = workspaceLanguage === "zh" ? "聊天已隐藏" : "Chat hidden";
 
     const syncWorkspaceRemote = async (projects: Project[]) => {
-        try {
-            await fetch("/api/workspace", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ projects })
-            });
-        } catch (error) {
-            console.error("Failed to sync workspace", error);
+        const result = await syncWorkspaceProjectsRemote(projects, {
+            changeSummary: "Wizard workspace autosave"
+        });
+        if (!result.ok) {
+            setSyncConflictMessage(result.message);
+            if (!result.conflict) {
+                console.error("Failed to sync workspace", result.message);
+            }
+            return;
         }
+
+        setSyncConflictMessage(null);
     };
 
     const persistLocalVersionSnapshot = (overrides: Partial<ProjectVersion["data"]> = {}) => {
@@ -5104,6 +5169,7 @@ function WizardContent() {
             if (cancelled) return;
 
             setProject(foundProject);
+            setSyncConflictMessage(null);
 
             const selectedVersion = resolveProjectVersionForWizard(foundProject, versionId);
             if (!selectedVersion) return;
@@ -5927,13 +5993,9 @@ function WizardContent() {
                 guardrailDrafts: workingArchitectureState.guardrailChecklist,
                 readiness: workingArchitectureState.readiness
             };
+            let sseBuffer = "";
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                if (evalRequestIdRef.current !== requestId) break;
-
-                const chunk = decoder.decode(value, { stream: true });
+            const applyEvaluateTraceChunk = (chunk: string) => {
                 buffer += chunk;
                 const parseBuffer = normalizeStructuredResponseMarkup(buffer);
 
@@ -6205,6 +6267,61 @@ function WizardContent() {
 
                 const normalizedEval = normalizeEvaluation({ ...currentEval }, readinessOverrides, requestMessages);
                 setEvaluation(normalizedEval);
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (evalRequestIdRef.current !== requestId) break;
+
+                sseBuffer += decoder.decode(value, { stream: true });
+                const parsedFrames = extractSseFrames(sseBuffer);
+                sseBuffer = parsedFrames.rest;
+
+                for (const frame of parsedFrames.frames) {
+                    if (frame.event === "trace") {
+                        const traceEvent = parseSsePayload<EvaluateTraceEvent>(frame.data);
+                        if (traceEvent?.kind === "chunk" && typeof traceEvent.chunk === "string") {
+                            applyEvaluateTraceChunk(traceEvent.chunk);
+                        }
+                        continue;
+                    }
+
+                    if (frame.event === "question") {
+                        const questionEvent = parseSsePayload<EvaluateQuestionEvent>(frame.data);
+                        if (questionEvent?.questionAction) {
+                            currentQuestionAction = questionEvent.questionAction;
+                        }
+                        if (questionEvent?.questionRequirementKey) {
+                            currentQuestionRequirementKey = normalizeReadinessRequirementKey(questionEvent.questionRequirementKey) ?? currentQuestionRequirementKey;
+                        }
+                        continue;
+                    }
+
+                    if (frame.event === "readiness.update") {
+                        const readinessEvent = parseSsePayload<EvaluateReadinessUpdateEvent>(frame.data);
+                        if (readinessEvent?.raw) {
+                            const parsedReadiness = parseJsonBlock(readinessEvent.raw, (value) => normalizeReadiness(
+                                value,
+                                currentEval.architecturePackDraft ?? architecturePack,
+                                currentEval.decisionDrafts ?? decisionRecords,
+                                currentEval.guardrailDrafts ?? guardrailChecklist,
+                                readinessOverrides
+                            ));
+                            if (parsedReadiness) {
+                                currentEval.readiness = parsedReadiness;
+                            }
+                        }
+                        continue;
+                    }
+
+                    if (frame.event === "remediation") {
+                        const remediationEvent = parseSsePayload<EvaluateRemediationEvent>(frame.data);
+                        if (remediationEvent?.message) {
+                            console.warn("[wizard] evaluate remediation", remediationEvent.code, remediationEvent.message);
+                        }
+                    }
+                }
             }
 
             if (evalRequestIdRef.current === requestId) {
@@ -8223,6 +8340,11 @@ Do you want to start scaffold generation now?`;
 
             {/* Studio Panel (Right) - v2 Layout */}
             <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
+                {syncConflictMessage && (
+                    <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200">
+                        {syncConflictMessage}
+                    </div>
+                )}
                 {/* Tabs */}
                 <div className="fc-surface mb-4 grid flex-shrink-0 grid-cols-3 gap-2 rounded-2xl p-2">
                     <TabButton

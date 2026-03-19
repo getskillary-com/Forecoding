@@ -1,39 +1,50 @@
+import {
+    getAdminEmailsFromEnv,
+    getAdminViewerEmailsFromEnv,
+    getOperatorEmailsFromEnv
+} from "@/lib/env";
+
+export type AdminRole = "none" | "viewer" | "operator" | "admin";
+
 function normalizeEmail(value: string | null | undefined) {
     return (value || "").trim().toLowerCase();
-}
-
-let cachedSource = "";
-let cachedEmails = new Set<string>();
-
-function readAdminEmails() {
-    const source = (
-        process.env.FORECODING_ADMIN_EMAILS ||
-        process.env.ADMIN_EMAILS ||
-        ""
-    ).trim();
-
-    if (source === cachedSource) {
-        return cachedEmails;
-    }
-
-    cachedSource = source;
-    cachedEmails = new Set(
-        source
-            .split(/[,\n;]+/)
-            .map((item) => normalizeEmail(item))
-            .filter(Boolean)
-    );
-
-    return cachedEmails;
 }
 
 export function isAdminEmail(email: string | null | undefined) {
     const normalized = normalizeEmail(email);
     if (!normalized) return false;
-    return readAdminEmails().has(normalized);
+    return getAdminEmailsFromEnv().has(normalized);
+}
+
+export function resolveAdminRole(user: { email?: string | null } | null | undefined): AdminRole {
+    const email = normalizeEmail(user?.email);
+    if (!email) return "none";
+    if (getAdminEmailsFromEnv().has(email)) return "admin";
+    if (getOperatorEmailsFromEnv().has(email)) return "operator";
+    if (getAdminViewerEmailsFromEnv().has(email)) return "viewer";
+    return "none";
+}
+
+function roleRank(role: AdminRole) {
+    switch (role) {
+        case "admin":
+            return 3;
+        case "operator":
+            return 2;
+        case "viewer":
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+export function hasAdminRole(
+    user: { email?: string | null } | null | undefined,
+    minimumRole: Exclude<AdminRole, "none"> = "viewer"
+) {
+    return roleRank(resolveAdminRole(user)) >= roleRank(minimumRole);
 }
 
 export function isAdminUser(user: { email?: string | null } | null | undefined) {
-    return isAdminEmail(user?.email);
+    return resolveAdminRole(user) === "admin";
 }
-

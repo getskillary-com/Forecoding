@@ -1,8 +1,9 @@
-import type { Project, ProjectVersion, ProjectVersionData } from "@/types";
+import type { Project, ProjectVersion, ProjectVersionData, WorkspaceEnvelope } from "@/types";
 import { normalizeProjects } from "@/lib/project-language";
+import { createEmptyWorkspaceEnvelope, normalizeWorkspaceEnvelope } from "@/lib/workspace-envelope";
 
 type WorkspaceCache = {
-    parsed: Project[];
+    envelope: WorkspaceEnvelope;
     byId: Map<string, Project>;
     updatedAt: number;
 };
@@ -13,10 +14,31 @@ type ProjectSnapshot = {
     data: ProjectVersionData;
 };
 
+export type WorkspaceSyncResult =
+    | {
+        ok: true;
+        revision: number;
+        workspace: WorkspaceEnvelope;
+    }
+    | {
+        ok: false;
+        conflict: true;
+        message: string;
+        revision: number;
+        workspace: WorkspaceEnvelope;
+    }
+    | {
+        ok: false;
+        conflict: false;
+        message: string;
+    };
+
 const CACHE_KEY = "__fc_workspace_cache";
-const PERSISTED_LOCAL_KEY = "__fc_workspace_projects_v1";
-const LEGACY_LOCAL_KEY = "fl_projects_v2";
+const PERSISTED_LOCAL_KEY = "__fc_workspace_envelope_v1";
+const LEGACY_PROJECTS_KEY = "__fc_workspace_projects_v1";
+const LEGACY_FOUNDERS_KEY = "fl_projects_v2";
 const REMOTE_FETCH_TTL_MS = 30_000;
+const LOCAL_OWNER_USER_ID = "__local__";
 
 let remoteFetchPromise: Promise<Project[] | null> | null = null;
 let lastRemoteFetchAt = 0;
@@ -36,71 +58,108 @@ function getCache(): WorkspaceCache | null {
     return workspaceWindow[CACHE_KEY] ?? null;
 }
 
-function setCache(projects: Project[]): void {
+function setCache(envelope: WorkspaceEnvelope): void {
     const workspaceWindow = getWorkspaceWindow();
     if (!workspaceWindow) return;
     const byId = new Map<string, Project>();
-    projects.forEach((project) => byId.set(project.id, project));
+    envelope.projects.forEach((project) => byId.set(project.id, project));
     workspaceWindow[CACHE_KEY] = {
-        parsed: projects,
+        envelope,
         byId,
         updatedAt: Date.now()
     } satisfies WorkspaceCache;
 }
 
-export function readProjectsFromLocalStorage(): Project[] {
-    if (typeof window === "undefined") return [];
+function persistWorkspaceEnvelope(envelope: WorkspaceEnvelope) {
+    if (typeof window === "undefined") return;
+    try {
+        localStorage.setItem(PERSISTED_LOCAL_KEY, JSON.stringify(envelope));
+    } catch {
+        // Keep the in-memory cache usable even if persistent storage is unavailable.
+    }
+}
+
+function migrateLegacyProjects(raw: string | null): WorkspaceEnvelope | null {
+    if (!raw) return null;
+    try {
+        const parsed = normalizeProjects(JSON.parse(raw));
+        const envelope = normalizeWorkspaceEnvelope(
+            {
+                version: "workspace_envelope_v1",
+                ownerUserId: LOCAL_OWNER_USER_ID,
+                projects: parsed,
+                revision: 0,
+                revisionHistory: [],
+                snapshots: [],
+                releaseTags: [],
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+            },
+            LOCAL_OWNER_USER_ID
+        );
+        persistWorkspaceEnvelope(envelope);
+        return envelope;
+    } catch {
+        return null;
+    }
+}
+
+export function readWorkspaceEnvelopeFromLocalStorage(): WorkspaceEnvelope {
+    if (typeof window === "undefined") {
+        return createEmptyWorkspaceEnvelope(LOCAL_OWNER_USER_ID);
+    }
+
     const cache = getCache();
-    if (cache) return cache.parsed;
+    if (cache) return cache.envelope;
 
     const persistedRaw = localStorage.getItem(PERSISTED_LOCAL_KEY);
     if (persistedRaw) {
         try {
-            const parsed = normalizeProjects(JSON.parse(persistedRaw));
-            if (Array.isArray(parsed)) {
-                setCache(parsed);
-                return parsed;
-            }
-            localStorage.removeItem(PERSISTED_LOCAL_KEY);
+            const parsed = normalizeWorkspaceEnvelope(JSON.parse(persistedRaw), LOCAL_OWNER_USER_ID);
+            setCache(parsed);
+            return parsed;
         } catch {
             localStorage.removeItem(PERSISTED_LOCAL_KEY);
         }
     }
 
-    // One-time migration: read old local persisted projects and then remove them.
-    const legacyRaw = localStorage.getItem(LEGACY_LOCAL_KEY);
-    if (!legacyRaw) return [];
-
-    try {
-        const parsed = normalizeProjects(JSON.parse(legacyRaw));
-        if (!Array.isArray(parsed)) {
-            localStorage.removeItem(LEGACY_LOCAL_KEY);
-            return [];
-        }
-        setCache(parsed);
-        try {
-            localStorage.setItem(PERSISTED_LOCAL_KEY, JSON.stringify(parsed));
-        } catch {
-            // Ignore persistence errors and continue with the in-memory cache.
-        }
-        localStorage.removeItem(LEGACY_LOCAL_KEY);
-        return parsed;
-    } catch {
-        localStorage.removeItem(LEGACY_LOCAL_KEY);
-        return [];
+    const migrated =
+        migrateLegacyProjects(localStorage.getItem(LEGACY_PROJECTS_KEY)) ||
+        migrateLegacyProjects(localStorage.getItem(LEGACY_FOUNDERS_KEY));
+    if (migrated) {
+        localStorage.removeItem(LEGACY_PROJECTS_KEY);
+        localStorage.removeItem(LEGACY_FOUNDERS_KEY);
+        setCache(migrated);
+        return migrated;
     }
+
+    const empty = createEmptyWorkspaceEnvelope(LOCAL_OWNER_USER_ID);
+    setCache(empty);
+    return empty;
+}
+
+export function writeWorkspaceEnvelopeToLocalStorage(envelope: WorkspaceEnvelope): void {
+    if (typeof window === "undefined") return;
+    const normalized = normalizeWorkspaceEnvelope(envelope, envelope.ownerUserId || LOCAL_OWNER_USER_ID);
+    setCache(normalized);
+    persistWorkspaceEnvelope(normalized);
+}
+
+export function getWorkspaceLocalRevision() {
+    return readWorkspaceEnvelopeFromLocalStorage().revision;
+}
+
+export function readProjectsFromLocalStorage(): Project[] {
+    return readWorkspaceEnvelopeFromLocalStorage().projects;
 }
 
 export function writeProjectsToLocalStorage(projects: Project[]): void {
-    if (typeof window === "undefined") return;
-    const normalizedProjects = normalizeProjects(projects);
-    setCache(normalizedProjects);
-
-    try {
-        localStorage.setItem(PERSISTED_LOCAL_KEY, JSON.stringify(normalizedProjects));
-    } catch {
-        // Keep the in-memory cache usable even if persistent storage is unavailable.
-    }
+    const current = readWorkspaceEnvelopeFromLocalStorage();
+    writeWorkspaceEnvelopeToLocalStorage({
+        ...current,
+        projects: normalizeProjects(projects),
+        updatedAt: Date.now()
+    });
 }
 
 export function getCachedProject(projectId?: string | null): Project | null {
@@ -138,7 +197,15 @@ export async function prefetchWorkspaceRemote(): Promise<Project[] | null> {
         try {
             const res = await fetch("/api/workspace", { cache: "no-store" });
             if (!res.ok) return null;
-            const data = (await res.json()) as { projects?: Project[] };
+            const data = (await res.json()) as {
+                projects?: Project[];
+                workspace?: WorkspaceEnvelope | null;
+            };
+            if (data.workspace) {
+                writeWorkspaceEnvelopeToLocalStorage(data.workspace);
+                lastRemoteFetchAt = Date.now();
+                return data.workspace.projects;
+            }
             if (!Array.isArray(data.projects)) return null;
             writeProjectsToLocalStorage(data.projects);
             lastRemoteFetchAt = Date.now();
@@ -151,4 +218,55 @@ export async function prefetchWorkspaceRemote(): Promise<Project[] | null> {
     })();
 
     return remoteFetchPromise;
+}
+
+export async function syncWorkspaceProjectsRemote(
+    projects: Project[],
+    input?: { changeSummary?: string }
+): Promise<WorkspaceSyncResult> {
+    const current = readWorkspaceEnvelopeFromLocalStorage();
+
+    try {
+        const res = await fetch("/api/workspace", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                projects,
+                expectedRevision: current.revision,
+                changeSummary: input?.changeSummary || "Workspace update"
+            })
+        });
+
+        const payload = await res.json().catch(() => null);
+        if (res.ok && payload?.workspace) {
+            writeWorkspaceEnvelopeToLocalStorage(payload.workspace as WorkspaceEnvelope);
+            return {
+                ok: true,
+                revision: typeof payload.revision === "number" ? payload.revision : current.revision,
+                workspace: payload.workspace as WorkspaceEnvelope
+            };
+        }
+
+        if (res.status === 409 && payload?.workspace) {
+            return {
+                ok: false,
+                conflict: true,
+                message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
+                revision: typeof payload.revision === "number" ? payload.revision : current.revision,
+                workspace: payload.workspace as WorkspaceEnvelope
+            };
+        }
+
+        return {
+            ok: false,
+            conflict: false,
+            message: typeof payload?.error === "string" ? payload.error : "Failed to sync workspace."
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            conflict: false,
+            message: error instanceof Error ? error.message : "Failed to sync workspace."
+        };
+    }
 }

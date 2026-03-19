@@ -11,14 +11,29 @@ import {
 import { deriveArchitectureDiagramMermaid } from "@/lib/architecture-diagram";
 import { generateProjectResources } from "@/lib/gemini";
 import { isAdminUser } from "@/lib/admin";
-import { getWorkspaceByUserId } from "@/lib/data/workspaces";
+import { createGenerationJob, updateGenerationJob } from "@/lib/data/generation-jobs";
+import { isFeatureFlagEnabled } from "@/lib/data/feature-flags";
+import { getWorkspaceByUserId, updateProjectVersionInWorkspaceByUserId } from "@/lib/data/workspaces";
 import { getServerUser } from "@/lib/server-auth";
 import {
     buildScaffoldEligibilityErrorMessage,
     computeVersionScaffoldEligibility
 } from "@/lib/scaffold-eligibility";
 import { getProjectWorkspaceLanguage, normalizeProjects } from "@/lib/project-language";
-import type { OutputMode, Project, ProjectVersionData } from "@/types";
+import type {
+    ArtifactManifest,
+    ArtifactManifestEntry,
+    ContractCoverage,
+    FileNode,
+    OutputMode,
+    Project,
+    ProjectVersion,
+    ProjectVersionData,
+    RemediationHint,
+    GenerationArtifacts,
+    GenerationResponse,
+    TemplateKind
+} from "@/types";
 
 export const runtime = "nodejs";
 
@@ -39,6 +54,8 @@ type GenerateRequestBody = {
     templateKindHint?: unknown;
     projectId?: unknown;
     versionId?: unknown;
+    workspaceSnapshotId?: unknown;
+    releaseIntent?: unknown;
     architecturePack?: unknown;
     decisionRecords?: unknown;
     guardrailChecklist?: unknown;
@@ -66,6 +83,8 @@ type GenerateErrorPayload = {
     details: string;
     code: string;
     status: number;
+    remediationHints?: RemediationHint[];
+    generationJobId?: string;
 };
 
 function parseOutputLanguage(value: unknown): OutputLanguage | undefined {
@@ -102,6 +121,145 @@ function sanitizeText(value: unknown) {
     return typeof value === "string" ? value.trim().slice(0, 160) : "";
 }
 
+function flattenProjectTree(nodes: FileNode[], parentPath = ""): ArtifactManifestEntry[] {
+    const entries: ArtifactManifestEntry[] = [];
+
+    for (const node of nodes) {
+        const path = parentPath ? `${parentPath}/${node.name}` : node.name;
+        entries.push({
+            path,
+            nodeType: node.type === "folder" ? "folder" : "file"
+        });
+
+        if (node.type === "folder" && Array.isArray(node.children) && node.children.length > 0) {
+            entries.push(...flattenProjectTree(node.children, path));
+        }
+    }
+
+    return entries;
+}
+
+function buildArtifactManifest(input: {
+    workspaceSnapshotId: string;
+    projectId: string;
+    versionId: string;
+    outputMode: OutputMode;
+    templateKind?: TemplateKind | null;
+    projectTree: FileNode[];
+    generationManifest?: {
+        files?: Array<{
+            path: string;
+            contentKind?: ArtifactManifestEntry["contentKind"];
+            promptPath?: string;
+        }>;
+    } | null;
+}): ArtifactManifest {
+    const treeEntries = flattenProjectTree(input.projectTree);
+    const manifestFiles = new Map(
+        (input.generationManifest?.files || [])
+            .filter((file) => Boolean(file.path))
+            .map((file) => [file.path, file])
+    );
+
+    const files = treeEntries.map((entry) => {
+        const manifestFile = manifestFiles.get(entry.path);
+        return {
+            ...entry,
+            contentKind: manifestFile?.contentKind,
+            promptPath: manifestFile?.promptPath
+        };
+    });
+
+    return {
+        version: "artifact_manifest_v1",
+        workspaceSnapshotId: input.workspaceSnapshotId,
+        projectId: input.projectId,
+        versionId: input.versionId,
+        outputMode: input.outputMode,
+        templateKind: input.templateKind ?? null,
+        generatedAt: Date.now(),
+        fileCount: files.length,
+        files
+    };
+}
+
+function buildContractCoverage(contractCount: number): ContractCoverage {
+    if (contractCount <= 0) {
+        return {
+            status: "unknown",
+            contractCount: 0,
+            notes: ["No structured integration contracts were available in the architecture pack."]
+        };
+    }
+
+    return {
+        status: "covered",
+        contractCount,
+        notes: [`${contractCount} integration contract(s) were carried into scaffold generation.`]
+    };
+}
+
+function buildUpdatedGenerationArtifacts(
+    currentArtifacts: GenerationArtifacts | undefined,
+    outputMode: OutputMode,
+    generation: GenerationResponse
+): GenerationArtifacts {
+    const nextArtifacts: GenerationArtifacts = {
+        ...(currentArtifacts || {})
+    };
+
+    if (outputMode === "virtual_spec") {
+        nextArtifacts.virtual_spec = generation;
+    } else {
+        nextArtifacts.runnable_scaffold = generation;
+    }
+
+    return nextArtifacts;
+}
+
+function uniqueRemediationHints(...groups: Array<RemediationHint[] | undefined>): RemediationHint[] {
+    const dedupe = new Map<string, RemediationHint>();
+
+    for (const group of groups) {
+        for (const hint of group || []) {
+            const key = `${hint.code}::${hint.message}`;
+            if (!dedupe.has(key)) {
+                dedupe.set(key, hint);
+            }
+        }
+    }
+
+    return Array.from(dedupe.values()).slice(0, 12);
+}
+
+function buildPreflightRemediationHints(
+    preflight?: {
+        issues?: Array<{ code: string; severity: "warning" | "error"; message: string }>;
+    } | null
+): RemediationHint[] {
+    return (preflight?.issues || []).map((issue) => ({
+        code: issue.code,
+        severity: issue.severity === "error" ? "error" : "warning",
+        message: issue.message,
+        action: "Resolve the reported preflight issue before retrying generation.",
+        autoFixable: false
+    }));
+}
+
+function buildFailureRemediationHints(failure: GenerateErrorPayload): RemediationHint[] {
+    return [
+        {
+            code: failure.code,
+            severity: failure.status >= 500 ? "error" : "warning",
+            message: failure.details || failure.error,
+            action: failure.code === "SCAFFOLD_PREFLIGHT_FAILED"
+                ? "Review the preflight findings and retry after fixing the blocking issues."
+                : "Retry generation after checking the latest architecture pack and environment configuration.",
+            autoFixable: false
+        }
+    ];
+}
+
 function parseProjects(raw: unknown): Project[] {
     return normalizeProjects(raw);
 }
@@ -133,7 +291,13 @@ function buildGenerateFailurePayload(error: unknown): GenerateErrorPayload {
             : isTimeout
             ? "GENERATION_TIMEOUT"
             : "GENERATION_FAILED",
-        status: isPreflight ? 422 : isTimeout ? 504 : 500
+        status: isPreflight ? 422 : isTimeout ? 504 : 500,
+        remediationHints: buildFailureRemediationHints({
+            error: isPreflight ? "Scaffold preflight failed" : "Failed to generate resources",
+            details,
+            code: isPreflight ? "SCAFFOLD_PREFLIGHT_FAILED" : isTimeout ? "GENERATION_TIMEOUT" : "GENERATION_FAILED",
+            status: isPreflight ? 422 : isTimeout ? 504 : 500
+        })
     };
 }
 
@@ -187,6 +351,8 @@ export async function POST(req: Request) {
         const body = (await req.json()) as GenerateRequestBody;
         const projectId = sanitizeText(body.projectId);
         const versionId = sanitizeText(body.versionId);
+        const requestedSnapshotId = sanitizeText(body.workspaceSnapshotId);
+        const releaseIntent = sanitizeText(body.releaseIntent) || null;
         if (!projectId || !versionId) {
             return NextResponse.json(
                 { error: "projectId and versionId are required before scaffold generation." },
@@ -228,6 +394,26 @@ export async function POST(req: Request) {
 
         const hasPaid = version.data.paymentStatus === "paid";
         const isAdmin = isAdminUser({ email: user.email });
+        const generationEnabled = await isFeatureFlagEnabled("generation.enabled", true);
+        if (!generationEnabled && !isAdmin) {
+            return NextResponse.json(
+                {
+                    error: "Generation is currently disabled by platform governance.",
+                    code: "GENERATION_DISABLED",
+                    remediationHints: [
+                        {
+                            code: "GENERATION_DISABLED",
+                            severity: "warning",
+                            message: "A platform feature flag has disabled scaffold generation.",
+                            action: "Ask an operator or admin to enable generation.enabled before retrying.",
+                            autoFixable: false
+                        }
+                    ]
+                },
+                { status: 423 }
+            );
+        }
+
         if (!hasPaid && !isAdmin) {
             return NextResponse.json(
                 {
@@ -242,6 +428,10 @@ export async function POST(req: Request) {
         const normalizedDecisionRecords = normalizeDecisionRecords(requestVersionData.decisionRecords);
         const normalizedGuardrailChecklist = normalizeGuardrailChecklist(requestVersionData.guardrailChecklist);
         const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
+        const workspaceSnapshotId =
+            requestedSnapshotId ||
+            workspace?.envelope?.snapshots[0]?.id ||
+            `${user.uid}:${projectId}:${versionId}:snapshotless`;
         const generationContext = buildStructuredGenerationContext(
             normalizedArchitecturePack,
             normalizedDecisionRecords,
@@ -273,38 +463,140 @@ export async function POST(req: Request) {
         const parsedOneClickMode = parseOneClickMode(body.oneClickMode);
         const parsedIdeProfile = parseIdeProfile(body.ideProfile);
         const parsedTemplateKindHint = parseTemplateKindHint(body.templateKindHint);
+        const generationJob = await createGenerationJob({
+            workspaceSnapshotId,
+            projectId,
+            versionId,
+            outputMode: parsedOutputMode,
+            templateKind: parsedTemplateKindHint ?? null,
+            releaseIntent,
+            status: "queued"
+        });
         console.info(
             `[generate] request outputMode=${parsedOutputMode} outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
         );
         const responseStream = createKeepAliveJsonStream(async () => {
-            const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, version.data.generation?.projectTree, {
-                projectName: project.name || sanitizeText(body.projectName) || undefined,
-                outputLanguage: parsedOutputLanguage,
-                outputMode: parsedOutputMode,
-                oneClickMode: parsedOneClickMode,
-                ideProfile: parsedIdeProfile,
-                templateKindHint: parsedTemplateKindHint,
-                generationContext
-            });
-            const preflight = resources.preflightReport;
-            if (preflight) {
-                console.info(
-                    `[generate] preflight pass=${preflight.pass} planCoveragePct=${preflight.planCoveragePct} nextConfigValid=${preflight.nextConfigValid} envExamplePresent=${preflight.envExamplePresent} pathNormalizationFixCount=${preflight.pathNormalizationFixCount} manifestTaskCount=${preflight.manifestTaskCount} missingDepsCount=${preflight.missingDepsCount}`
+            await updateGenerationJob(generationJob.id, { status: "running" });
+
+            try {
+                const resources = await generateProjectResources(normalizedSummary, normalizedDiagram, version.data.generation?.projectTree, {
+                    projectName: project.name || sanitizeText(body.projectName) || undefined,
+                    outputLanguage: parsedOutputLanguage,
+                    outputMode: parsedOutputMode,
+                    oneClickMode: parsedOneClickMode,
+                    ideProfile: parsedIdeProfile,
+                    templateKindHint: parsedTemplateKindHint,
+                    generationContext
+                });
+                const preflight = resources.preflightReport;
+                if (preflight) {
+                    console.info(
+                        `[generate] preflight pass=${preflight.pass} planCoveragePct=${preflight.planCoveragePct} nextConfigValid=${preflight.nextConfigValid} envExamplePresent=${preflight.envExamplePresent} pathNormalizationFixCount=${preflight.pathNormalizationFixCount} manifestTaskCount=${preflight.manifestTaskCount} missingDepsCount=${preflight.missingDepsCount}`
+                    );
+                }
+
+                const artifactManifest = buildArtifactManifest({
+                    workspaceSnapshotId,
+                    projectId,
+                    versionId,
+                    outputMode: parsedOutputMode,
+                    templateKind: resources.generationManifest?.templateKind ?? parsedTemplateKindHint ?? null,
+                    projectTree: Array.isArray(resources.projectTree) ? resources.projectTree : [],
+                    generationManifest: resources.generationManifest
+                });
+                const contractCoverage = buildContractCoverage(normalizedArchitecturePack.integrationContracts.length);
+                const remediationHints = uniqueRemediationHints(
+                    buildPreflightRemediationHints(preflight)
                 );
-                if (!preflight.pass) {
+
+                if (preflight && !preflight.pass) {
                     const codes = (Array.isArray(preflight.issues) ? preflight.issues : [])
                         .map((issue: { code?: string }) => issue.code || "")
                         .filter(Boolean)
                         .join(", ");
-                    return {
+                    const failurePayload: GenerateErrorPayload = {
                         error: "Scaffold preflight failed",
                         details: codes || "Unknown preflight error",
                         code: "SCAFFOLD_PREFLIGHT_FAILED",
-                        status: 422
+                        status: 422,
+                        remediationHints
+                    };
+                    const failedJob = await updateGenerationJob(generationJob.id, {
+                        status: "failed",
+                        artifactManifest,
+                        preflightReport: preflight,
+                        remediationHints,
+                        errorCode: failurePayload.code,
+                        errorMessage: failurePayload.details
+                    });
+
+                    return {
+                        ...failurePayload,
+                        generationJobId: generationJob.id,
+                        job: failedJob
                     };
                 }
+
+                const succeededJob = await updateGenerationJob(generationJob.id, {
+                    status: "succeeded",
+                    artifactManifest,
+                    preflightReport: preflight ?? null,
+                    remediationHints,
+                    errorCode: null,
+                    errorMessage: null
+                });
+
+                const persistedGeneration: GenerationResponse = {
+                    ...resources,
+                    artifactManifest,
+                    contractCoverage,
+                    remediationHints,
+                    generationJobId: generationJob.id,
+                    job: succeededJob ?? undefined
+                };
+
+                await updateProjectVersionInWorkspaceByUserId({
+                    userId: user.uid,
+                    projectId,
+                    versionId,
+                    actorId: user.uid,
+                    actorEmail: user.email,
+                    summary: `Generated ${parsedOutputMode} artifact for project ${projectId}.`,
+                    kind: "generation_update",
+                    mutateVersion: (currentVersion: ProjectVersion) => ({
+                        ...currentVersion,
+                        status: "published",
+                        data: {
+                            ...currentVersion.data,
+                            generation: persistedGeneration,
+                            generationArtifacts: buildUpdatedGenerationArtifacts(
+                                currentVersion.data.generationArtifacts,
+                                parsedOutputMode,
+                                persistedGeneration
+                            )
+                        }
+                    })
+                });
+
+                return {
+                    ...persistedGeneration
+                };
+            } catch (error) {
+                console.error("Generation error:", error);
+                const failure = buildGenerateFailurePayload(error);
+                const failedJob = await updateGenerationJob(generationJob.id, {
+                    status: "failed",
+                    remediationHints: failure.remediationHints,
+                    errorCode: failure.code,
+                    errorMessage: failure.details
+                });
+
+                return {
+                    ...failure,
+                    generationJobId: generationJob.id,
+                    job: failedJob
+                };
             }
-            return resources;
         });
 
         return new Response(responseStream, {

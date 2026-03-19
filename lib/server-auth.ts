@@ -3,8 +3,9 @@ import { NextResponse } from "next/server";
 import { DecodedIdToken } from "firebase-admin/auth";
 import { adminAuth } from "@/lib/firebase-admin";
 import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
+import { getAuthSessionCookieName } from "@/lib/env";
 
-export const AUTH_SESSION_COOKIE_NAME = process.env.AUTH_SESSION_COOKIE_NAME || "__session";
+export const AUTH_SESSION_COOKIE_NAME = getAuthSessionCookieName();
 const DEFAULT_SESSION_EXPIRES_MS = 1000 * 60 * 60 * 24 * 5;
 
 export type ServerUser = {

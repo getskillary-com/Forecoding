@@ -13,6 +13,7 @@ import {
     prefetchWorkspaceRemote,
     primeWorkspaceCache,
     readProjectsFromLocalStorage,
+    syncWorkspaceProjectsRemote,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
 import { scheduleWizardWarmup } from "@/lib/wizard-prefetch";
@@ -130,17 +131,22 @@ export default function DashboardPage() {
     const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
     const [formData, setFormData] = useState<ProjectFormData>(createEmptyFormData());
     const [copiedProjectId, setCopiedProjectId] = useState<string | null>(null);
+    const [syncConflictMessage, setSyncConflictMessage] = useState<string | null>(null);
 
-    const syncWorkspaceRemote = async (nextProjects: Project[]) => {
-        try {
-            await fetch("/api/workspace", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ projects: nextProjects })
-            });
-        } catch (error) {
-            console.error("Failed to sync workspace", error);
+    const syncWorkspaceRemote = async (nextProjects: Project[], changeSummary = "Dashboard workspace update") => {
+        const result = await syncWorkspaceProjectsRemote(nextProjects, { changeSummary });
+        if (!result.ok) {
+            setSyncConflictMessage(result.message);
+            if (result.conflict) {
+                setProjects(result.workspace.projects);
+                writeProjectsToLocalStorage(result.workspace.projects);
+                return;
+            }
+            console.error("Failed to sync workspace", result.message);
+            return;
         }
+
+        setSyncConflictMessage(null);
     };
 
     // Load Projects
@@ -159,7 +165,7 @@ export default function DashboardPage() {
                     if (background && hasLocalProjectMutationsRef.current) return;
                     setProjects(nextProjects);
                 } else {
-                    void syncWorkspaceRemote(localProjects);
+                    void syncWorkspaceRemote(localProjects, "Bootstrap dashboard workspace from local cache");
                 }
             } catch (error) {
                 console.error("Failed to load remote workspace", error);
@@ -383,6 +389,12 @@ export default function DashboardPage() {
                         </div>
                     </div>
                 </header>
+
+                {syncConflictMessage && (
+                    <section className="rounded-[var(--radius-xl)] border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200">
+                        {syncConflictMessage}
+                    </section>
+                )}
 
                 {projects.length === 0 ? (
                     <div className="fc-surface-strong flex flex-col items-center justify-center rounded-[var(--radius-2xl)] border-dashed p-12 text-center sm:p-16">

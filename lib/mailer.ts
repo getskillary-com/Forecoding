@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import type { AuthCodePurpose } from "@/lib/auth-types";
+import { getMailerConfigFromEnv } from "@/lib/env";
 
 const purposeTitle: Record<AuthCodePurpose, string> = {
     REGISTER: "Account registration",
@@ -9,14 +10,7 @@ const purposeTitle: Record<AuthCodePurpose, string> = {
 };
 
 function getMailerConfig() {
-    const server = process.env.EMAIL_SERVER;
-    const from = process.env.EMAIL_FROM;
-
-    if (!server || !from) {
-        throw new Error("Email configuration missing. Set EMAIL_SERVER and EMAIL_FROM.");
-    }
-
-    return { server, from };
+    return getMailerConfigFromEnv();
 }
 
 function formatCurrencyCents(cents: number, currency: string) {

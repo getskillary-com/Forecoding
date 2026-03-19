@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { getServerSessionIdentity } from "@/lib/server-auth";
-import { getWorkspaceByUserId, saveWorkspaceByUserId } from "@/lib/data/workspaces";
+import { getWorkspaceByUserId, saveWorkspaceEnvelopeByUserId } from "@/lib/data/workspaces";
 import { normalizeProjects } from "@/lib/project-language";
 import type { Project } from "@/types";
+
+const WorkspacePutBodySchema = z.object({
+    projects: z.array(z.unknown()),
+    expectedRevision: z.number().int().min(0),
+    changeSummary: z.string().trim().min(1).max(160).optional()
+});
 
 function parseProjects(raw: unknown): Project[] {
     return normalizeProjects(raw);
@@ -28,7 +35,9 @@ export async function GET(req: Request) {
         const projects = projectId ? parsed.filter((p) => p.id === projectId) : parsed;
 
         return NextResponse.json({
+            workspace: workspace?.envelope ?? null,
             projects,
+            revision: workspace?.revision ?? 0,
             updatedAt: workspace?.updatedAt?.toISOString() ?? null
         });
     } catch {
@@ -43,12 +52,37 @@ export async function PUT(req: Request) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const body = (await req.json()) as { projects?: unknown };
-        const projects = parseProjects(body.projects);
+        const parsedBody = WorkspacePutBodySchema.parse(await req.json());
+        const projects = parseProjects(parsedBody.projects);
+        const user = await getServerSessionIdentity();
+        const result = await saveWorkspaceEnvelopeByUserId({
+            userId,
+            projects,
+            expectedRevision: parsedBody.expectedRevision,
+            actorId: userId,
+            actorEmail: user?.email ?? null,
+            changeSummary: parsedBody.changeSummary
+        });
 
-        await saveWorkspaceByUserId(userId, projects);
+        if (!result.ok) {
+            return NextResponse.json(
+                {
+                    error: "Workspace revision conflict.",
+                    code: "WORKSPACE_REVISION_CONFLICT",
+                    revision: result.currentEnvelope.revision,
+                    workspace: result.currentEnvelope,
+                    projects: result.currentEnvelope.projects
+                },
+                { status: 409 }
+            );
+        }
 
-        return NextResponse.json({ ok: true });
+        return NextResponse.json({
+            ok: true,
+            revision: result.envelope.revision,
+            workspace: result.envelope,
+            projects: result.envelope.projects
+        });
     } catch {
         return NextResponse.json({ error: "Failed to save workspace." }, { status: 500 });
     }

@@ -2,15 +2,12 @@ import { NextResponse } from "next/server";
 import { adminAuth, findAuthUserByEmail } from "@/lib/firebase-admin";
 import { sanitizeEmail } from "@/lib/security";
 import { upsertUserProfile } from "@/lib/data/users";
+import { isDevAuthBypassEnabled } from "@/lib/env";
 
 export const runtime = "nodejs";
 
-function isDevBypassEnabled() {
-    return process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "1";
-}
-
 export async function POST(req: Request) {
-    if (!isDevBypassEnabled()) {
+    if (!isDevAuthBypassEnabled()) {
         return NextResponse.json({ error: "Dev login is disabled." }, { status: 403 });
     }
 
@@ -45,4 +42,3 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }
-

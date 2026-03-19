@@ -2,9 +2,10 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
+import { getAppBaseUrl } from "@/lib/env";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.APP_BASE_URL || "https://forecoding.com"),
+  metadataBase: new URL(getAppBaseUrl()),
   title: {
     default: "Forecoding",
     template: "%s | Forecoding"

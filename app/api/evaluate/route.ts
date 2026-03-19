@@ -1,7 +1,19 @@
 
 import { NextResponse } from "next/server";
 import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
-import type { Message, Attachment, EvaluateInteractionMode, ReadinessRequirementKey } from "@/types";
+import type {
+    Attachment,
+    EvaluateAnalysisDeltaEvent,
+    EvaluateConflictEvent,
+    EvaluateInteractionMode,
+    EvaluateQuestionEvent,
+    EvaluateReadinessUpdateEvent,
+    EvaluateRemediationEvent,
+    EvaluateSseEventName,
+    EvaluateTraceEvent,
+    Message,
+    ReadinessRequirementKey
+} from "@/types";
 
 const MAX_EVALUATE_BODY_CHARS = 1_200_000;
 const EVALUATE_STREAM_HEARTBEAT_MS = readBoundedIntEnv("EVALUATE_STREAM_HEARTBEAT_MS", 10_000, 5_000, 20_000);
@@ -94,6 +106,112 @@ function extractTaggedSection(output: string, tag: string) {
     const regex = new RegExp(`<${tag}>([\\s\\S]*?)(?:<\\/${tag}>|$)`, "i");
     const match = output.match(regex);
     return match?.[1]?.trim() ?? "";
+}
+
+function formatSseEvent(event: EvaluateSseEventName, payload: unknown) {
+    const data = JSON.stringify(payload);
+    const dataLines = data
+        .split("\n")
+        .map((line) => `data: ${line}`)
+        .join("\n");
+    return `event: ${event}\n${dataLines}\n\n`;
+}
+
+function parseTaggedList(raw: string) {
+    return raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/^[-*]\s*/, ""))
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+}
+
+function buildEvaluateQuestionEvent(output: string, source: "model" | "fallback"): EvaluateQuestionEvent | null {
+    const question = extractTaggedSection(output, "question");
+    if (!question) return null;
+
+    const questionAction = extractTaggedSection(output, "question_action");
+    const questionRequirementKey = extractTaggedSection(output, "question_requirement_key");
+    const optionsRaw = extractTaggedSection(output, "options");
+
+    return {
+        question,
+        questionAction:
+            questionAction === "send_message" ||
+            questionAction === "generate_scaffold" ||
+            questionAction === "open_prd" ||
+            questionAction === "focus_requirement" ||
+            questionAction === "fill_requirement" ||
+            questionAction === "show_blockers"
+                ? questionAction
+                : undefined,
+        questionRequirementKey: (questionRequirementKey || null) as ReadinessRequirementKey | null,
+        optionsRaw: optionsRaw || null,
+        source
+    };
+}
+
+function buildEvaluateAnalysisDelta(output: string): EvaluateAnalysisDeltaEvent | null {
+    const stage = extractTaggedSection(output, "stage");
+    const density = extractTaggedSection(output, "density");
+    const isReady = extractTaggedSection(output, "is_ready");
+    const clarified = parseTaggedList(extractTaggedSection(output, "analysis_clarified"));
+    const missing = parseTaggedList(extractTaggedSection(output, "analysis_missing"));
+    const uiRaw = extractTaggedSection(output, "analysis_ui");
+    const uiSpecRaw = extractTaggedSection(output, "analysis_ui_spec");
+    const architecturePackRaw = extractTaggedSection(output, "architecture_pack");
+    const decisionRecordsRaw = extractTaggedSection(output, "decision_records");
+    const guardrailsRaw = extractTaggedSection(output, "guardrails");
+
+    const payload: EvaluateAnalysisDeltaEvent = {};
+
+    if (stage) {
+        const normalizedStage =
+            stage === "context" ||
+            stage === "boundaries" ||
+            stage === "decisions" ||
+            stage === "guardrails" ||
+            stage === "ready_to_generate"
+                ? stage
+                : undefined;
+        if (normalizedStage) {
+            payload.stage = normalizedStage;
+        }
+    }
+    if (density && /^\d+$/.test(density)) {
+        payload.densityScore = Number.parseInt(density, 10);
+    }
+    if (isReady === "true" || isReady === "false") {
+        payload.isReady = isReady === "true";
+    }
+    if (clarified.length > 0) payload.clarified = clarified;
+    if (missing.length > 0) payload.missing = missing;
+    if (uiRaw) payload.uiRaw = uiRaw;
+    if (uiSpecRaw) payload.uiSpecRaw = uiSpecRaw;
+    if (architecturePackRaw) payload.architecturePackRaw = architecturePackRaw;
+    if (decisionRecordsRaw) payload.decisionRecordsRaw = decisionRecordsRaw;
+    if (guardrailsRaw) payload.guardrailsRaw = guardrailsRaw;
+
+    return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function buildEvaluateConflictEvent(output: string): EvaluateConflictEvent | null {
+    const raw = extractTaggedSection(output, "conflict") || extractTaggedSection(output, "conflicts");
+    if (!raw) return null;
+
+    const items = parseTaggedList(raw);
+    return {
+        summary: items[0] || clipText(raw, 240),
+        items
+    };
+}
+
+function buildEvaluateReadinessEvent(output: string): EvaluateReadinessUpdateEvent | null {
+    const raw = extractTaggedSection(output, "readiness");
+    if (!raw) return null;
+
+    return { raw };
 }
 
 function parseMissingItems(raw: string) {
@@ -564,6 +682,10 @@ export async function POST(req: Request) {
                 let tagScanBuffer = "";
                 let fullOutput = "";
                 const streamStartedAt = Date.now();
+                let lastQuestionEventJson = "";
+                let lastAnalysisEventJson = "";
+                let lastConflictEventJson = "";
+                let lastReadinessEventJson = "";
 
                 const safeEnqueue = (chunk: string) => {
                     if (closed) return;
@@ -572,6 +694,84 @@ export async function POST(req: Request) {
                     } catch {
                         closed = true;
                     }
+                };
+
+                const emitEvent = (event: EvaluateSseEventName, payload: unknown) => {
+                    safeEnqueue(formatSseEvent(event, payload));
+                };
+
+                const emitTraceEvent = (payload: EvaluateTraceEvent) => {
+                    emitEvent("trace", payload);
+                };
+
+                const emitRemediationEvent = (payload: EvaluateRemediationEvent) => {
+                    emitEvent("remediation", payload);
+                };
+
+                const emitDerivedEvents = (source: "model" | "fallback") => {
+                    const questionEvent = buildEvaluateQuestionEvent(fullOutput, source);
+                    if (questionEvent) {
+                        const serialized = JSON.stringify(questionEvent);
+                        if (serialized !== lastQuestionEventJson) {
+                            lastQuestionEventJson = serialized;
+                            emitEvent("question", questionEvent);
+                        }
+                    }
+
+                    const analysisEvent = buildEvaluateAnalysisDelta(fullOutput);
+                    if (analysisEvent) {
+                        const serialized = JSON.stringify(analysisEvent);
+                        if (serialized !== lastAnalysisEventJson) {
+                            lastAnalysisEventJson = serialized;
+                            emitEvent("analysis.delta", analysisEvent);
+                        }
+                    }
+
+                    const conflictEvent = buildEvaluateConflictEvent(fullOutput);
+                    if (conflictEvent) {
+                        const serialized = JSON.stringify(conflictEvent);
+                        if (serialized !== lastConflictEventJson) {
+                            lastConflictEventJson = serialized;
+                            emitEvent("conflict", conflictEvent);
+                        }
+                    }
+
+                    const readinessEvent = buildEvaluateReadinessEvent(fullOutput);
+                    if (readinessEvent) {
+                        const serialized = JSON.stringify(readinessEvent);
+                        if (serialized !== lastReadinessEventJson) {
+                            lastReadinessEventJson = serialized;
+                            emitEvent("readiness.update", readinessEvent);
+                        }
+                    }
+                };
+
+                const emitTraceChunk = (chunk: string, source: "model" | "fallback") => {
+                    if (!chunk) return;
+
+                    fullOutput = (fullOutput + chunk).slice(-EVALUATE_FALLBACK_BUFFER_CHARS);
+                    tagScanBuffer = (tagScanBuffer + chunk).slice(-8192);
+                    if (!sawQuestionTag && /<question>/i.test(tagScanBuffer)) {
+                        sawQuestionTag = true;
+                    }
+
+                    if (chunk.trim().length > 0) {
+                        emittedMeaningfulChunk = true;
+                        if (!firstChunkLogged) {
+                            firstChunkLogged = true;
+                            console.log(
+                                `[evaluate][${requestId}] firstChunkMs=${Date.now() - streamStartedAt}${source === "fallback" ? " source=fallback" : ""}`
+                            );
+                        }
+                    }
+
+                    emitTraceEvent({
+                        kind: "chunk",
+                        requestId,
+                        chunk,
+                        source
+                    });
+                    emitDerivedEvents(source);
                 };
 
                 const enqueueQuestionFallback = (payload: string | FallbackQuestionPayload) => {
@@ -587,18 +787,28 @@ export async function POST(req: Request) {
                     const optionsBlock = normalizedInteractionMode === "architecture"
                         ? `\n<options>${buildStructuredFallbackOptions(responseLanguage).join("\n")}</options>`
                         : "";
-                    safeEnqueue(
-                        `<question>${normalizedPayload.message} (ref: ${requestId})</question>${actionTag}${requirementTag}${optionsBlock}`
-                    );
+                    const fallbackChunk = `<question>${normalizedPayload.message} (ref: ${requestId})</question>${actionTag}${requirementTag}${optionsBlock}`;
+                    emitTraceChunk(fallbackChunk, "fallback");
+                    emitRemediationEvent({
+                        code: "EVALUATE_FALLBACK_QUESTION",
+                        severity: "warning",
+                        message: normalizedPayload.message,
+                        fallbackInjected: true,
+                        requestId
+                    });
                     fallbackQuestionInjected = true;
                     sawQuestionTag = true;
                 };
 
-                // Send an early byte to reduce upstream gateway idle timeouts.
-                safeEnqueue(" ");
+                emitTraceEvent({
+                    kind: "start",
+                    requestId,
+                    source: "system",
+                    note: "Evaluate SSE stream started."
+                });
 
                 const heartbeat = setInterval(() => {
-                    safeEnqueue(" ");
+                    safeEnqueue(": ping\n\n");
                 }, EVALUATE_STREAM_HEARTBEAT_MS);
 
                 try {
@@ -614,24 +824,7 @@ export async function POST(req: Request) {
                             interactionMode: normalizedInteractionMode
                         }
                     )) {
-                        if (chunk) {
-                            fullOutput = (fullOutput + chunk).slice(-EVALUATE_FALLBACK_BUFFER_CHARS);
-                        }
-                        tagScanBuffer = (tagScanBuffer + chunk).slice(-8192);
-                        if (!sawQuestionTag && /<question>/i.test(tagScanBuffer)) {
-                            sawQuestionTag = true;
-                        }
-
-                        if (chunk.trim().length > 0) {
-                            emittedMeaningfulChunk = true;
-                            if (!firstChunkLogged) {
-                                firstChunkLogged = true;
-                                console.log(
-                                    `[evaluate][${requestId}] firstChunkMs=${Date.now() - streamStartedAt}`
-                                );
-                            }
-                        }
-                        safeEnqueue(chunk);
+                        emitTraceChunk(chunk, "model");
                     }
                     console.log(
                         `[evaluate][${requestId}] completed streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
@@ -645,6 +838,13 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] primaryRetryableFailure type=${getErrorDetails(e)} afterMs=${Date.now() - streamStartedAt}; retrying compact payload`
                         );
+                        emitRemediationEvent({
+                            code: "EVALUATE_PRIMARY_RETRY",
+                            severity: "warning",
+                            message: "Primary evaluate stream failed before producing usable output. Retrying with a compact payload.",
+                            retrying: true,
+                            requestId
+                        });
                         try {
                             const retryMessages = buildRetryMessages(messages);
                             const retryContext = contextText
@@ -670,16 +870,7 @@ export async function POST(req: Request) {
                                     interactionMode: normalizedInteractionMode
                                 }
                             )) {
-                                if (retryChunk.trim().length > 0) {
-                                    emittedMeaningfulChunk = true;
-                                    if (!firstChunkLogged) {
-                                        firstChunkLogged = true;
-                                        console.log(
-                                            `[evaluate][${requestId}] firstChunkMs=${Date.now() - streamStartedAt} source=compactRetry`
-                                        );
-                                    }
-                                }
-                                safeEnqueue(retryChunk);
+                                emitTraceChunk(retryChunk, "model");
                             }
                             console.log(
                                 `[evaluate][${requestId}] completedAfterRetry streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
@@ -688,26 +879,42 @@ export async function POST(req: Request) {
                             console.error(
                                 `[evaluate][${requestId}] compactRetryFailed type=${getErrorDetails(retryError)} afterMs=${Date.now() - streamStartedAt}`
                             );
+                            emitRemediationEvent({
+                                code: "EVALUATE_COMPACT_RETRY_FAILED",
+                                severity: "error",
+                                message: getErrorDetails(retryError),
+                                requestId
+                            });
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(retryError)
                                     ? getEvaluateFallbackMessage(responseLanguage, "high_demand")
                                     : getEvaluateFallbackMessage(responseLanguage, "empty_before_content")
                             );
-                            emittedMeaningfulChunk = true;
                         }
                     } else {
                         console.error(`[evaluate][${requestId}] streamingError:`, e);
                         if (!emittedMeaningfulChunk) {
+                            emitRemediationEvent({
+                                code: isUpstreamOverloadError(e) ? "EVALUATE_HIGH_DEMAND" : "EVALUATE_SERVICE_UNAVAILABLE",
+                                severity: "error",
+                                message: getErrorDetails(e),
+                                requestId
+                            });
                             enqueueQuestionFallback(
                                 isUpstreamOverloadError(e)
                                     ? getEvaluateFallbackMessage(responseLanguage, "high_demand")
                                     : getEvaluateFallbackMessage(responseLanguage, "service_unavailable")
                             );
-                            emittedMeaningfulChunk = true;
                         } else {
                             console.warn(
                                 `[evaluate][${requestId}] partialStreamInterrupted afterMs=${Date.now() - streamStartedAt}; preserving partial output`
                             );
+                            emitRemediationEvent({
+                                code: "EVALUATE_PARTIAL_STREAM_INTERRUPTED",
+                                severity: "warning",
+                                message: "The evaluate stream ended early, but partial output was preserved.",
+                                requestId
+                            });
                         }
                     }
                 } finally {
@@ -716,17 +923,35 @@ export async function POST(req: Request) {
                         console.warn(
                             `[evaluate][${requestId}] noMeaningfulOutput streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
+                        emitRemediationEvent({
+                            code: "EVALUATE_NO_OUTPUT",
+                            severity: "error",
+                            message: getEvaluateFallbackMessage(responseLanguage, "no_output"),
+                            requestId
+                        });
                         enqueueQuestionFallback(getEvaluateFallbackMessage(responseLanguage, "no_output"));
                     } else if (emittedMeaningfulChunk && !sawQuestionTag && !fallbackQuestionInjected) {
                         console.warn(
                             `[evaluate][${requestId}] missingQuestionTag injectingFallback streamedMs=${Date.now() - streamStartedAt} totalMs=${Date.now() - requestStartedAt}`
                         );
+                        emitRemediationEvent({
+                            code: "EVALUATE_MISSING_QUESTION_TAG",
+                            severity: "warning",
+                            message: "The model returned output without a question tag. Injecting a structured fallback question.",
+                            requestId
+                        });
                         enqueueQuestionFallback(
                             normalizedInteractionMode === "architecture"
                                 ? buildStructuredFallbackQuestion(fullOutput, responseLanguage)
                                 : getEvaluateFallbackMessage(responseLanguage, "no_output")
                         );
                     }
+                    emitTraceEvent({
+                        kind: "complete",
+                        requestId,
+                        source: fallbackQuestionInjected ? "fallback" : "system",
+                        note: "Evaluate SSE stream completed."
+                    });
                     if (!closed) {
                         closed = true;
                         controller.close();

@@ -4,7 +4,7 @@ Forecoding is an architecture-first AI product for engineering teams. Its job is
 
 ## Product model
 
-Forecoding works through six architecture stages:
+Forecoding works through five architecture stages:
 
 1. `context`: define product goal, target users, journeys, constraints, and risks
 2. `boundaries`: define bounded contexts, ownership, modules, and data ownership
@@ -49,6 +49,21 @@ Open `http://localhost:3000`.
 
 ## Environment
 
+Core runtime:
+
+```env
+APP_BASE_URL=https://your-domain.com
+AUTH_SESSION_COOKIE_NAME=__session
+```
+
+Auth and email:
+
+```env
+AUTH_CODE_SECRET=replace_with_long_random_secret
+EMAIL_SERVER=smtp://user:password@smtp.example.com:587
+EMAIL_FROM=Forecoding <no-reply@example.com>
+```
+
 AI provider:
 
 ```env
@@ -87,6 +102,26 @@ Admin:
 
 ```env
 FORECODING_ADMIN_EMAILS=admin@example.com,ops@example.com
+FORECODING_OPERATOR_EMAILS=release-manager@example.com
+FORECODING_ADMIN_VIEWER_EMAILS=viewer@example.com
+```
+
+Role model:
+
+- `admin`: full platform control and payment bypass.
+- `operator`: can manage feature flags and publish release tags.
+- `viewer`: read-only access to the admin console.
+
+Governance feature flags:
+
+- `generation.enabled`: pauses scaffold generation for non-admin users.
+- `releases.publish.enabled`: pauses release tag publishing from the admin API.
+- `releases.rollback.enabled`: pauses release rollback actions from the admin console and admin API.
+
+Dev only:
+
+```env
+NEXT_PUBLIC_DEV_AUTH_BYPASS=0
 ```
 
 ## Architecture rules
@@ -117,6 +152,24 @@ For a local `/api/generate` route smoke test, run:
 ```bash
 npm run smoke:generate-api
 ```
+
+For admin API regression smoke checks, run:
+
+```bash
+npm run smoke:admin-api
+```
+
+For a self-contained local smoke run that auto-starts `next dev`, run:
+
+```bash
+npm run smoke:admin-api:local
+```
+
+`smoke:admin-api` modes:
+
+- unauthenticated mode: no `ADMIN_SMOKE_COOKIE` present, validates protected admin endpoints return `401`
+- authenticated mode: set `ADMIN_SMOKE_COOKIE` and optionally `ADMIN_SMOKE_BASE_URL` to validate list + detail admin API flows
+- mutation mode: add `--allow-mutations` plus replay/rollback ids to validate `webhook replay` and `release rollback`
 
 ## Demo and utilities
 

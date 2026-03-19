@@ -1,4 +1,4 @@
-name: Spec Pack Validation
+name: Platform Validation
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  spec-pack-fixtures:
+  platform-baseline:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,6 +22,21 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Drift checks
+        run: npm run check:drift
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke admin API (unauthenticated)
+        run: npm run smoke:admin-api:local -- --timeout-ms 120000
 
       - name: Smoke validator CLI
         run: node scripts/validate-generated-scaffold.mjs --help
