@@ -4816,16 +4816,13 @@ function WizardContent() {
         guardrailChecklist: workingArchitectureState.guardrailChecklist,
         readinessOverrides
     });
-    const scaffoldEligibility = computeScaffoldEligibility({
-        architecturePack,
-        decisionRecords,
-        guardrailChecklist,
-        readinessOverrides
-    });
-    const generationReady = scaffoldEligibility.canGenerate;
-    const architectureCompletion = scaffoldEligibility.readiness.score;
-    const readinessBlockers = scaffoldEligibility.blockingReasons;
-    const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
+    const activeScaffoldEligibility = workingScaffoldEligibility;
+    const activeArchitectureStage = workingArchitectureState.stage;
+    const activeDesignStage = activeScaffoldEligibility.designStage;
+    const generationReady = activeScaffoldEligibility.canGenerate;
+    const architectureCompletion = activeScaffoldEligibility.readiness.score;
+    const readinessBlockers = activeScaffoldEligibility.blockingReasons;
+    const isReadyToGenerateStage = activeScaffoldEligibility.canGenerate;
     const architectureViewerCode = workingDerivedDiagram;
     const isConversationLocked = Boolean(
         generationArtifacts.virtual_spec ||
@@ -4929,6 +4926,71 @@ function WizardContent() {
         setArchitectureStage(nextStage);
         setDesignStage(nextEligibility.designStage);
         return true;
+    };
+
+    const commitActiveEligibilitySnapshot = (
+        snapshot: WorkingArchitectureState,
+        nextMessages: Message[] = messages,
+        nextReadinessOverrides: ReadinessOverride[] = readinessOverrides
+    ) => {
+        const nextEligibility = computeScaffoldEligibility({
+            architecturePack: snapshot.architecturePack,
+            decisionRecords: snapshot.decisionRecords,
+            guardrailChecklist: snapshot.guardrailChecklist,
+            readinessOverrides: nextReadinessOverrides
+        });
+        const nextStage = normalizeArchitectureStage(
+            snapshot.stage,
+            snapshot.architecturePack,
+            snapshot.decisionRecords,
+            snapshot.guardrailChecklist,
+            nextReadinessOverrides
+        );
+        const nextDiagram = deriveArchitectureDiagramMermaid({
+            architecturePack: snapshot.architecturePack,
+            decisionRecords: snapshot.decisionRecords,
+            guardrailChecklist: snapshot.guardrailChecklist,
+            language: workspaceLanguage,
+            fallbackDiagram: currentDiagram
+        });
+        const nextDiagramGovernance: DiagramGovernance = {
+            ...diagramGovernance,
+            pendingDiagram: null,
+            pendingSourceRequestId: null,
+            pendingUpdatedAt: null,
+            lastDecision: "applied",
+            lastDecisionNote: "Committed active eligibility snapshot for generation gating.",
+            lastDecisionAt: Date.now()
+        };
+
+        commitArchitectureStageSnapshot(snapshot, nextReadinessOverrides);
+        setCurrentDiagram(nextDiagram);
+        setDiagramGovernance(nextDiagramGovernance);
+        persistLocalVersionSnapshot({
+            messages: nextMessages,
+            currentDiagram: nextDiagram,
+            diagramGovernance: nextDiagramGovernance,
+            architecturePack: snapshot.architecturePack,
+            decisionRecords: snapshot.decisionRecords,
+            guardrailChecklist: snapshot.guardrailChecklist,
+            architectureStage: nextStage,
+            designStage: nextEligibility.designStage,
+            readinessOverrides: nextReadinessOverrides
+        });
+
+        return {
+            architecturePack: snapshot.architecturePack,
+            decisionRecords: snapshot.decisionRecords,
+            guardrailChecklist: snapshot.guardrailChecklist,
+            readinessOverrides: nextReadinessOverrides,
+            readiness: nextEligibility.readiness,
+            stage: nextStage,
+            canGenerate: nextEligibility.canGenerate,
+            blockingReasons: nextEligibility.blockingReasons,
+            designStage: nextEligibility.designStage,
+            currentDiagram: nextDiagram,
+            messages: nextMessages
+        };
     };
 
 
@@ -5292,19 +5354,19 @@ function WizardContent() {
                             evaluation,
                             generation,
                             generationArtifacts,
-                            committedDerivedDiagram,
+                            workingDerivedDiagram,
                             diagramGovernance,
                             tasks,
-                            designStage,
+                            activeDesignStage,
                             uiDesignState,
                             uiDesignSpec,
-                            architecturePack,
-                            decisionRecords,
-                            guardrailChecklist,
+                            workingArchitectureState.architecturePack,
+                            workingArchitectureState.decisionRecords,
+                            workingArchitectureState.guardrailChecklist,
                             readinessOverrides,
                             prdDeltas,
                             sourceArtifacts,
-                            architectureStage,
+                            activeArchitectureStage,
                             functionalLockedAt,
                             uiReadyAt
                         )
@@ -5358,19 +5420,19 @@ function WizardContent() {
         evaluation,
         generation,
         generationArtifacts,
-        committedDerivedDiagram,
+        workingDerivedDiagram,
         diagramGovernance,
         tasks,
-        designStage,
+        activeDesignStage,
         uiDesignState,
         uiDesignSpec,
-        architecturePack,
-        decisionRecords,
-        guardrailChecklist,
+        workingArchitectureState.architecturePack,
+        workingArchitectureState.decisionRecords,
+        workingArchitectureState.guardrailChecklist,
         readinessOverrides,
         prdDeltas,
         sourceArtifacts,
-        architectureStage,
+        activeArchitectureStage,
         functionalLockedAt,
         uiReadyAt
     ]);
@@ -6353,7 +6415,7 @@ Do you want to start scaffold generation now?`;
         requirementKey: ReadinessRequirementKey
     ) => {
         return buildAssistantQuestionMessage({
-            content: buildBlockersSummary(language, workingScaffoldEligibility.readiness),
+            content: buildBlockersSummary(language, activeScaffoldEligibility.readiness),
             options: language === "zh"
                 ? [
                     { label: "给我补充模板", value: "请给我一个高质量补充模板，我来补齐这个缺口。", action: "fill_requirement", requirementKey },
@@ -7193,7 +7255,7 @@ Do you want to start scaffold generation now?`;
         baseMessages: Message[]
     ) => {
         if (!requirementKey) return false;
-        if (!findReadinessRequirement(workingScaffoldEligibility.readiness, requirementKey)) return false;
+        if (!findReadinessRequirement(activeScaffoldEligibility.readiness, requirementKey)) return false;
 
         const language = workspaceLanguage;
 
@@ -7544,7 +7606,14 @@ Do you want to start scaffold generation now?`;
     };
 
     // --- Generation Handler ---
-    const generateScaffold = async () => {
+    const generateScaffold = async (snapshot?: {
+        architecturePack: ArchitecturePack;
+        decisionRecords: DecisionRecord[];
+        guardrailChecklist: GuardrailChecklist;
+        readinessOverrides: ReadinessOverride[];
+        currentDiagram: string;
+        messages: Message[];
+    }) => {
         if (generateInFlightRef.current) return;
         if (!projectId || !currentVersion) {
             setGenerateError(uiText.missingGenerateContext);
@@ -7556,11 +7625,17 @@ Do you want to start scaffold generation now?`;
         setHasUserEdited(true);
         try {
             await yieldToBrowser();
+            const effectiveArchitecturePack = snapshot?.architecturePack ?? workingArchitectureState.architecturePack;
+            const effectiveDecisionRecords = snapshot?.decisionRecords ?? workingArchitectureState.decisionRecords;
+            const effectiveGuardrailChecklist = snapshot?.guardrailChecklist ?? workingArchitectureState.guardrailChecklist;
+            const effectiveReadinessOverrides = snapshot?.readinessOverrides ?? readinessOverrides;
+            const effectiveDiagram = snapshot?.currentDiagram ?? workingDerivedDiagram;
+            const effectiveMessages = snapshot?.messages ?? messages;
             const historyText = buildGenerateSummary(
-                architecturePack,
-                decisionRecords,
-                guardrailChecklist,
-                messages
+                effectiveArchitecturePack,
+                effectiveDecisionRecords,
+                effectiveGuardrailChecklist,
+                effectiveMessages
             );
             const outputLanguage = workspaceLanguage;
             const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
@@ -7572,7 +7647,7 @@ Do you want to start scaffold generation now?`;
                         projectId,
                         versionId: currentVersion.id,
                         summary: historyText,
-                        diagram: committedDerivedDiagram,
+                        diagram: effectiveDiagram,
                         projectName: project?.name,
                         outputLanguage,
                         outputMode,
@@ -7580,9 +7655,10 @@ Do you want to start scaffold generation now?`;
                         ideProfile: GENERATE_IDE_PROFILE,
                         templateKindHint,
                         currentProjectTree,
-                        architecturePack,
-                        decisionRecords,
-                        guardrailChecklist
+                        architecturePack: effectiveArchitecturePack,
+                        decisionRecords: effectiveDecisionRecords,
+                        guardrailChecklist: effectiveGuardrailChecklist,
+                        readinessOverrides: effectiveReadinessOverrides
                     })
                 });
 
@@ -7680,7 +7756,16 @@ Do you want to start scaffold generation now?`;
         }
     };
 
-    const startCheckout = async () => {
+    const startCheckout = async (snapshot?: {
+        architecturePack: ArchitecturePack;
+        decisionRecords: DecisionRecord[];
+        guardrailChecklist: GuardrailChecklist;
+        readinessOverrides: ReadinessOverride[];
+        currentDiagram: string;
+        messages: Message[];
+        stage: ArchitectureStage;
+        designStage: DesignStage;
+    }) => {
         if (!projectId || !currentVersion) {
             setGenerateError(uiText.missingCheckoutContext);
             return;
@@ -7693,6 +7778,14 @@ Do you want to start scaffold generation now?`;
         setIsCheckingOut(true);
 
         try {
+            const effectiveArchitecturePack = snapshot?.architecturePack ?? workingArchitectureState.architecturePack;
+            const effectiveDecisionRecords = snapshot?.decisionRecords ?? workingArchitectureState.decisionRecords;
+            const effectiveGuardrailChecklist = snapshot?.guardrailChecklist ?? workingArchitectureState.guardrailChecklist;
+            const effectiveReadinessOverrides = snapshot?.readinessOverrides ?? readinessOverrides;
+            const effectiveDiagram = snapshot?.currentDiagram ?? workingDerivedDiagram;
+            const effectiveMessages = snapshot?.messages ?? messages;
+            const effectiveStage = snapshot?.stage ?? activeArchitectureStage;
+            const effectiveDesignStage = snapshot?.designStage ?? activeDesignStage;
             const baseParams = new URLSearchParams();
             baseParams.set("projectId", projectId);
             baseParams.set("versionId", currentVersion.id);
@@ -7710,23 +7803,23 @@ Do you want to start scaffold generation now?`;
                         projectSnapshot: buildPricingProjectSnapshot(
                             project,
                             currentVersion,
-                            messages,
+                            effectiveMessages,
                             evaluation,
                             generation,
                             generationArtifacts,
-                            committedDerivedDiagram,
+                            effectiveDiagram,
                             diagramGovernance,
                             tasks,
-                            designStage,
+                            effectiveDesignStage,
                             uiDesignState,
                             uiDesignSpec,
-                            architecturePack,
-                            decisionRecords,
-                            guardrailChecklist,
-                            readinessOverrides,
+                            effectiveArchitecturePack,
+                            effectiveDecisionRecords,
+                            effectiveGuardrailChecklist,
+                            effectiveReadinessOverrides,
                             prdDeltas,
                             sourceArtifacts,
-                            architectureStage,
+                            effectiveStage,
                             functionalLockedAt,
                             uiReadyAt
                         )
@@ -7756,34 +7849,37 @@ Do you want to start scaffold generation now?`;
     const handleGenerate = async (source: "button" | "chat" = "button", baseMessages?: Message[]) => {
         if (!project?.id) return;
         if (isGenerating || isCheckingOut) return;
+        const requestMessages = baseMessages ?? messages;
+        const pendingQuestion = getLatestPendingQuestion(requestMessages);
+        const committedMessages = closeOpenAssistantQuestions(
+            requestMessages,
+            pendingQuestion?.questionAction === "generate_scaffold" ? pendingQuestion.questionKey : null
+        );
+        const committedSnapshot = commitActiveEligibilitySnapshot(
+            workingArchitectureState,
+            committedMessages
+        );
 
-        setMessages((prev) => {
-            const pending = getLatestPendingQuestion(prev);
-            return closeOpenAssistantQuestions(
-                prev,
-                pending?.questionAction === "generate_scaffold" ? pending.questionKey : null
-            );
-        });
+        setMessages(committedMessages);
 
         setGenerateError(null);
-        if (!generationReady) {
+        if (!committedSnapshot.canGenerate) {
             const message = translateReadinessText(
                 workspaceLanguage,
-                readinessBlockers[0] || uiText.completeReadinessBeforeGenerate
+                committedSnapshot.blockingReasons[0] || uiText.completeReadinessBeforeGenerate
             );
             setGenerateError(message);
             if (source === "chat") {
                 const blockedResponse = buildBlockedGenerateQuestion(
                     workspaceLanguage,
-                    architectureStage,
-                    scaffoldEligibility.readiness,
-                    architecturePack,
-                    baseMessages ?? messages
+                    committedSnapshot.stage,
+                    committedSnapshot.readiness,
+                    committedSnapshot.architecturePack,
+                    committedMessages
                 );
-                setMessages((prev) => {
-                    const nextBase = baseMessages ?? prev;
+                setMessages(() => {
                     return [
-                        ...nextBase,
+                        ...committedMessages,
                         {
                             role: "assistant",
                             content: blockedResponse.content,
@@ -7799,10 +7895,10 @@ Do you want to start scaffold generation now?`;
             return;
         }
         if (requiresPayment) {
-            await startCheckout();
+            await startCheckout(committedSnapshot);
             return;
         }
-        await generateScaffold();
+        await generateScaffold(committedSnapshot);
     };
 
     const handleArchitectureNodeSelect = () => {
@@ -7817,9 +7913,9 @@ Do you want to start scaffold generation now?`;
     const prdProjection = isPrdTabActive
         ? buildPrdProjectionModel(
             workspaceLanguage,
-            architecturePack,
-            guardrailChecklist,
-            architectureReadiness,
+            workingArchitectureState.architecturePack,
+            workingArchitectureState.guardrailChecklist,
+            activeScaffoldEligibility.readiness,
             prdDeltas,
             generationReady
         )
@@ -7943,7 +8039,7 @@ Do you want to start scaffold generation now?`;
                             <div className="border-t border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/75">
                                 <div className="mb-3 space-y-2">
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-slate-300">
-                                        {uiText.architectStage}: {getArchitectureStageLabel(workspaceLanguage, architectureStage)} | {uiText.readiness} {Math.round(architectureCompletion)}%
+                                        {uiText.architectStage}: {getArchitectureStageLabel(workspaceLanguage, activeArchitectureStage)} | {uiText.readiness} {Math.round(architectureCompletion)}%
                                     </div>
                                 </div>
                                 <div className="mb-4 flex flex-col gap-2">

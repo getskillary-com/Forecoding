@@ -5,7 +5,8 @@ import {
     buildArchitecturePackScaffoldInput,
     normalizeArchitecturePack,
     normalizeDecisionRecords,
-    normalizeGuardrailChecklist
+    normalizeGuardrailChecklist,
+    normalizeReadinessOverrides
 } from "@/lib/architecture";
 import { deriveArchitectureDiagramMermaid } from "@/lib/architecture-diagram";
 import { generateProjectResources } from "@/lib/gemini";
@@ -17,7 +18,7 @@ import {
     computeVersionScaffoldEligibility
 } from "@/lib/scaffold-eligibility";
 import { getProjectWorkspaceLanguage, normalizeProjects } from "@/lib/project-language";
-import type { OutputMode, Project } from "@/types";
+import type { OutputMode, Project, ProjectVersionData } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,10 @@ type GenerateRequestBody = {
     templateKindHint?: unknown;
     projectId?: unknown;
     versionId?: unknown;
+    architecturePack?: unknown;
+    decisionRecords?: unknown;
+    guardrailChecklist?: unknown;
+    readinessOverrides?: unknown;
 };
 
 const MAX_GENERATE_SUMMARY_CHARS = Math.min(
@@ -200,8 +205,15 @@ export async function POST(req: Request) {
         }
 
         const { project, version } = resolved;
+        const requestVersionData: ProjectVersionData = {
+            ...version.data,
+            architecturePack: normalizeArchitecturePack(body.architecturePack ?? version.data.architecturePack),
+            decisionRecords: normalizeDecisionRecords(body.decisionRecords ?? version.data.decisionRecords),
+            guardrailChecklist: normalizeGuardrailChecklist(body.guardrailChecklist ?? version.data.guardrailChecklist),
+            readinessOverrides: normalizeReadinessOverrides(body.readinessOverrides ?? version.data.readinessOverrides)
+        };
         const parsedOutputMode = parseOutputMode(body.outputMode) || "virtual_spec";
-        const eligibility = computeVersionScaffoldEligibility(version.data, parsedOutputMode);
+        const eligibility = computeVersionScaffoldEligibility(requestVersionData, parsedOutputMode);
         if (!eligibility.canGenerate) {
             return NextResponse.json(
                 {
@@ -226,12 +238,9 @@ export async function POST(req: Request) {
             );
         }
 
-        const architecturePack = version.data.architecturePack;
-        const decisionRecords = version.data.decisionRecords;
-        const guardrailChecklist = version.data.guardrailChecklist;
-        const normalizedArchitecturePack = normalizeArchitecturePack(architecturePack);
-        const normalizedDecisionRecords = normalizeDecisionRecords(decisionRecords);
-        const normalizedGuardrailChecklist = normalizeGuardrailChecklist(guardrailChecklist);
+        const normalizedArchitecturePack = normalizeArchitecturePack(requestVersionData.architecturePack);
+        const normalizedDecisionRecords = normalizeDecisionRecords(requestVersionData.decisionRecords);
+        const normalizedGuardrailChecklist = normalizeGuardrailChecklist(requestVersionData.guardrailChecklist);
         const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
         const generationContext = buildStructuredGenerationContext(
             normalizedArchitecturePack,
@@ -252,7 +261,9 @@ export async function POST(req: Request) {
             decisionRecords: normalizedDecisionRecords,
             guardrailChecklist: normalizedGuardrailChecklist,
             language: parsedOutputLanguage,
-            fallbackDiagram: typeof version.data.currentDiagram === "string"
+            fallbackDiagram: typeof body.diagram === "string"
+                ? body.diagram.trim()
+                : typeof version.data.currentDiagram === "string"
                 ? version.data.currentDiagram.trim()
                 : ""
         });
