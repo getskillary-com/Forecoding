@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition, type FormEvent } from "react";
 import { AdminAuditPanel } from "@/components/AdminAuditPanel";
+import { AdminObservabilityPanel } from "@/components/AdminObservabilityPanel";
 import { AdminOperationsPanel } from "@/components/AdminOperationsPanel";
 import { AdminStripeWebhookPanel } from "@/components/AdminStripeWebhookPanel";
 import type { AdminRole } from "@/lib/admin";
@@ -11,6 +12,7 @@ import type {
     AuditEvent,
     FeatureFlag,
     GenerationJob,
+    ObservabilitySnapshot,
     Tenant,
     WebhookEventRecord
 } from "@/types";
@@ -57,6 +59,7 @@ type Props = {
     role: AdminRole;
     auditEvents: AuditEvent[];
     operationEvents: AuditEvent[];
+    observabilitySnapshot: ObservabilitySnapshot;
     featureFlags: FeatureFlag[];
     jobs: GenerationJob[];
     tenants: Tenant[];
@@ -1316,6 +1319,7 @@ export function AdminConsoleClient(props: Props) {
                     </article>
 
                     <div className="space-y-6">
+                        <AdminObservabilityPanel initialSnapshot={props.observabilitySnapshot} />
                         <AdminOperationsPanel initialEvents={props.operationEvents} />
                         <AdminAuditPanel initialEvents={props.auditEvents} />
                         {expandedWebhookId ? (

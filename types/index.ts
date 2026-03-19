@@ -956,3 +956,35 @@ export interface Tenant {
     createdAt: number;
     updatedAt: number;
 }
+
+export interface SloMetric {
+    key: string;
+    label: string;
+    value: number;
+    unit: "percent" | "count";
+    target: string;
+    status: "ok" | "warning" | "critical";
+    sampleSize: number;
+    windowMs: number;
+    description: string;
+}
+
+export interface PlatformAlert {
+    id: string;
+    severity: "warning" | "critical";
+    title: string;
+    message: string;
+    source: "generation" | "webhook" | "release" | "audit";
+    createdAt: number;
+    eventType?: string;
+    resourceType?: string;
+    resourceId?: string;
+    actionHref?: string;
+}
+
+export interface ObservabilitySnapshot {
+    generatedAt: number;
+    windowMs: number;
+    metrics: SloMetric[];
+    alerts: PlatformAlert[];
+}

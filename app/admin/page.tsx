@@ -4,6 +4,7 @@ import { getServerSessionIdentity } from "@/lib/server-auth";
 import { listAuditEvents, listGovernanceOperationEvents } from "@/lib/data/audit-events";
 import { listFeatureFlags } from "@/lib/data/feature-flags";
 import { listGenerationJobs } from "@/lib/data/generation-jobs";
+import { buildObservabilitySnapshot } from "@/lib/data/observability";
 import { listTenants } from "@/lib/data/tenants";
 import { listWebhookEvents } from "@/lib/data/webhook-events";
 import { listWorkspaceEnvelopeSummaries, listWorkspaceReleaseTags } from "@/lib/data/workspaces";
@@ -12,9 +13,13 @@ export default async function AdminPage() {
     const user = await getServerSessionIdentity();
     const email = user?.email || "admin";
     const role = resolveAdminRole({ email: user?.email });
-    const [auditEvents, operationEvents, featureFlags, jobs, tenants, releases, workspaces, webhookEvents] = await Promise.all([
+    const [auditEvents, operationEvents, observabilitySnapshot, featureFlags, jobs, tenants, releases, workspaces, webhookEvents] = await Promise.all([
         listAuditEvents(8),
         listGovernanceOperationEvents(8),
+        buildObservabilitySnapshot({
+            windowMs: 24 * 60 * 60 * 1000,
+            maxAlerts: 10
+        }),
         listFeatureFlags(12),
         listGenerationJobs(12),
         listTenants(8),
@@ -32,6 +37,7 @@ export default async function AdminPage() {
             role={role}
             auditEvents={auditEvents}
             operationEvents={operationEvents}
+            observabilitySnapshot={observabilitySnapshot}
             featureFlags={featureFlags}
             jobs={jobs}
             tenants={tenants}

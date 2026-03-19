@@ -28,6 +28,7 @@ The primary durable artifact is the `ArchitecturePack`, not the chat transcript.
 - `/api/evaluate`: streaming architecture conversation endpoint
 - `/api/generate`: scaffold generation endpoint, only available for a ready architecture pack
 - `/api/payments/stripe/*`: checkout and pricing for scaffold generation
+- `/api/admin/observability`: admin SLO and alert snapshot endpoint
 
 ## Tech stack
 

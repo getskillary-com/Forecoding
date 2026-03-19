@@ -3,6 +3,7 @@ export * from "./auth-codes";
 export * from "./backend-mode";
 export * from "./feature-flags";
 export * from "./generation-jobs";
+export * from "./observability";
 export * from "./purchases";
 export * from "./tenants";
 export * from "./users";
