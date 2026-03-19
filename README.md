@@ -171,6 +171,12 @@ npm run smoke:admin-api:local
 - authenticated mode: set `ADMIN_SMOKE_COOKIE` and optionally `ADMIN_SMOKE_BASE_URL` to validate list + detail admin API flows
 - mutation mode: add `--allow-mutations` plus replay/rollback ids to validate `webhook replay` and `release rollback`
 
+CI smoke coverage:
+
+- `Platform Validation` workflow always runs unauthenticated admin smoke checks
+- if repository secret `ADMIN_SMOKE_COOKIE` is configured, the same workflow also runs authenticated list + detail smoke checks
+- use manual workflow `Admin Mutation Smoke` to run replay/rollback mutation smoke with optional ids
+
 ## Demo and utilities
 
 - `/demo` shows a read-only exported workspace

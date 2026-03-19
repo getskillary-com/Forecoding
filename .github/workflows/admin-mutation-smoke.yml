@@ -1,0 +1,59 @@
+name: Admin Mutation Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      replay_event_id:
+        description: Optional Stripe webhook event id for replay
+        required: false
+        type: string
+      rollback_owner_user_id:
+        description: Optional workspace owner user id for release rollback
+        required: false
+        type: string
+      rollback_release_tag_id:
+        description: Optional release tag id for rollback
+        required: false
+        type: string
+      timeout_ms:
+        description: Request timeout in milliseconds
+        required: false
+        default: "120000"
+        type: string
+
+jobs:
+  admin-mutation-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Ensure authenticated smoke secret is configured
+        env:
+          ADMIN_SMOKE_COOKIE: ${{ secrets.ADMIN_SMOKE_COOKIE }}
+        run: |
+          if [ -z "$ADMIN_SMOKE_COOKIE" ]; then
+            echo "Missing repository secret ADMIN_SMOKE_COOKIE."
+            echo "Provide a valid admin session cookie before running this workflow."
+            exit 1
+          fi
+
+      - name: Run admin mutation smoke
+        env:
+          ADMIN_SMOKE_COOKIE: ${{ secrets.ADMIN_SMOKE_COOKIE }}
+          ADMIN_SMOKE_ALLOW_MUTATIONS: "1"
+          ADMIN_SMOKE_REPLAY_EVENT_ID: ${{ inputs.replay_event_id }}
+          ADMIN_SMOKE_ROLLBACK_OWNER_USER_ID: ${{ inputs.rollback_owner_user_id }}
+          ADMIN_SMOKE_ROLLBACK_RELEASE_TAG_ID: ${{ inputs.rollback_release_tag_id }}
+        run: |
+          npm run smoke:admin-api -- --spawn-dev-server --port 4042 --timeout-ms "${{ inputs.timeout_ms }}"
