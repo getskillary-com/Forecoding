@@ -7,6 +7,7 @@ import {
     normalizeDecisionRecords,
     normalizeGuardrailChecklist
 } from "@/lib/architecture";
+import { deriveArchitectureDiagramMermaid } from "@/lib/architecture-diagram";
 import { generateProjectResources } from "@/lib/gemini";
 import { isAdminUser } from "@/lib/admin";
 import { getWorkspaceByUserId } from "@/lib/data/workspaces";
@@ -231,6 +232,7 @@ export async function POST(req: Request) {
         const normalizedArchitecturePack = normalizeArchitecturePack(architecturePack);
         const normalizedDecisionRecords = normalizeDecisionRecords(decisionRecords);
         const normalizedGuardrailChecklist = normalizeGuardrailChecklist(guardrailChecklist);
+        const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
         const generationContext = buildStructuredGenerationContext(
             normalizedArchitecturePack,
             normalizedDecisionRecords,
@@ -245,14 +247,21 @@ export async function POST(req: Request) {
             renderedSummary,
             MAX_GENERATE_SUMMARY_CHARS
         );
-        const normalizedDiagram =
-            typeof version.data.currentDiagram === "string" && version.data.currentDiagram.trim()
-                ? clipText(version.data.currentDiagram.trim(), MAX_GENERATE_DIAGRAM_CHARS)
-                : undefined;
+        const derivedDiagram = deriveArchitectureDiagramMermaid({
+            architecturePack: normalizedArchitecturePack,
+            decisionRecords: normalizedDecisionRecords,
+            guardrailChecklist: normalizedGuardrailChecklist,
+            language: parsedOutputLanguage,
+            fallbackDiagram: typeof version.data.currentDiagram === "string"
+                ? version.data.currentDiagram.trim()
+                : ""
+        });
+        const normalizedDiagram = derivedDiagram
+            ? clipText(derivedDiagram, MAX_GENERATE_DIAGRAM_CHARS)
+            : undefined;
         const parsedOneClickMode = parseOneClickMode(body.oneClickMode);
         const parsedIdeProfile = parseIdeProfile(body.ideProfile);
         const parsedTemplateKindHint = parseTemplateKindHint(body.templateKindHint);
-        const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
         console.info(
             `[generate] request outputMode=${parsedOutputMode} outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
         );

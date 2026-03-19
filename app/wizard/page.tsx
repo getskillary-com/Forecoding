@@ -91,6 +91,11 @@ import {
     mergePlatformStrategies,
     resolvePrimaryPlatformCategory
 } from "@/lib/platforms";
+import {
+    buildArchitectureDiagramModel,
+    deriveArchitectureDiagramMermaid,
+    hasStructuredArchitectureDiagramSource
+} from "@/lib/architecture-diagram";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
 import { loadAdminStatus } from "@/lib/admin-status-client";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
@@ -116,7 +121,7 @@ const GENERATE_MAX_HISTORY_MESSAGES = 24;
 const GENERATE_MAX_MESSAGE_CONTENT_CHARS = 2_000;
 const GENERATE_MAX_ANALYSIS_CHARS = 10_000;
 const GENERATE_MAX_SUMMARY_CHARS = 50_000;
-const DIAGRAM_POLICY = "incremental_auto_apply_v1" as const;
+const DIAGRAM_POLICY = "derived_from_structured_state_v1" as const;
 const GENERATE_ONE_CLICK_MODE = "strict_build_v1" as const;
 const GENERATE_IDE_PROFILE = "generic" as const;
 const GENERATE_OUTPUT_MODES: readonly OutputMode[] = ["virtual_spec"] as const;
@@ -1631,7 +1636,10 @@ function normalizePrdDeltas(
         .slice(-12);
 }
 
-function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undefined) {
+function normalizeVersionDesignState(
+    data: ProjectVersion["data"] | null | undefined,
+    language: WorkspaceLanguage = "en"
+) {
     const messages = normalizeMessages(data?.messages);
     const readinessOverrides = normalizeReadinessOverrides(data?.readinessOverrides);
     const evaluation = normalizeEvaluation(data?.evaluation ?? null, readinessOverrides, messages);
@@ -1685,10 +1693,18 @@ function normalizeVersionDesignState(data: ProjectVersion["data"] | null | undef
             ? (hasLegacyUiStage ? null : data.uiReadyAt)
             : (designStage === "ready_to_generate" ? Date.now() : null);
     const prdDeltas = normalizePrdDeltas(data?.prdDeltas, messages);
+    const currentDiagram = deriveArchitectureDiagramMermaid({
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        language,
+        fallbackDiagram: typeof data?.currentDiagram === "string" ? data.currentDiagram : ""
+    });
 
     return {
         messages,
         evaluation,
+        currentDiagram,
         designStage,
         uiDesignState,
         uiDesignSpec,
@@ -4217,8 +4233,9 @@ function buildDesignMemory(
         : null;
 
     const sections = [
-        "# Stable Baseline Architecture",
-        "Treat this as source of truth unless user explicitly requests structural changes.",
+        "# Derived Architecture Diagram Preview",
+        "This Mermaid view is derived locally from architecture pack, decision records, and guardrails.",
+        "Treat the structured architecture state as source of truth; the diagram is only a derived preview.",
         "```mermaid",
         baselineDiagram || "graph TD\nStart[No baseline architecture yet]",
         "```",
@@ -4266,7 +4283,7 @@ function buildDesignMemory(
         `- Last Decision: ${diagramGovernance.lastDecision || "none"}`,
         `- Last Decision Time: ${lastDecisionAt || "N/A"}`,
         `- Last Decision Note: ${clipText(diagramGovernance.lastDecisionNote || "N/A", 500)}`,
-        "- Update Mode: Auto-apply accepted diagram changes; no manual approval queue."
+        "- Update Mode: Diagram cache is derived locally from structured architecture state."
     ];
 
     return clipText(sections.join("\n").trim(), maxChars);
@@ -4641,7 +4658,8 @@ function WizardContent() {
     const projectId = searchParams.get("projectId");
     const versionId = searchParams.get("versionId");
     const cachedSnapshot = getCachedProjectSnapshot(projectId, versionId);
-    const initialNormalizedState = normalizeVersionDesignState(cachedSnapshot?.data ?? null);
+    const initialWorkspaceLanguage = getProjectWorkspaceLanguage(cachedSnapshot?.project ?? null);
+    const initialNormalizedState = normalizeVersionDesignState(cachedSnapshot?.data ?? null, initialWorkspaceLanguage);
     const initialGenerationArtifacts = normalizeGenerationArtifacts(
         cachedSnapshot?.data?.generationArtifacts ?? null,
         cachedSnapshot?.data?.generation ?? null
@@ -4719,9 +4737,7 @@ function WizardContent() {
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const [currentDiagram, setCurrentDiagram] = useState(
-        cachedSnapshot?.data.currentDiagram || "graph TD\nStart[Waiting for input...]"
-    );
+    const [currentDiagram, setCurrentDiagram] = useState(initialNormalizedState.currentDiagram);
     const [diagramGovernance, setDiagramGovernance] = useState<DiagramGovernance>(
         normalizeDiagramGovernance(cachedSnapshot?.data.diagramGovernance)
     );
@@ -4769,6 +4785,31 @@ function WizardContent() {
         readinessOverrides,
         messages
     );
+    const hasWorkingDiagramSource = hasStructuredArchitectureDiagramSource(
+        workingArchitectureState.architecturePack,
+        workingArchitectureState.decisionRecords,
+        workingArchitectureState.guardrailChecklist
+    );
+    const workingDiagramModel = buildArchitectureDiagramModel(
+        workingArchitectureState.architecturePack,
+        workingArchitectureState.decisionRecords,
+        workingArchitectureState.guardrailChecklist,
+        workspaceLanguage
+    );
+    const workingDerivedDiagram = deriveArchitectureDiagramMermaid({
+        architecturePack: workingArchitectureState.architecturePack,
+        decisionRecords: workingArchitectureState.decisionRecords,
+        guardrailChecklist: workingArchitectureState.guardrailChecklist,
+        language: workspaceLanguage,
+        fallbackDiagram: currentDiagram
+    });
+    const committedDerivedDiagram = deriveArchitectureDiagramMermaid({
+        architecturePack,
+        decisionRecords,
+        guardrailChecklist,
+        language: workspaceLanguage,
+        fallbackDiagram: currentDiagram
+    });
     const workingScaffoldEligibility = computeScaffoldEligibility({
         architecturePack: workingArchitectureState.architecturePack,
         decisionRecords: workingArchitectureState.decisionRecords,
@@ -4785,7 +4826,7 @@ function WizardContent() {
     const architectureCompletion = scaffoldEligibility.readiness.score;
     const readinessBlockers = scaffoldEligibility.blockingReasons;
     const isReadyToGenerateStage = scaffoldEligibility.canGenerate;
-    const architectureViewerCode = currentDiagram;
+    const architectureViewerCode = workingDerivedDiagram;
     const isConversationLocked = Boolean(
         generationArtifacts.virtual_spec ||
         generation
@@ -4828,7 +4869,7 @@ function WizardContent() {
                 evaluation: overrides.evaluation ?? evaluation,
                 generation: overrides.generation ?? generation,
                 generationArtifacts: overrides.generationArtifacts ?? generationArtifacts,
-                currentDiagram: overrides.currentDiagram ?? currentDiagram,
+                currentDiagram: overrides.currentDiagram ?? committedDerivedDiagram,
                 tasks: overrides.tasks ?? tasks,
                 paymentStatus: overrides.paymentStatus ?? currentVersion.data.paymentStatus,
                 diagramGovernance: overrides.diagramGovernance ?? diagramGovernance,
@@ -4941,6 +4982,23 @@ function WizardContent() {
     }, [prdDeltas]);
 
     useEffect(() => {
+        if (!hasMeaningfulDiagramChange(currentDiagram, committedDerivedDiagram)) {
+            return;
+        }
+
+        setCurrentDiagram(committedDerivedDiagram);
+        setDiagramGovernance((prev) => ({
+            ...prev,
+            pendingDiagram: null,
+            pendingSourceRequestId: null,
+            pendingUpdatedAt: null,
+            lastDecision: "applied",
+            lastDecisionNote: "Diagram cache derived locally from structured architecture state.",
+            lastDecisionAt: Date.now()
+        }));
+    }, [committedDerivedDiagram, currentDiagram]);
+
+    useEffect(() => {
         const targetId = pendingScrollMessageIdRef.current;
         if (!targetId || isChatCollapsed) return;
 
@@ -4992,7 +5050,7 @@ function WizardContent() {
             setLoadedVersionId(selectedVersion.id);
 
             const data = selectedVersion.data;
-            const normalizedDesignState = normalizeVersionDesignState(data);
+            const normalizedDesignState = normalizeVersionDesignState(data, getProjectWorkspaceLanguage(foundProject));
             const normalizedGenerationArtifacts = normalizeGenerationArtifacts(
                 data.generationArtifacts ?? null,
                 data.generation ?? null
@@ -5003,7 +5061,7 @@ function WizardContent() {
             setEvaluation(normalizedDesignState.evaluation);
             setGenerationArtifacts(normalizedGenerationArtifacts);
             setGeneration(resolvePrimaryGeneration(normalizedGenerationArtifacts, data.generation));
-            setCurrentDiagram(data.currentDiagram);
+            setCurrentDiagram(normalizedDesignState.currentDiagram);
             setDiagramGovernance(normalizeDiagramGovernance(data.diagramGovernance));
             setTasks(data.tasks);
             setDesignStage(normalizedDesignState.designStage);
@@ -5234,7 +5292,7 @@ function WizardContent() {
                             evaluation,
                             generation,
                             generationArtifacts,
-                            currentDiagram,
+                            committedDerivedDiagram,
                             diagramGovernance,
                             tasks,
                             designStage,
@@ -5300,7 +5358,7 @@ function WizardContent() {
         evaluation,
         generation,
         generationArtifacts,
-        currentDiagram,
+        committedDerivedDiagram,
         diagramGovernance,
         tasks,
         designStage,
@@ -5413,7 +5471,7 @@ function WizardContent() {
                 evaluation,
                 generation,
                 generationArtifacts,
-                currentDiagram,
+                currentDiagram: committedDerivedDiagram,
                 diagramGovernance,
                 tasks,
                 paymentStatus: currentVersion.data.paymentStatus,
@@ -5468,7 +5526,7 @@ function WizardContent() {
         evaluation,
         generation,
         generationArtifacts,
-        currentDiagram,
+        committedDerivedDiagram,
         diagramGovernance,
         tasks,
         designStage,
@@ -5672,7 +5730,7 @@ function WizardContent() {
             const latestSourceArtifacts = extractSourceArtifacts(requestMessages);
             const sourceContext = buildSourceContext(latestSourceArtifacts, requestMessages);
             const designMemory = buildDesignMemory(
-                currentDiagram,
+                workingDerivedDiagram,
                 evaluation,
                 diagramGovernance,
                 workingArchitectureState.architecturePack,
@@ -5786,10 +5844,7 @@ function WizardContent() {
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
-            const baselineDiagramForRequest = currentDiagram;
-            const baselineDiagramNormalized = normalizeMermaidForComparison(baselineDiagramForRequest);
-            let latestAppliedDiagram = baselineDiagramForRequest;
-            let latestAppliedDiagramNormalized = baselineDiagramNormalized;
+            let loggedLegacyDiagram = false;
             const resolvedQuestionKeys = new Set(
                 buildResolvedConfirmationLog(requestMessages).map((item) => normalizeQuestionKey(item.questionKey))
             );
@@ -5800,7 +5855,7 @@ function WizardContent() {
             const currentEval: EvaluationResponse = {
                 density_score: evaluation?.density_score || 0,
                 is_ready: false,
-                current_diagram: currentDiagram,
+                current_diagram: workingDerivedDiagram,
                 analysis: normalizeAnalysis(evaluation?.analysis),
                 next_step: { reasoning: "", question: null },
                 stage: workingArchitectureState.stage,
@@ -5821,7 +5876,7 @@ function WizardContent() {
                 const parseBuffer = normalizeStructuredResponseMarkup(buffer);
 
                 const diagramMatch = parseBuffer.match(/<diagram>([\s\S]*?)<\/diagram>/i);
-                if (diagramMatch && diagramMatch[1]) {
+                if (diagramMatch && diagramMatch[1] && !loggedLegacyDiagram) {
                     const rawContent = diagramMatch[1].trim();
                     let code = rawContent;
 
@@ -5832,25 +5887,9 @@ function WizardContent() {
                         code = code.replace(/```mermaid\n?|```\n?/g, "").replace(/```$/g, "").trim();
                     }
                     code = code.replace(/<\s*\/\s*subgraph\s*>/gi, "\nend\n").trim();
-
-                    const normalizedCandidate = normalizeMermaidForComparison(code);
-                    if (
-                        normalizedCandidate &&
-                        normalizedCandidate !== latestAppliedDiagramNormalized &&
-                        hasMeaningfulDiagramChange(latestAppliedDiagram, code)
-                    ) {
-                        latestAppliedDiagram = code;
-                        latestAppliedDiagramNormalized = normalizedCandidate;
-                        setCurrentDiagram(code);
-                        setDiagramGovernance((prev) => ({
-                            ...prev,
-                            pendingDiagram: null,
-                            pendingSourceRequestId: null,
-                            pendingUpdatedAt: null,
-                            lastDecision: "applied",
-                            lastDecisionNote: "Auto-applied architecture update from assistant response.",
-                            lastDecisionAt: Date.now()
-                        }));
+                    if (normalizeMermaidForComparison(code)) {
+                        loggedLegacyDiagram = true;
+                        console.info("[wizard] Ignoring legacy <diagram> block because Mermaid is derived locally.");
                     }
                 }
 
@@ -7225,7 +7264,7 @@ Do you want to start scaffold generation now?`;
         const baseEvaluation = evaluation ?? {
             density_score: 0,
             is_ready: false,
-            current_diagram: currentDiagram,
+            current_diagram: committedDerivedDiagram,
             analysis: normalizeAnalysis(null),
             next_step: { reasoning: "", question: null }
         };
@@ -7533,7 +7572,7 @@ Do you want to start scaffold generation now?`;
                         projectId,
                         versionId: currentVersion.id,
                         summary: historyText,
-                        diagram: currentDiagram,
+                        diagram: committedDerivedDiagram,
                         projectName: project?.name,
                         outputLanguage,
                         outputMode,
@@ -7675,7 +7714,7 @@ Do you want to start scaffold generation now?`;
                             evaluation,
                             generation,
                             generationArtifacts,
-                            currentDiagram,
+                            committedDerivedDiagram,
                             diagramGovernance,
                             tasks,
                             designStage,
@@ -8123,9 +8162,7 @@ Do you want to start scaffold generation now?`;
                                         code={architectureViewerCode}
                                         onNodeSelect={handleArchitectureNodeSelect}
                                         language={workspaceLanguage}
-                                        architecturePack={workingArchitectureState.architecturePack}
-                                        decisionRecords={workingArchitectureState.decisionRecords}
-                                        guardrailChecklist={workingArchitectureState.guardrailChecklist}
+                                        diagramModel={hasWorkingDiagramSource ? workingDiagramModel : undefined}
                                     />
                                 ) : (
                                     <ArchitecturePanelPlaceholder />

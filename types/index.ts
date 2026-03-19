@@ -36,6 +36,41 @@ export type ArchitectureStage =
     | "guardrails"
     | "ready_to_generate";
 
+export type ArchitectureDiagramLayerId =
+    | "context"
+    | "structure"
+    | "data"
+    | "delivery"
+    | "placeholder";
+
+export interface ArchitectureDiagramNode {
+    id: string;
+    layerId: ArchitectureDiagramLayerId;
+    label: string;
+    kind: "summary" | "detail";
+}
+
+export interface ArchitectureDiagramEdge {
+    from: string;
+    to: string;
+    label?: string;
+}
+
+export interface ArchitectureDiagramLayer {
+    id: ArchitectureDiagramLayerId;
+    title: string;
+    summaryNodeId: string;
+    nodeIds: string[];
+}
+
+export interface ArchitectureDiagramModel {
+    version: "architecture_diagram_v1";
+    direction: "LR";
+    layers: ArchitectureDiagramLayer[];
+    nodes: ArchitectureDiagramNode[];
+    edges: ArchitectureDiagramEdge[];
+}
+
 export interface SourceArtifact {
     id: string;
     sourceType: "chat" | "text" | "pdf" | "image";
@@ -467,7 +502,7 @@ export interface RuntimeReadiness {
 export interface EvaluationResponse {
     density_score: number;
     is_ready: boolean;
-    current_diagram?: string; // Mermaid format code
+    current_diagram?: string; // Derived or legacy Mermaid preview, not the source of truth
     analysis: Analysis; // This powers the real-time PRD workspace
     next_step: NextStep;
     stage?: ArchitectureStage;
@@ -560,7 +595,7 @@ export interface ProjectVersionData {
     evaluation: EvaluationResponse | null;
     generation: GenerationResponse | null;
     generationArtifacts?: GenerationArtifacts;
-    currentDiagram: string;
+    currentDiagram: string; // Derived Mermaid cache kept for compatibility/export
     tasks: Task[];
     paymentStatus?: "paid" | "unpaid";
     diagramGovernance?: DiagramGovernance;

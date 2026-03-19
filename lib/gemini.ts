@@ -1284,7 +1284,7 @@ export async function* streamEvaluateInput(
     const maxContextChars = 12000;
     const maxSourceContextChars = 6000;
     const maxDesignMemoryChars = 14000;
-    const defaultDiagramPolicy = "incremental_auto_apply_v1";
+    const defaultDiagramPolicy = "derived_from_structured_state_v1";
     const safeContext = typeof context === "string" && context.trim()
         ? context.trim().slice(0, maxContextChars)
         : "";
@@ -1306,7 +1306,7 @@ export async function* streamEvaluateInput(
     const designMemoryBlock = safeDesignMemory
         ? `\n\n# Persistent Design Memory\n${safeDesignMemory}`
         : "";
-    const diagramStabilityBlock = `\n\n# Diagram Stability Contract (${normalizedDiagramPolicy})\n- Baseline architecture diagram is the source of truth.\n- Output will be auto-applied, so only make changes when user input requires architecture changes.\n- Prefer minimal incremental updates; do not rewrite the full diagram unless user explicitly requests a structural redesign.\n- If the latest user input does not impact architecture, keep the diagram logically unchanged.\n- Reuse existing node names and existing edges whenever possible.\n- Avoid cosmetic-only rewrites and avoid reordering nodes without functional impact.\n- Always output <diagram>, but keep it stable and continuity-preserving.`;
+    const diagramStabilityBlock = `\n\n# Diagram Context (${normalizedDiagramPolicy})\n- Architecture pack, decision records, and guardrails are the source of truth.\n- Any Mermaid diagram shown in the workspace is derived locally from structured architecture state.\n- Focus on keeping <architecture_pack>, <decision_records>, and <guardrails> accurate and stable.\n- A legacy <diagram> block is optional debug output only and will NOT be auto-applied back into workspace state.\n- Do not spend tokens rewriting diagram text unless the user explicitly asks to inspect or debug the diagram itself.`;
 
     const coachModeBlock = options?.generationReady
         ? `\n\n# Runtime Mode\nScaffold already exists. Prioritize implementation coaching with phased execution and include <options> for next action buttons.`
@@ -1317,7 +1317,7 @@ export async function* streamEvaluateInput(
     const providerOutputContractBlock = activeProvider === "openai"
         ? interactionMode === "chat"
             ? `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing.\n- Always include one complete <question> block before ending the response.\n- Start <question> early in the stream and let it grow line by line.\n- Only include <options> when they are genuinely useful for the next action.\n- If you include <options>, open that block immediately after </question> and before any hidden sync tags.\n- In <options>, each line may use either "Label::Reply" or "Label::Reply::action_name". Use explicit actions whenever a button should directly trigger a known workflow such as generate_scaffold or open_prd.\n- Do not turn a normal conversation into an architecture-readiness checklist unless the user explicitly asked for that flow.\n- When the latest turn adds durable product, architecture, UX, or delivery facts, append the optional sync tags such as <analysis_clarified>, <architecture_pack>, <decision_records>, <guardrails>, <readiness>, and <is_ready> after the visible answer so workspace progress can stay in sync.`
-            : `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing. You MUST always include one complete <question> block and one complete <options> block before ending the response.\n- Start <question> early in the stream. Do not wait for <diagram>, JSON blocks, or later analysis sections before opening it.\n- Inside <question>, emit short complete lines and let the visible answer grow progressively line by line.\n- Never omit <question>, even if architecture is already clear.\n- If no clarification is strictly required, use <question> to state the recommended next step and ask the user for a light confirmation.\n- Open <options> immediately after the visible <question> text is complete. Do not wait for <diagram>, JSON blocks, or readiness sections.\n- In <options>, each line may use either "Label::Reply" or "Label::Reply::action_name". Use explicit actions whenever a button should directly trigger a known workflow such as generate_scaffold, open_prd, fill_requirement, focus_requirement, or show_blockers.\n- If options are uncertain, still include 3-4 concise options in the required format.\n- Hidden analysis blocks may continue after <options>, but the response is incomplete until both <question> and <options> are present.`
+            : `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing. You MUST always include one complete <question> block and one complete <options> block before ending the response.\n- Start <question> early in the stream. Do not wait for hidden sync blocks or later JSON sections before opening it.\n- Inside <question>, emit short complete lines and let the visible answer grow progressively line by line.\n- Never omit <question>, even if architecture is already clear.\n- If no clarification is strictly required, use <question> to state the recommended next step and ask the user for a light confirmation.\n- Open <options> immediately after the visible <question> text is complete. Do not wait for hidden sync blocks or readiness sections.\n- In <options>, each line may use either "Label::Reply" or "Label::Reply::action_name". Use explicit actions whenever a button should directly trigger a known workflow such as generate_scaffold, open_prd, fill_requirement, focus_requirement, or show_blockers.\n- If options are uncertain, still include 3-4 concise options in the required format.\n- Hidden analysis blocks may continue after <options>, but the response is incomplete until both <question> and <options> are present.`
         : "";
 
     const basePrompt = interactionMode === "chat"
@@ -1545,7 +1545,7 @@ export async function generateProjectResources(
     const resolvedOneClickMode = options?.oneClickMode === "strict_build_v1" ? options.oneClickMode : DEFAULT_ONE_CLICK_MODE;
     const resolvedIdeProfile = options?.ideProfile === "generic" ? options.ideProfile : DEFAULT_IDE_PROFILE;
 
-    let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\n# Output Mode\n${resolvedOutputMode}\n\nApproved Architecture Pack:\n${history}\n\nApproved System Architecture (Mermaid):\n${diagram || "Not provided"}`;
+    let prompt = `${ARCHITECT_SYSTEM_PROMPT}\n\n# Output Mode\n${resolvedOutputMode}\n\nApproved Architecture Pack:\n${history}\n\nDerived Architecture Diagram Preview (Mermaid):\n${diagram || "Not provided"}`;
 
     if (options?.generationContext) {
         prompt += `\n\n# Structured Generation Context (JSON)\n${JSON.stringify(options.generationContext, null, 2)}`;
