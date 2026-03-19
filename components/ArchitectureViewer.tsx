@@ -379,44 +379,6 @@ function buildFallbackSections(
     ].filter((section) => section.items.length > 0);
 }
 
-function buildFallbackDiagramCode(sections: FallbackSection[]) {
-    if (sections.length === 0) return "";
-
-    const lines = ["graph TD"];
-    let nodeCounter = 0;
-    let previousAnchorId: string | null = null;
-
-    sections.forEach((section, sectionIndex) => {
-        const sectionId = `sg_${sectionIndex}`;
-        const sectionTitle = sanitizeFallbackLabel(section.title, 36);
-        lines.push(`subgraph ${sectionId}["${sectionTitle}"]`);
-
-        let firstNodeId: string | null = null;
-        let previousNodeId: string | null = null;
-
-        section.items.forEach((item) => {
-            const nodeId = `n_${nodeCounter++}`;
-            const label = sanitizeFallbackLabel(item, 88);
-            lines.push(`  ${nodeId}["${label}"]`);
-            if (!firstNodeId) firstNodeId = nodeId;
-            if (previousNodeId) {
-                lines.push(`  ${previousNodeId} --> ${nodeId}`);
-            }
-            previousNodeId = nodeId;
-        });
-
-        lines.push("end");
-
-        if (previousAnchorId && firstNodeId) {
-            lines.push(`${previousAnchorId} --> ${firstNodeId}`);
-        }
-
-        previousAnchorId = previousNodeId || previousAnchorId;
-    });
-
-    return lines.join("\n");
-}
-
 type ArchitectureViewerProps = {
     code: string;
     onNodeSelect?: (node: { id: string; label: string }) => void;
@@ -463,10 +425,6 @@ export default function ArchitectureViewer({
         () => buildFallbackSections(architecturePack, decisionRecords, guardrailChecklist, language),
         [architecturePack, decisionRecords, guardrailChecklist, language]
     );
-    const fallbackDiagramCode = useMemo(
-        () => buildFallbackDiagramCode(fallbackSections),
-        [fallbackSections]
-    );
     const hasFallbackContent = fallbackSections.length > 0;
 
     useEffect(() => {
@@ -483,9 +441,15 @@ export default function ArchitectureViewer({
         renderRequestIdRef.current = requestId;
 
         const initAndRender = async () => {
-            if ((!code && !fallbackDiagramCode) || typeof document === 'undefined') return;
+            if (typeof document === 'undefined') return;
+            if (!code?.trim()) {
+                setSvg('');
+                setError(null);
+                setWarning(null);
+                setFallbackReason(null);
+                return;
+            }
             let autoCorrected = false;
-            let usedStructuredFallback = false;
 
             // Dynamically import mermaid (avoids SSR issues)
             if (!mermaidRef.current) {
@@ -536,19 +500,16 @@ export default function ArchitectureViewer({
 
             // Always sanitize first so we fix escaped newlines and malformed subgraphs
             // before Mermaid gets a chance to render unstable HTML labels or partial syntax.
-            const sanitized = sanitizeMermaidCode(code || fallbackDiagramCode);
-            const candidates = Array.from(
-                new Set([sanitized.code, code.trim(), fallbackDiagramCode].filter(Boolean))
-            );
-            let renderCode = candidates[0] || code || fallbackDiagramCode;
+            const sanitized = sanitizeMermaidCode(code);
+            const candidates = Array.from(new Set([sanitized.code, code.trim()].filter(Boolean)));
+            let renderCode = candidates[0] || code;
             let parseFailure: unknown = null;
 
             for (const candidate of candidates) {
                 try {
                     await mermaidInstance.parse(candidate);
                     renderCode = candidate;
-                    usedStructuredFallback = Boolean(fallbackDiagramCode) && candidate === fallbackDiagramCode && candidate !== code.trim();
-                    autoCorrected = candidate !== code.trim() && !usedStructuredFallback;
+                    autoCorrected = candidate !== code.trim();
                     parseFailure = null;
                     break;
                 } catch (candidateError) {
@@ -595,13 +556,9 @@ export default function ArchitectureViewer({
                 setError(null);
                 setFallbackReason(null);
                 setWarning(
-                    usedStructuredFallback
-                        ? (language === "zh"
-                            ? "已切换到基于结构化架构数据生成的稳定视图。"
-                            : "Switched to a stable view generated from structured architecture data.")
-                        : autoCorrected
-                            ? "Diagram had syntax issues and was auto-corrected."
-                            : null
+                    autoCorrected
+                        ? "Diagram had syntax issues and was auto-corrected."
+                        : null
                 );
                 hasRenderedRef.current = true;
             } catch (renderError) {
@@ -637,7 +594,7 @@ export default function ArchitectureViewer({
             cancelled = true;
             window.clearTimeout(timeoutId);
         };
-    }, [code, fallbackDiagramCode, hasFallbackContent, language]);
+    }, [code, hasFallbackContent, language]);
 
     const fitDiagramToViewport = useCallback(() => {
         const container = containerRef.current;
