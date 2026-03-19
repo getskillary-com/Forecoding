@@ -644,6 +644,7 @@ function inferRequirementKeyFromConversation(
     if (/bounded context|限界上下文/i.test(source)) return "boundaries.bounded_contexts";
     if (/module responsibility|模块职责|核心模块|module/i.test(source)) return "boundaries.module_responsibilities";
     if (/data ownership|ownership|retention|账户归属|数据归属|保留期|匿名|登录体系/i.test(source)) return "boundaries.data_ownership";
+    if (/architecture decision|decision record|架构决策|技术栈|stack|framework|hosting|backend|deploy|托管|部署|框架/i.test(source)) return "decisions.decision_records";
     if (/integration contract|输入输出契约|api contract|集成契约/i.test(source)) return "decisions.integration_contracts";
     if (/non-functional|timeout|retry|超时|重试|性能|稳定性|可用性|隐私|latency|availability/i.test(source)) return "decisions.non_functional_requirements";
     if (/implementation order|phase|开发计划|推进开发|顺序推进|三个阶段/i.test(source)) return "guardrails.implementation_order";
@@ -671,6 +672,38 @@ function extractListLikeItems(answer: string, maxItems: number = 8) {
         .split(/[；;]\s*/g)
         .map((item) => item.trim())
         .filter((item) => item.length >= 8);
+    if (clauseItems.length >= 2) return normalizeStringList(clauseItems, maxItems);
+
+    return [];
+}
+
+function extractStructuredStageItems(
+    answer: string,
+    maxItems: number = 8,
+    minChars: number = 8
+) {
+    const normalized = normalizeConversationText(answer);
+    if (!normalized) return [];
+
+    const listItems = extractListLikeItems(normalized, maxItems);
+    if (listItems.length >= 2) return listItems;
+
+    const paragraphItems = normalized
+        .split(/\n{2,}/)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= minChars);
+    if (paragraphItems.length >= 2) return normalizeStringList(paragraphItems, maxItems);
+
+    const sentenceItems = normalized
+        .split(/[。！？!?]\s*/g)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= minChars);
+    if (sentenceItems.length >= 2) return normalizeStringList(sentenceItems, maxItems);
+
+    const clauseItems = normalized
+        .split(/[；;，,、]\s*/g)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= minChars);
     if (clauseItems.length >= 2) return normalizeStringList(clauseItems, maxItems);
 
     return [];
@@ -938,19 +971,22 @@ function syncStructuredStateFromConversation(input: {
                 };
                 break;
             case "boundaries.module_responsibilities":
+                {
+                    const responsibilityItems = extractStructuredStageItems(answer, 6, 10);
                 architecturePack = {
                     ...architecturePack,
                     moduleResponsibilities: mergeObjectsByStableKey(
                         architecturePack.moduleResponsibilities,
-                        [{
-                            module: deriveContextNameFromText(answer, "Core module"),
-                            responsibility: answer,
+                        (responsibilityItems.length > 0 ? responsibilityItems : [answer]).map((entry) => ({
+                            module: deriveContextNameFromText(entry, "Core module"),
+                            responsibility: entry,
                             inputs: [],
                             outputs: []
-                        }],
+                        })),
                         (module) => module.module
                     )
                 };
+                }
                 break;
             case "boundaries.data_ownership":
                 architecturePack = {
@@ -967,6 +1003,20 @@ function syncStructuredStateFromConversation(input: {
                     )
                 };
                 break;
+            case "decisions.decision_records": {
+                const decisionItems = extractStructuredStageItems(answer, 4, 12);
+                const candidateRecords = (decisionItems.length > 0 ? decisionItems : [answer])
+                    .map((entry) => maybeCreateDecisionRecordFromConversation(item.question, entry))
+                    .filter((record): record is DecisionRecord => Boolean(record));
+                if (candidateRecords.length > 0) {
+                    decisionRecords = mergeObjectsByStableKey(
+                        decisionRecords,
+                        candidateRecords,
+                        (record) => `${record.title}::${record.decision}`
+                    );
+                }
+                break;
+            }
             case "decisions.integration_contracts":
                 architecturePack = {
                     ...architecturePack,
@@ -1001,34 +1051,43 @@ function syncStructuredStateFromConversation(input: {
                 break;
             }
             case "guardrails.implementation_order":
+                {
+                    const implementationItems = extractStructuredStageItems(answer, 8, 10);
                 guardrailChecklist = {
                     ...guardrailChecklist,
                     implementationOrder: mergeStringValues(
                         guardrailChecklist.implementationOrder,
-                        listItems.length > 0 ? listItems : [answer],
+                        implementationItems.length > 0 ? implementationItems : (listItems.length > 0 ? listItems : [answer]),
                         12
                     )
                 };
+                }
                 break;
             case "guardrails.acceptance_criteria":
+                {
+                    const acceptanceItems = extractStructuredStageItems(answer, 10, 12);
                 guardrailChecklist = {
                     ...guardrailChecklist,
                     acceptanceCriteria: mergeStringValues(
                         guardrailChecklist.acceptanceCriteria,
-                        listItems.length > 0 ? listItems : [answer],
+                        acceptanceItems.length > 0 ? acceptanceItems : (listItems.length > 0 ? listItems : [answer]),
                         16
                     )
                 };
+                }
                 break;
             case "guardrails.test_strategy":
+                {
+                    const testItems = extractStructuredStageItems(answer, 8, 10);
                 guardrailChecklist = {
                     ...guardrailChecklist,
                     testStrategy: mergeStringValues(
                         guardrailChecklist.testStrategy,
-                        listItems.length > 0 ? listItems : [answer],
+                        testItems.length > 0 ? testItems : (listItems.length > 0 ? listItems : [answer]),
                         12
                     )
                 };
+                }
                 break;
             case "ui.key_screens":
                 architecturePack = {
