@@ -358,9 +358,19 @@ function isConcreteJourney(value: string) {
         (READINESS_OUTCOME_PATTERN.test(value) || READINESS_CONSEQUENCE_PATTERN.test(value) || hasStructuredFlow(value));
 }
 
+const READINESS_RISK_SIGNAL_PATTERN = /\b(risk|risks|worried|concern|failure|outage|hallucination|abuse|fraud|downtime|leak|loss|overspend|quota)\b|风险|担心|最怕|怕|爆表|刷爆|幻觉|失真|资损|泄露|丢失|滥用|故障|宕机/i;
+const READINESS_CONSTRAINT_SIGNAL_PATTERN = /\b(constraint|constraints|must|need|require|required|limit|limited|deadline|timeline|budget|cost|quota|rate limit|performance|latency|stability)\b|约束|限制|必须|需要|限流|防刷|周期|预算|成本|性能|延迟|稳定性|上线/i;
+
 function isConcreteConstraintOrRisk(value: string) {
-    return isMeaningfulText(value, 10) &&
-        (READINESS_CONSEQUENCE_PATTERN.test(value) || READINESS_MEASURABLE_PATTERN.test(value) || READINESS_ACTION_PATTERN.test(value));
+    return isMeaningfulText(value, 6) &&
+        (
+            READINESS_CONSEQUENCE_PATTERN.test(value) ||
+            READINESS_MEASURABLE_PATTERN.test(value) ||
+            READINESS_ACTION_PATTERN.test(value) ||
+            READINESS_RISK_SIGNAL_PATTERN.test(value) ||
+            READINESS_CONSTRAINT_SIGNAL_PATTERN.test(value)
+        ) &&
+        (hasMultipleConcreteTerms(value) || countCjkChars(value) >= 4 || /\d/.test(value));
 }
 
 function isConcreteBoundedContext(context: ArchitecturePack["boundedContexts"][number]) {

@@ -676,6 +676,52 @@ function extractListLikeItems(answer: string, maxItems: number = 8) {
     return [];
 }
 
+const CONVERSATION_CONSTRAINT_PATTERN = /constraint|限制|约束|必须|需要|需|require|required|must|limit|limited|quota|rate limit|限流|防刷|deadline|timeline|时间|周期|天内|周内|预算|成本|performance|latency|stability|上线/i;
+const CONVERSATION_RISK_PATTERN = /risk|风险|担心|最怕|怕|worried|concern|爆表|刷爆|幻觉|失真|错误|失败|中断|丢失|泄露|滥用|资损|不稳定|崩溃/i;
+
+function extractConstraintRiskItems(answer: string) {
+    const normalized = normalizeConversationText(answer);
+    if (!normalized) {
+        return {
+            constraintItems: [] as string[],
+            riskItems: [] as string[]
+        };
+    }
+
+    const punctuationItems = normalized
+        .split(/[；;，,\n]/)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= 4);
+
+    const candidates = normalizeStringList([
+        ...extractListLikeItems(normalized, 10),
+        ...punctuationItems,
+        normalized
+    ], 12);
+
+    const riskItems = normalizeStringList(
+        candidates.filter((entry) => CONVERSATION_RISK_PATTERN.test(entry)),
+        10
+    );
+    const constraintItems = normalizeStringList(
+        candidates.filter(
+            (entry) =>
+                !riskItems.includes(entry) &&
+                CONVERSATION_CONSTRAINT_PATTERN.test(entry)
+        ),
+        10
+    );
+
+    return {
+        constraintItems: constraintItems.length > 0 || !CONVERSATION_CONSTRAINT_PATTERN.test(normalized)
+            ? constraintItems
+            : [normalized],
+        riskItems: riskItems.length > 0 || !CONVERSATION_RISK_PATTERN.test(normalized)
+            ? riskItems
+            : [normalized]
+    };
+}
+
 function extractJourneyItems(answer: string) {
     const normalized = normalizeConversationText(answer);
     if (!normalized) return [];
@@ -859,8 +905,13 @@ function syncStructuredStateFromConversation(input: {
                 break;
             case "business_context.constraints_or_risks": {
                 const additions = listItems.length > 0 ? listItems : [answer];
-                const riskItems = additions.filter((entry) => /risk|风险|丢失|失败|错误|误差|中断/i.test(entry));
-                const constraintItems = additions.filter((entry) => !riskItems.includes(entry));
+                const extractedItems = extractConstraintRiskItems(answer);
+                const riskItems = extractedItems.riskItems.length > 0
+                    ? extractedItems.riskItems
+                    : additions.filter((entry) => CONVERSATION_RISK_PATTERN.test(entry));
+                const constraintItems = extractedItems.constraintItems.length > 0
+                    ? extractedItems.constraintItems
+                    : additions.filter((entry) => !riskItems.includes(entry));
                 architecturePack = {
                     ...architecturePack,
                     businessContext: {
