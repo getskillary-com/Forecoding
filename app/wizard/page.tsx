@@ -8060,7 +8060,14 @@ Do you want to start scaffold generation now?`;
                         <div className="absolute inset-0 overflow-y-auto">
                             <div className="h-full min-h-[520px]">
                                 {shouldMountArchitectureViewer ? (
-                                    <ArchitectureViewer code={architectureViewerCode} onNodeSelect={handleArchitectureNodeSelect} language={workspaceLanguage} />
+                                    <ArchitectureViewer
+                                        code={architectureViewerCode}
+                                        onNodeSelect={handleArchitectureNodeSelect}
+                                        language={workspaceLanguage}
+                                        architecturePack={workingArchitectureState.architecturePack}
+                                        decisionRecords={workingArchitectureState.decisionRecords}
+                                        guardrailChecklist={workingArchitectureState.guardrailChecklist}
+                                    />
                                 ) : (
                                     <ArchitecturePanelPlaceholder />
                                 )}

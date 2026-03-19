@@ -1,7 +1,8 @@
 ﻿
 "use client";
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkspaceLanguage } from "@/lib/project-language";
+import type { ArchitecturePack, DecisionRecord, GuardrailChecklist } from "@/types";
 
 // Custom CSS styles to inject into the SVG for enhanced visuals
 const customStyles = `
@@ -284,10 +285,145 @@ function extractNodeId(node: Element, fallback: string) {
     return normalizeNodeText(id || fallback);
 }
 
+type FallbackSection = {
+    title: string;
+    items: string[];
+};
+
+function clipDiagramLabel(value: string, maxChars: number) {
+    if (value.length <= maxChars) return value;
+    return `${value.slice(0, maxChars - 3)}...`;
+}
+
+function sanitizeFallbackLabel(value: string, maxChars: number = 92) {
+    return clipDiagramLabel(
+        value
+            .replace(/<[^>]+>/g, " ")
+            .replace(/[`"]/g, "'")
+            .replace(/[{}\[\]|]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim(),
+        maxChars
+    );
+}
+
+function normalizeFallbackItems(items: string[], maxItems: number = 6) {
+    const seen = new Set<string>();
+    return items
+        .map((item) => sanitizeFallbackLabel(item))
+        .filter((item) => item.length > 0)
+        .filter((item) => {
+            const key = item.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
+        .slice(0, maxItems);
+}
+
+function buildFallbackSections(
+    architecturePack?: ArchitecturePack,
+    decisionRecords: DecisionRecord[] = [],
+    guardrailChecklist?: GuardrailChecklist,
+    language: WorkspaceLanguage = "en"
+): FallbackSection[] {
+    if (!architecturePack) return [];
+
+    const isZh = language === "zh";
+    const businessItems = normalizeFallbackItems([
+        architecturePack.businessContext.productGoal
+            ? `${isZh ? "产品目标" : "Product goal"}: ${architecturePack.businessContext.productGoal}`
+            : "",
+        architecturePack.platformStrategy.primaryPlatform
+            ? `${isZh ? "首发平台" : "Primary platform"}: ${architecturePack.platformStrategy.primaryPlatform}`
+            : "",
+        ...architecturePack.businessContext.targetUsers.map((item) => `${isZh ? "目标用户" : "User"}: ${item}`),
+        ...architecturePack.businessContext.constraints.slice(0, 2).map((item) => `${isZh ? "约束" : "Constraint"}: ${item}`),
+        ...architecturePack.businessContext.risks.slice(0, 2).map((item) => `${isZh ? "风险" : "Risk"}: ${item}`)
+    ], 8);
+
+    const structureItems = normalizeFallbackItems([
+        ...architecturePack.boundedContexts.map((item) => `${item.name}: ${item.responsibility}`),
+        ...architecturePack.moduleResponsibilities.map((item) => `${item.module}: ${item.responsibility}`)
+    ], 8);
+
+    const dataItems = normalizeFallbackItems([
+        ...architecturePack.dataOwnership.map((item) => `${item.data} -> ${item.owner}`),
+        ...architecturePack.integrationContracts.map((item) => `${item.name}: ${item.producer} -> ${item.consumer}`)
+    ], 8);
+
+    const deliveryItems = normalizeFallbackItems([
+        ...architecturePack.nonFunctionalRequirements.map((item) => `${item.category}: ${item.requirement}`),
+        ...decisionRecords.slice(0, 3).map((item) => item.decision || item.title),
+        ...(guardrailChecklist?.implementationOrder || []).slice(0, 3),
+        ...(guardrailChecklist?.testStrategy || []).slice(0, 2)
+    ], 8);
+
+    return [
+        {
+            title: isZh ? "业务背景" : "Business context",
+            items: businessItems
+        },
+        {
+            title: isZh ? "核心结构" : "Core structure",
+            items: structureItems
+        },
+        {
+            title: isZh ? "数据与集成" : "Data and integrations",
+            items: dataItems
+        },
+        {
+            title: isZh ? "交付护栏" : "Delivery guardrails",
+            items: deliveryItems
+        }
+    ].filter((section) => section.items.length > 0);
+}
+
+function buildFallbackDiagramCode(sections: FallbackSection[]) {
+    if (sections.length === 0) return "";
+
+    const lines = ["graph TD"];
+    let nodeCounter = 0;
+    let previousAnchorId: string | null = null;
+
+    sections.forEach((section, sectionIndex) => {
+        const sectionId = `sg_${sectionIndex}`;
+        const sectionTitle = sanitizeFallbackLabel(section.title, 36);
+        lines.push(`subgraph ${sectionId}["${sectionTitle}"]`);
+
+        let firstNodeId: string | null = null;
+        let previousNodeId: string | null = null;
+
+        section.items.forEach((item) => {
+            const nodeId = `n_${nodeCounter++}`;
+            const label = sanitizeFallbackLabel(item, 88);
+            lines.push(`  ${nodeId}["${label}"]`);
+            if (!firstNodeId) firstNodeId = nodeId;
+            if (previousNodeId) {
+                lines.push(`  ${previousNodeId} --> ${nodeId}`);
+            }
+            previousNodeId = nodeId;
+        });
+
+        lines.push("end");
+
+        if (previousAnchorId && firstNodeId) {
+            lines.push(`${previousAnchorId} --> ${firstNodeId}`);
+        }
+
+        previousAnchorId = previousNodeId || previousAnchorId;
+    });
+
+    return lines.join("\n");
+}
+
 type ArchitectureViewerProps = {
     code: string;
     onNodeSelect?: (node: { id: string; label: string }) => void;
     language: WorkspaceLanguage;
+    architecturePack?: ArchitecturePack;
+    decisionRecords?: DecisionRecord[];
+    guardrailChecklist?: GuardrailChecklist;
 };
 
 type HoveredNodeState = {
@@ -297,10 +433,18 @@ type HoveredNodeState = {
     y: number;
 } | null;
 
-export default function ArchitectureViewer({ code, onNodeSelect, language }: ArchitectureViewerProps) {
+export default function ArchitectureViewer({
+    code,
+    onNodeSelect,
+    language,
+    architecturePack,
+    decisionRecords = [],
+    guardrailChecklist
+}: ArchitectureViewerProps) {
     const [svg, setSvg] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [warning, setWarning] = useState<string | null>(null);
+    const [fallbackReason, setFallbackReason] = useState<string | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -315,6 +459,15 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
     const initializedRef = useRef(false);
     const hasRenderedRef = useRef(false);
     const renderRequestIdRef = useRef(0);
+    const fallbackSections = useMemo(
+        () => buildFallbackSections(architecturePack, decisionRecords, guardrailChecklist, language),
+        [architecturePack, decisionRecords, guardrailChecklist, language]
+    );
+    const fallbackDiagramCode = useMemo(
+        () => buildFallbackDiagramCode(fallbackSections),
+        [fallbackSections]
+    );
+    const hasFallbackContent = fallbackSections.length > 0;
 
     useEffect(() => {
         zoomRef.current = zoom;
@@ -330,8 +483,9 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
         renderRequestIdRef.current = requestId;
 
         const initAndRender = async () => {
-            if (!code || typeof document === 'undefined') return;
+            if ((!code && !fallbackDiagramCode) || typeof document === 'undefined') return;
             let autoCorrected = false;
+            let usedStructuredFallback = false;
 
             // Dynamically import mermaid (avoids SSR issues)
             if (!mermaidRef.current) {
@@ -382,16 +536,19 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
 
             // Always sanitize first so we fix escaped newlines and malformed subgraphs
             // before Mermaid gets a chance to render unstable HTML labels or partial syntax.
-            const sanitized = sanitizeMermaidCode(code);
-            const candidates = Array.from(new Set([sanitized.code, code.trim()].filter(Boolean)));
-            let renderCode = candidates[0] || code;
+            const sanitized = sanitizeMermaidCode(code || fallbackDiagramCode);
+            const candidates = Array.from(
+                new Set([sanitized.code, code.trim(), fallbackDiagramCode].filter(Boolean))
+            );
+            let renderCode = candidates[0] || code || fallbackDiagramCode;
             let parseFailure: unknown = null;
 
             for (const candidate of candidates) {
                 try {
                     await mermaidInstance.parse(candidate);
                     renderCode = candidate;
-                    autoCorrected = candidate !== code.trim();
+                    usedStructuredFallback = Boolean(fallbackDiagramCode) && candidate === fallbackDiagramCode && candidate !== code.trim();
+                    autoCorrected = candidate !== code.trim() && !usedStructuredFallback;
                     parseFailure = null;
                     break;
                 } catch (candidateError) {
@@ -406,6 +563,14 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                     setWarning(`Using last valid diagram: ${message}`);
                     return;
                 }
+                if (hasFallbackContent) {
+                    setSvg('');
+                    setError(null);
+                    setWarning(null);
+                    setFallbackReason(message);
+                    return;
+                }
+                setFallbackReason(null);
                 setError(message);
                 setWarning(null);
                 return;
@@ -428,7 +593,16 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
 
                 setSvg(styledSvg);
                 setError(null);
-                setWarning(autoCorrected ? "Diagram had syntax issues and was auto-corrected." : null);
+                setFallbackReason(null);
+                setWarning(
+                    usedStructuredFallback
+                        ? (language === "zh"
+                            ? "已切换到基于结构化架构数据生成的稳定视图。"
+                            : "Switched to a stable view generated from structured architecture data.")
+                        : autoCorrected
+                            ? "Diagram had syntax issues and was auto-corrected."
+                            : null
+                );
                 hasRenderedRef.current = true;
             } catch (renderError) {
                 if (cancelled || requestId !== renderRequestIdRef.current) return;
@@ -438,6 +612,14 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                     setWarning(`Using last valid diagram: ${message}`);
                     return;
                 }
+                if (hasFallbackContent) {
+                    setSvg('');
+                    setError(null);
+                    setWarning(null);
+                    setFallbackReason(message);
+                    return;
+                }
+                setFallbackReason(null);
                 setError(message);
                 setWarning(null);
             } finally {
@@ -455,7 +637,7 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
             cancelled = true;
             window.clearTimeout(timeoutId);
         };
-    }, [code]);
+    }, [code, fallbackDiagramCode, hasFallbackContent, language]);
 
     const fitDiagramToViewport = useCallback(() => {
         const container = containerRef.current;
@@ -730,6 +912,49 @@ export default function ArchitectureViewer({ code, onNodeSelect, language }: Arc
                         onClick={handleSvgClick}
                         dangerouslySetInnerHTML={{ __html: svg }}
                     />
+                ) : hasFallbackContent ? (
+                    <div className="absolute inset-0 overflow-auto px-5 py-5">
+                        <div className="mx-auto flex h-full max-w-6xl flex-col gap-4">
+                            <div className="rounded-2xl border border-sky-400/25 bg-slate-950/80 px-4 py-3 text-sm text-slate-200 shadow-xl backdrop-blur">
+                                <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300/75">
+                                    {language === "zh" ? "稳定视图" : "Stable view"}
+                                </div>
+                                <div className="mt-1 font-medium text-slate-50">
+                                    {language === "zh"
+                                        ? "当前展示的是基于结构化架构数据生成的稳定架构视图。"
+                                        : "This is a stable architecture view generated from structured architecture data."}
+                                </div>
+                                {fallbackReason ? (
+                                    <div className="mt-2 text-xs text-slate-400">
+                                        {language === "zh" ? "Mermaid 原始渲染失败：" : "Original Mermaid render failed: "} {fallbackReason}
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                                {fallbackSections.map((section) => (
+                                    <div
+                                        key={section.title}
+                                        className="rounded-3xl border border-slate-800/80 bg-slate-950/75 p-4 shadow-2xl shadow-slate-950/30 backdrop-blur"
+                                    >
+                                        <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-sky-300/75">
+                                            {section.title}
+                                        </div>
+                                        <div className="space-y-3">
+                                            {section.items.map((item) => (
+                                                <div
+                                                    key={item}
+                                                    className="rounded-2xl border border-slate-800 bg-slate-900/90 px-3 py-3 text-sm leading-6 text-slate-100"
+                                                >
+                                                    {item}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
                 ) : error ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 pointer-events-none">
                         <svg className="w-12 h-12 mb-2 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
