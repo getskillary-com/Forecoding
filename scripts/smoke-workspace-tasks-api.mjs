@@ -79,6 +79,19 @@ function quoteForCmdArg(value) {
     return escaped;
 }
 
+async function fetchWithTimeout(url, init, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, {
+            ...init,
+            signal: controller.signal
+        });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 function spawnDevServer(port) {
     const child = process.platform === "win32"
         ? spawn(
@@ -143,12 +156,12 @@ async function waitForServer(url, timeoutMs, readLogs, getExitState) {
         }
 
         try {
-            const response = await fetch(url, {
+            const response = await fetchWithTimeout(url, {
                 method: "GET",
                 headers: {
                     accept: "application/json"
                 }
-            });
+            }, 5_000);
 
             if (response.status >= 200 && response.status < 500) {
                 return;
@@ -175,21 +188,64 @@ function terminateProcess(child) {
 
     if (process.platform === "win32") {
         return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+            };
             const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
                 stdio: "ignore",
                 windowsHide: true
             });
-            killer.on("close", () => resolve());
-            killer.on("error", () => resolve());
+            const timeout = setTimeout(finish, 10_000);
+            killer.on("close", () => {
+                clearTimeout(timeout);
+                finish();
+            });
+            killer.on("error", () => {
+                clearTimeout(timeout);
+                finish();
+            });
         });
     }
 
     return new Promise((resolve) => {
-        child.once("close", () => resolve());
-        child.kill("SIGTERM");
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        };
+        const hardTimeout = setTimeout(() => {
+            if (child.exitCode === null) {
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    // Best-effort cleanup before resolving.
+                }
+            }
+            finish();
+        }, 10_000);
+
+        child.once("close", () => {
+            clearTimeout(hardTimeout);
+            finish();
+        });
+        try {
+            child.kill("SIGTERM");
+        } catch {
+            clearTimeout(hardTimeout);
+            finish();
+            return;
+        }
         setTimeout(() => {
             if (child.exitCode === null) {
-                child.kill("SIGKILL");
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    // Process may have already terminated.
+                }
             }
         }, 3000);
     });
@@ -242,18 +298,19 @@ async function main() {
     try {
         await waitForServer(taskApiUrl, args.timeoutMs, () => output.read(), () => exitState);
 
-        const getRes = await fetch(
+        const getRes = await fetchWithTimeout(
             `${taskApiUrl}?projectId=smoke-project&versionId=smoke-version`,
             {
                 method: "GET",
                 headers: {
                     accept: "application/json"
                 }
-            }
+            },
+            30_000
         );
         await assertUnauthorizedJson(getRes, "GET /api/workspace/tasks", () => output.read());
 
-        const postRes = await fetch(taskApiUrl, {
+        const postRes = await fetchWithTimeout(taskApiUrl, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
@@ -265,7 +322,7 @@ async function main() {
                 mode: "strict",
                 persist: true
             })
-        });
+        }, 30_000);
         await assertUnauthorizedJson(postRes, "POST /api/workspace/tasks", () => output.read());
 
         process.stdout.write(

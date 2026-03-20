@@ -274,21 +274,64 @@ function terminateProcess(child) {
 
     if (process.platform === "win32") {
         return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+            };
             const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
                 stdio: "ignore",
                 windowsHide: true
             });
-            killer.on("close", () => resolve());
-            killer.on("error", () => resolve());
+            const timeout = setTimeout(finish, 10_000);
+            killer.on("close", () => {
+                clearTimeout(timeout);
+                finish();
+            });
+            killer.on("error", () => {
+                clearTimeout(timeout);
+                finish();
+            });
         });
     }
 
     return new Promise((resolve) => {
-        child.once("close", () => resolve());
-        child.kill("SIGTERM");
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        };
+        const hardTimeout = setTimeout(() => {
+            if (child.exitCode === null) {
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    // Best-effort cleanup before resolving.
+                }
+            }
+            finish();
+        }, 10_000);
+
+        child.once("close", () => {
+            clearTimeout(hardTimeout);
+            finish();
+        });
+        try {
+            child.kill("SIGTERM");
+        } catch {
+            clearTimeout(hardTimeout);
+            finish();
+            return;
+        }
         setTimeout(() => {
             if (child.exitCode === null) {
-                child.kill("SIGKILL");
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    // Process may have already terminated.
+                }
             }
         }, 3000);
     });
