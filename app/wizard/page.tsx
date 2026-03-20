@@ -3461,9 +3461,7 @@ function buildBlockersSummary(
     language: "zh" | "en",
     readiness: ReadinessChecklist
 ) {
-    const incompleteRequirements = readiness.criteria.flatMap((criterion) =>
-        criterion.requirements.filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
-    );
+    const incompleteRequirements = listIncompleteReadinessRequirements(readiness);
 
     if (incompleteRequirements.length === 0) {
         return language === "zh" ? "当前没有未完成的 readiness 阻塞项。" : "There are no remaining readiness blockers.";
@@ -3477,6 +3475,32 @@ function buildBlockersSummary(
         language === "zh" ? "当前阻塞项：" : "Current blockers:",
         ...lines
     ].join("\n");
+}
+
+function listIncompleteReadinessRequirements(
+    readiness: ReadinessChecklist
+): ReadinessRequirement[] {
+    return readiness.criteria.flatMap((criterion) =>
+        criterion.requirements.filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
+    );
+}
+
+function buildReadinessBlockingReasons(readiness: ReadinessChecklist): string[] {
+    if (readiness.blockingIssues.length > 0) {
+        return readiness.blockingIssues;
+    }
+    const incomplete = listIncompleteReadinessRequirements(readiness);
+    if (incomplete.length > 0) {
+        const first = incomplete[0];
+        return [first.missing[0] || `Complete ${first.label}.`];
+    }
+    return [];
+}
+
+function isReadinessGateReady(readiness: ReadinessChecklist): boolean {
+    return readiness.functionalReady
+        && readiness.uiReady
+        && listIncompleteReadinessRequirements(readiness).length === 0;
 }
 
 type PrdStatusCardTone = "sky" | "emerald" | "amber" | "slate";
@@ -3719,6 +3743,10 @@ function buildPrdProjectionModel(
     prdDeltas: PrdDelta[],
     canGenerate: boolean
 ): PrdProjectionModel {
+    const readinessGateReady = isReadinessGateReady(readiness);
+    const effectiveCanGenerate = canGenerate && readinessGateReady;
+    const incompleteRequirements = listIncompleteReadinessRequirements(readiness);
+    const blockingReasons = buildReadinessBlockingReasons(readiness);
     const confirmedScope: string[] = [];
     const pendingQuestions: PrdPendingQuestionItem[] = [];
     const changeLog = buildPrdChangeLog(language, prdDeltas);
@@ -3728,7 +3756,7 @@ function buildPrdProjectionModel(
     const constraints = joinPrdItems(language, architecturePack.businessContext.constraints, 3);
     const risks = joinPrdItems(language, architecturePack.businessContext.risks, 3);
     const keyScreens = joinPrdItems(language, architecturePack.experienceConstraints.keyScreens, 3);
-    const primaryBlocker = canGenerate
+    const primaryBlocker = effectiveCanGenerate
         ? (
             language === "zh"
                 ? "当前没有阻塞项，可以开始生成或继续微调。"
@@ -3736,7 +3764,7 @@ function buildPrdProjectionModel(
         )
         : translateReadinessText(
             language,
-            readiness.blockingIssues[0] || (
+            blockingReasons[0] || (
                 language === "zh"
                     ? "还需要继续补齐当前最关键的缺口。"
                     : "There is still a key gap to close."
@@ -3800,9 +3828,6 @@ function buildPrdProjectionModel(
             : null
     );
 
-    const incompleteRequirements = readiness.criteria.flatMap((criterion) =>
-        criterion.requirements.filter((requirement) => requirement.status === "missing" || requirement.status === "partial")
-    );
     for (const requirement of incompleteRequirements.slice(0, 3)) {
         pendingQuestions.push({
             requirementKey: requirement.key,
@@ -3824,7 +3849,7 @@ function buildPrdProjectionModel(
         translateReadinessText(
             language,
             readiness.nextMilestone || pendingQuestions[0]?.detail || (
-                canGenerate
+                effectiveCanGenerate
                     ? (
                         language === "zh"
                             ? "可以开始生成，或者继续打磨已确认范围。"
@@ -3869,11 +3894,11 @@ function buildPrdProjectionModel(
     const implementationReadiness: PrdStatusCardItem[] = [
         {
             label: language === "zh" ? "生成状态" : "Generation gate",
-            value: canGenerate
+            value: effectiveCanGenerate
                 ? (language === "zh" ? "可以开始生成" : "Ready to generate")
                 : (language === "zh" ? "仍需补齐" : "Not ready yet"),
             detail: primaryBlocker,
-            tone: canGenerate ? "emerald" : "amber"
+            tone: effectiveCanGenerate ? "emerald" : "amber"
         },
         {
             label: language === "zh" ? "功能准备" : "Functional readiness",
@@ -3923,7 +3948,7 @@ function buildPrdProjectionModel(
         {
             label: language === "zh" ? "总体进度" : "Overall progress",
             value: buildPrdProgressLine(language, readiness),
-            detail: canGenerate
+            detail: effectiveCanGenerate
                 ? (
                     language === "zh"
                         ? "当前范围已经满足生成门槛，可以进入代码脚手架阶段。"
@@ -3946,7 +3971,7 @@ function buildPrdProjectionModel(
                         ? "当前没有待确认事项，可以继续完善需求摘要或开始生成。"
                         : "There are no pending decisions right now. You can keep polishing the requirements summary or start generation."
                 ),
-            tone: canGenerate ? "emerald" : "amber"
+            tone: effectiveCanGenerate ? "emerald" : "amber"
         },
         {
             label: language === "zh" ? "当前阻塞" : "Primary blocker",
@@ -3962,7 +3987,7 @@ function buildPrdProjectionModel(
                         ? "继续处理当前最关键的缺口。"
                         : "Continue with the highest-impact remaining gap."
                 ),
-            tone: canGenerate ? "emerald" : "amber"
+            tone: effectiveCanGenerate ? "emerald" : "amber"
         },
         {
             label: language === "zh" ? "最近更新" : "Latest update",
@@ -4985,13 +5010,19 @@ function WizardContent() {
         guardrailChecklist: workingArchitectureState.guardrailChecklist,
         readinessOverrides
     });
+    const computedReadinessBlockers = buildReadinessBlockingReasons(workingScaffoldEligibility.readiness);
+    const generationReady = workingScaffoldEligibility.canGenerate
+        && isReadinessGateReady(workingScaffoldEligibility.readiness);
     const activeScaffoldEligibility = workingScaffoldEligibility;
     const activeArchitectureStage = workingArchitectureState.stage;
     const activeDesignStage = activeScaffoldEligibility.designStage;
-    const generationReady = activeScaffoldEligibility.canGenerate;
     const architectureCompletion = activeScaffoldEligibility.readiness.score;
-    const readinessBlockers = activeScaffoldEligibility.blockingReasons;
-    const isReadyToGenerateStage = activeScaffoldEligibility.canGenerate;
+    const readinessBlockers = generationReady
+        ? []
+        : (activeScaffoldEligibility.blockingReasons.length > 0
+            ? activeScaffoldEligibility.blockingReasons
+            : computedReadinessBlockers);
+    const isReadyToGenerateStage = generationReady;
     const architectureViewerCode = workingDerivedDiagram;
     const isConversationLocked = Boolean(
         generationArtifacts.virtual_spec ||
@@ -5193,8 +5224,8 @@ function WizardContent() {
             readinessOverrides: nextReadinessOverrides,
             readiness: nextEligibility.readiness,
             stage: nextStage,
-            canGenerate: nextEligibility.canGenerate,
-            blockingReasons: nextEligibility.blockingReasons,
+            canGenerate: nextEligibility.canGenerate && isReadinessGateReady(nextEligibility.readiness),
+            blockingReasons: buildReadinessBlockingReasons(nextEligibility.readiness),
             designStage: nextEligibility.designStage,
             currentDiagram: nextDiagram,
             messages: nextMessages
@@ -6387,7 +6418,7 @@ function WizardContent() {
                     }
                 }
                 currentEval.readiness = nextReadiness;
-                currentEval.is_ready = currentEval.readiness.functionalReady && currentEval.readiness.uiReady;
+                currentEval.is_ready = isReadinessGateReady(currentEval.readiness);
                 currentEval.density_score = currentEval.readiness.score;
 
                 if (!currentEval.stage) {
@@ -6548,7 +6579,8 @@ function WizardContent() {
                 const coercedPlatformQuestion = interactionMode === "architecture" && shouldPrioritizePlatformQuestion(resolvedPack)
                     ? buildPlatformDiscoveryQuestion(workspaceLanguage)
                     : null;
-                const coercedGenerateQuestion = interactionMode === "architecture" && currentQuestionAction === "generate_scaffold" && !resolvedEligibility.canGenerate
+                const resolvedReady = resolvedEligibility.canGenerate && isReadinessGateReady(resolvedEligibility.readiness);
+                const coercedGenerateQuestion = interactionMode === "architecture" && currentQuestionAction === "generate_scaffold" && !resolvedReady
                     ? buildBlockedGenerateQuestion(
                         workspaceLanguage,
                         resolvedStage,
@@ -7678,7 +7710,7 @@ Do you want to start scaffold generation now?`;
             stage: nextStage,
             openQuestions: normalizeStringList(baseEvaluation.openQuestions ?? baseEvaluation.analysis?.missing, 12),
             density_score: nextEligibility.readiness.score,
-            is_ready: nextEligibility.readiness.functionalReady && nextEligibility.readiness.uiReady
+            is_ready: isReadinessGateReady(nextEligibility.readiness)
         }, resolution.readinessOverrides, baseMessages);
         const nextWorkingArchitectureState = resolveWorkingArchitectureState(
             nextEvaluation,
@@ -7693,6 +7725,7 @@ Do you want to start scaffold generation now?`;
         setGenerateError(null);
 
         const followUp = nextEligibility.canGenerate
+            && isReadinessGateReady(nextEligibility.readiness)
             ? buildReadyToGenerateMessage(language)
             : buildNextArchitectureFollowUpQuestion(
                 language,
@@ -8242,10 +8275,14 @@ Do you want to start scaffold generation now?`;
         setMessages(committedMessages);
 
         setGenerateError(null);
-        if (!committedSnapshot.canGenerate) {
+        const committedReady = committedSnapshot.canGenerate && isReadinessGateReady(committedSnapshot.readiness);
+        if (!committedReady) {
+            const blockingReasons = committedSnapshot.blockingReasons.length > 0
+                ? committedSnapshot.blockingReasons
+                : buildReadinessBlockingReasons(committedSnapshot.readiness);
             const message = translateReadinessText(
                 workspaceLanguage,
-                committedSnapshot.blockingReasons[0] || uiText.completeReadinessBeforeGenerate
+                blockingReasons[0] || uiText.completeReadinessBeforeGenerate
             );
             setGenerateError(message);
             if (source === "chat") {
