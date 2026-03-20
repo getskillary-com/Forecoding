@@ -79,6 +79,28 @@ function quoteForCmdArg(value) {
     return escaped;
 }
 
+function killProcessTree(child, signal) {
+    if (!child || typeof child.pid !== "number" || child.pid <= 0) {
+        return false;
+    }
+
+    if (process.platform !== "win32") {
+        try {
+            process.kill(-child.pid, signal);
+            return true;
+        } catch {
+            // Fall back to direct process signal when group signaling fails.
+        }
+    }
+
+    try {
+        process.kill(child.pid, signal);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 async function fetchWithTimeout(url, init, timeoutMs) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -131,6 +153,7 @@ function spawnDevServer(port) {
                     NEXT_TELEMETRY_DISABLED: "1"
                 },
                 stdio: ["ignore", "pipe", "pipe"],
+                detached: true,
                 windowsHide: true
             }
         );
@@ -215,15 +238,13 @@ function terminateProcess(child) {
         const finish = () => {
             if (settled) return;
             settled = true;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
             resolve();
         };
         const hardTimeout = setTimeout(() => {
             if (child.exitCode === null) {
-                try {
-                    child.kill("SIGKILL");
-                } catch {
-                    // Best-effort cleanup before resolving.
-                }
+                killProcessTree(child, "SIGKILL");
             }
             finish();
         }, 10_000);
@@ -233,7 +254,7 @@ function terminateProcess(child) {
             finish();
         });
         try {
-            child.kill("SIGTERM");
+            killProcessTree(child, "SIGTERM");
         } catch {
             clearTimeout(hardTimeout);
             finish();
@@ -241,11 +262,7 @@ function terminateProcess(child) {
         }
         setTimeout(() => {
             if (child.exitCode === null) {
-                try {
-                    child.kill("SIGKILL");
-                } catch {
-                    // Process may have already terminated.
-                }
+                killProcessTree(child, "SIGKILL");
             }
         }, 3_000);
     });
