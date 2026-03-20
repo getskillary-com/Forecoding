@@ -11,8 +11,12 @@ import {
 } from "@/lib/workspace-envelope";
 import type {
     AcceptanceCase,
+    Attachment,
     AssumptionRecord,
     ContractSpec,
+    FileNode,
+    GenerationResponse,
+    Message,
     Project,
     ProjectVersion,
     ProjectVersionData,
@@ -181,6 +185,10 @@ type WorkspaceSaveSuccess = {
 const WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES = 1_000_000;
 const WORKSPACE_MIN_REVISION_HISTORY_FOR_COMPACTION = 8;
 const WORKSPACE_MIN_SNAPSHOTS_FOR_COMPACTION = 4;
+const WORKSPACE_MAX_MESSAGE_CHARS = 6_000;
+const WORKSPACE_MAX_TEXT_ATTACHMENT_CHARS = 3_000;
+const WORKSPACE_MAX_FILE_TREE_NODES = 220;
+const WORKSPACE_REDUCED_MESSAGE_COUNT = 80;
 
 export class WorkspaceRevisionConflictError extends Error {
     currentEnvelope: WorkspaceEnvelope;
@@ -701,6 +709,162 @@ function dropSnapshotProjects(snapshot: WorkspaceEnvelope["snapshots"][number]) 
     return nextSnapshot;
 }
 
+function clipWorkspaceText(text: string, maxChars: number) {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}\n...[truncated for workspace storage]`;
+}
+
+function compactAttachmentForWorkspace(attachment: Attachment): Attachment {
+    const content = typeof attachment.content === "string" ? attachment.content : "";
+    if (!content) return attachment;
+    if (attachment.type === "text") {
+        const nextContent = clipWorkspaceText(content, WORKSPACE_MAX_TEXT_ATTACHMENT_CHARS);
+        if (nextContent === content) return attachment;
+        return {
+            ...attachment,
+            content: nextContent
+        };
+    }
+    return {
+        ...attachment,
+        content: `[${attachment.type} attachment omitted for workspace storage]`
+    };
+}
+
+function compactMessageForWorkspace(message: Message): Message {
+    const nextContent = clipWorkspaceText(message.content || "", WORKSPACE_MAX_MESSAGE_CHARS);
+    const nextAttachments = Array.isArray(message.attachments)
+        ? message.attachments.map((attachment) => compactAttachmentForWorkspace(attachment))
+        : undefined;
+    if (nextContent === (message.content || "") && !nextAttachments) {
+        return message;
+    }
+    return {
+        ...message,
+        content: nextContent,
+        attachments: nextAttachments
+    };
+}
+
+function compactFileTreeForWorkspace(nodes: FileNode[] | undefined): FileNode[] {
+    if (!Array.isArray(nodes) || nodes.length === 0) return [];
+    let remaining = WORKSPACE_MAX_FILE_TREE_NODES;
+
+    const walk = (node: FileNode): FileNode | null => {
+        if (remaining <= 0) return null;
+        remaining -= 1;
+        if (node.type === "folder") {
+            const children: FileNode[] = [];
+            for (const child of node.children || []) {
+                const compactedChild = walk(child);
+                if (compactedChild) {
+                    children.push(compactedChild);
+                }
+                if (remaining <= 0) break;
+            }
+            return {
+                name: node.name,
+                type: "folder",
+                children
+            };
+        }
+        return {
+            name: node.name,
+            type: "file"
+        };
+    };
+
+    const result: FileNode[] = [];
+    for (const node of nodes) {
+        const compactedNode = walk(node);
+        if (compactedNode) {
+            result.push(compactedNode);
+        }
+        if (remaining <= 0) break;
+    }
+
+    if (remaining <= 0) {
+        result.push({
+            name: "...truncated",
+            type: "file"
+        });
+    }
+    return result;
+}
+
+function compactGenerationForWorkspace(generation: GenerationResponse | null | undefined): GenerationResponse | null {
+    if (!generation) return null;
+    return {
+        ...generation,
+        projectTree: compactFileTreeForWorkspace(generation.projectTree)
+    };
+}
+
+function compactVersionDataForWorkspace(data: ProjectVersionData, aggressive: boolean): ProjectVersionData {
+    const compactedMessages = (data.messages || []).map((message) => compactMessageForWorkspace(message));
+    const nextMessages = aggressive
+        ? compactedMessages.slice(-WORKSPACE_REDUCED_MESSAGE_COUNT)
+        : compactedMessages;
+    const compactedPendingRequestMessages = data.pendingEvaluation?.requestMessages
+        ? data.pendingEvaluation.requestMessages
+            .map((message) => compactMessageForWorkspace(message))
+            .slice(-Math.min(WORKSPACE_REDUCED_MESSAGE_COUNT, 40))
+        : undefined;
+
+    const compactedData: ProjectVersionData = {
+        ...data,
+        messages: nextMessages,
+        generation: compactGenerationForWorkspace(data.generation),
+        generationArtifacts: data.generationArtifacts
+            ? {
+                virtual_spec: compactGenerationForWorkspace(data.generationArtifacts.virtual_spec),
+                runnable_scaffold: compactGenerationForWorkspace(data.generationArtifacts.runnable_scaffold)
+            }
+            : data.generationArtifacts,
+        pendingEvaluation: data.pendingEvaluation
+            ? {
+                ...data.pendingEvaluation,
+                requestMessages: compactedPendingRequestMessages || []
+            }
+            : data.pendingEvaluation
+    };
+
+    if (!aggressive) {
+        return compactedData;
+    }
+
+    return {
+        ...compactedData,
+        providerRunLogs: (compactedData.providerRunLogs || []).slice(-40),
+        taskRuns: (compactedData.taskRuns || []).slice(-80),
+        billingEvents: (compactedData.billingEvents || []).slice(-60)
+    };
+}
+
+function compactProjectsForWorkspace(projects: Project[], aggressive: boolean): Project[] {
+    return projects.map((project) => ({
+        ...project,
+        versions: project.versions.map((version) => ({
+            ...version,
+            data: compactVersionDataForWorkspace(version.data, aggressive)
+        }))
+    }));
+}
+
+function syncLatestSnapshotProjects(envelope: WorkspaceEnvelope): WorkspaceEnvelope {
+    if (!envelope.snapshots.length) return envelope;
+    const latestSnapshot = envelope.snapshots[0];
+    if (!Array.isArray(latestSnapshot.projects)) return envelope;
+    const nextLatestSnapshot = {
+        ...latestSnapshot,
+        projects: envelope.projects
+    };
+    return {
+        ...envelope,
+        snapshots: [nextLatestSnapshot, ...envelope.snapshots.slice(1)]
+    };
+}
+
 function compactWorkspaceEnvelopeForStorage(envelope: WorkspaceEnvelope): WorkspaceEnvelope {
     let candidate = envelope;
     let estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
@@ -788,6 +952,22 @@ function compactWorkspaceEnvelopeForStorage(envelope: WorkspaceEnvelope): Worksp
             revisionHistory: nextRevisionHistory,
             snapshots: nextSnapshots
         };
+        estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
+    }
+
+    if (estimatedBytes > WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+        candidate = syncLatestSnapshotProjects({
+            ...candidate,
+            projects: compactProjectsForWorkspace(candidate.projects, false)
+        });
+        estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
+    }
+
+    if (estimatedBytes > WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+        candidate = syncLatestSnapshotProjects({
+            ...candidate,
+            projects: compactProjectsForWorkspace(candidate.projects, true)
+        });
         estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
     }
 
