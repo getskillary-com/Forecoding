@@ -929,8 +929,26 @@ function listWorkspaceRevisionTimeline(envelope: WorkspaceEnvelope): WorkspaceRe
         .filter((item): item is WorkspaceRevisionTimelineItem => Boolean(item));
 }
 
+function stripUndefinedForFirestore<T>(value: T): T {
+    if (Array.isArray(value)) {
+        return value.map((item) => stripUndefinedForFirestore(item)) as T;
+    }
+    if (value instanceof Date) {
+        return value;
+    }
+    if (value && typeof value === "object") {
+        const next: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+            if (entry === undefined) continue;
+            next[key] = stripUndefinedForFirestore(entry);
+        }
+        return next as T;
+    }
+    return value;
+}
+
 function serializeWorkspaceDocument(envelope: WorkspaceEnvelope) {
-    return {
+    return stripUndefinedForFirestore({
         version: envelope.version,
         ownerUserId: envelope.ownerUserId,
         tenantId: envelope.tenantId ?? null,
@@ -956,7 +974,7 @@ function serializeWorkspaceDocument(envelope: WorkspaceEnvelope) {
         })),
         createdAt: new Date(envelope.createdAt),
         updatedAt: new Date(envelope.updatedAt)
-    };
+    });
 }
 
 function estimateWorkspaceDocumentBytes(envelope: WorkspaceEnvelope) {
