@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { DecodedIdToken } from "firebase-admin/auth";
 import { adminAuth } from "@/lib/firebase-admin";
 import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
+import { resolveTenantForUser } from "@/lib/data/tenants";
 import { getAuthSessionCookieName } from "@/lib/env";
 
 export const AUTH_SESSION_COOKIE_NAME = getAuthSessionCookieName();
@@ -12,6 +13,8 @@ export type ServerUser = {
     uid: string;
     email: string | null;
     name: string | null;
+    tenantId: string | null;
+    tenantStatus: "active" | "trial" | "suspended" | null;
     sessionVersion: number;
     legacyPasswordResetRequired: boolean;
     token: DecodedIdToken;
@@ -95,11 +98,30 @@ export async function getServerUser(): Promise<ServerUser | null> {
             sessionVersion: 0
         });
     }
+    const tenant = await resolveTenantForUser({
+        userId: session.uid,
+        email: profile?.email || session.email,
+        tenantId: profile?.tenantId ?? null
+    });
+    if (tenant?.id && profile?.tenantId !== tenant.id && (profile?.email || session.email)) {
+        profile = await upsertUserProfile({
+            uid: session.uid,
+            email: profile?.email || session.email || "",
+            tenantId: tenant.id,
+            name: profile?.name ?? session.name,
+            image: profile?.image ?? null,
+            emailVerified: profile?.emailVerified ?? (session.token.email_verified ? new Date() : null),
+            legacyPasswordResetRequired: profile?.legacyPasswordResetRequired ?? false,
+            sessionVersion: profile?.sessionVersion ?? 0
+        });
+    }
 
     return {
         uid: session.uid,
         email: profile?.email || session.email,
         name: profile?.name || session.name,
+        tenantId: profile?.tenantId ?? tenant?.id ?? null,
+        tenantStatus: tenant?.status ?? null,
         sessionVersion: profile?.sessionVersion ?? 0,
         legacyPasswordResetRequired: profile?.legacyPasswordResetRequired === true,
         token: session.token

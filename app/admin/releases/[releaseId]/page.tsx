@@ -16,6 +16,13 @@ function renderItems(items: string[], prefix: "+" | "-") {
     ));
 }
 
+function formatApprovalStatus(status?: "pending" | "approved" | "rejected") {
+    if (status === "pending" || status === "rejected") {
+        return status;
+    }
+    return "approved";
+}
+
 export default async function AdminReleaseDetailPage({
     params
 }: {
@@ -70,6 +77,16 @@ export default async function AdminReleaseDetailPage({
                             {release.rollbackReady ? "Ready" : "Blocked"}
                         </p>
                         <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Current workspace revision: r{release.latestWorkspaceRevision}</p>
+                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Approval: {formatApprovalStatus(release.approvalStatus)}</p>
+                        {release.approvedAt ? (
+                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                Decision: {formatAdminTimestamp(release.approvedAt)}
+                                {release.approvedBy ? ` by ${release.approvedBy}` : ""}
+                            </p>
+                        ) : null}
+                        {release.approvalNote ? (
+                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Approval note: {release.approvalNote}</p>
+                        ) : null}
                         {release.rollbackReason ? (
                             <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">{release.rollbackReason}</p>
                         ) : null}

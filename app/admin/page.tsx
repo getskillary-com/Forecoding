@@ -1,5 +1,5 @@
 import { AdminConsoleClient } from "@/components/AdminConsoleClient";
-import { resolveAdminRole } from "@/lib/admin";
+import { getAdminCapabilitiesForRole, resolveAdminRole } from "@/lib/admin";
 import { getServerSessionIdentity } from "@/lib/server-auth";
 import { listAuditEvents, listGovernanceOperationEvents } from "@/lib/data/audit-events";
 import { listFeatureFlags } from "@/lib/data/feature-flags";
@@ -13,6 +13,7 @@ export default async function AdminPage() {
     const user = await getServerSessionIdentity();
     const email = user?.email || "admin";
     const role = resolveAdminRole({ email: user?.email });
+    const capabilities = getAdminCapabilitiesForRole(role);
     const [auditEvents, operationEvents, observabilitySnapshot, featureFlags, jobs, tenants, releases, workspaces, webhookEvents] = await Promise.all([
         listAuditEvents(8),
         listGovernanceOperationEvents(8),
@@ -35,6 +36,7 @@ export default async function AdminPage() {
         <AdminConsoleClient
             email={email}
             role={role}
+            capabilities={capabilities}
             auditEvents={auditEvents}
             operationEvents={operationEvents}
             observabilitySnapshot={observabilitySnapshot}

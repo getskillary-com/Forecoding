@@ -6,6 +6,7 @@ export type UserProfile = {
     uid: string;
     email: string;
     emailLower: string;
+    tenantId: string | null;
     name: string | null;
     image: string | null;
     emailVerified: Date | null;
@@ -18,6 +19,7 @@ export type UserProfile = {
 type UpsertUserInput = {
     uid: string;
     email: string;
+    tenantId?: string | null;
     name?: string | null;
     image?: string | null;
     emailVerified?: Date | null;
@@ -29,6 +31,12 @@ function usersCollection() {
     return adminDb.collection("users");
 }
 
+function normalizeTenantId(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed || null;
+}
+
 function mapUser(uid: string, data: Record<string, unknown>): UserProfile {
     const email = typeof data.email === "string" ? data.email : "";
     const sessionVersion = typeof data.sessionVersion === "number" ? data.sessionVersion : 0;
@@ -36,6 +44,7 @@ function mapUser(uid: string, data: Record<string, unknown>): UserProfile {
         uid,
         email,
         emailLower: typeof data.emailLower === "string" ? data.emailLower : normalizeEmail(email),
+        tenantId: normalizeTenantId(data.tenantId),
         name: typeof data.name === "string" ? data.name : null,
         image: typeof data.image === "string" ? data.image : null,
         emailVerified: toDateOrNull(data.emailVerified),
@@ -76,6 +85,10 @@ export async function upsertUserProfile(input: UpsertUserInput): Promise<UserPro
     const payload: Record<string, unknown> = {
         email: nextEmail,
         emailLower: normalizeEmail(nextEmail),
+        tenantId:
+            input.tenantId !== undefined
+                ? normalizeTenantId(input.tenantId)
+                : normalizeTenantId(existingData.tenantId),
         name: input.name ?? existingData.name ?? null,
         image: input.image ?? existingData.image ?? null,
         emailVerified: input.emailVerified ?? existingData.emailVerified ?? null,
@@ -115,3 +128,22 @@ export async function bumpUserSessionVersion(uid: string): Promise<number> {
     return typeof data.sessionVersion === "number" ? data.sessionVersion : 0;
 }
 
+export async function setUserTenantByUid(input: {
+    uid: string;
+    tenantId: string | null;
+}): Promise<UserProfile | null> {
+    const uid = input.uid.trim();
+    if (!uid) return null;
+
+    const ref = usersCollection().doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+
+    await ref.set({
+        tenantId: normalizeTenantId(input.tenantId),
+        updatedAt: new Date()
+    }, { merge: true });
+
+    const updated = await ref.get();
+    return mapUser(uid, updated.data() || {});
+}

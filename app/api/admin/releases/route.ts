@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdminRoute } from "@/lib/admin-api";
-import { createWorkspaceReleaseTagByUserId, listWorkspaceReleaseTags } from "@/lib/data/workspaces";
-import { isFeatureFlagEnabled } from "@/lib/data/feature-flags";
+import { createWorkspaceReleaseTagByUserId, getWorkspaceEnvelopeByUserId, listWorkspaceReleaseTags } from "@/lib/data/workspaces";
+import { isFeatureFlagEnabledForContext } from "@/lib/data/feature-flags";
 
 export const runtime = "nodejs";
 
@@ -21,10 +21,17 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-    const admin = await requireAdminRoute({ minimumRole: "operator" });
+    const admin = await requireAdminRoute({ minimumCapability: "releases_publish" });
     if (admin.error) return admin.error;
 
-    const releasesEnabled = await isFeatureFlagEnabled("releases.publish.enabled", true);
+    const payload = ReleaseTagSchema.parse(await req.json());
+    const workspaceEnvelope = await getWorkspaceEnvelopeByUserId(payload.ownerUserId);
+    const releasesEnabled = await isFeatureFlagEnabledForContext({
+        key: "releases.publish.enabled",
+        fallback: true,
+        tenantId: workspaceEnvelope?.tenantId ?? null,
+        workspaceId: payload.ownerUserId
+    });
     if (!releasesEnabled) {
         return NextResponse.json(
             {
@@ -35,7 +42,6 @@ export async function POST(req: Request) {
         );
     }
 
-    const payload = ReleaseTagSchema.parse(await req.json());
     const release = await createWorkspaceReleaseTagByUserId({
         userId: payload.ownerUserId,
         label: payload.label,

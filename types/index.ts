@@ -675,10 +675,12 @@ export interface TaskRun {
     id: string;
     taskId: string;
     status: "queued" | "running" | "succeeded" | "failed" | "blocked";
+    attempt?: number;
     startedAt?: number | null;
     finishedAt?: number | null;
     resultSummary?: string;
     remediationHint?: string;
+    rollbackExecuted?: boolean;
 }
 
 export interface ProviderRunLog {
@@ -837,11 +839,16 @@ export interface ReleaseTag {
     snapshotId: string;
     createdAt: number;
     note?: string | null;
+    approvalStatus?: "pending" | "approved" | "rejected";
+    approvalNote?: string | null;
+    approvedBy?: string | null;
+    approvedAt?: number | null;
 }
 
 export interface WorkspaceEnvelope {
     version: "workspace_envelope_v1";
     ownerUserId: string;
+    tenantId?: string | null;
     projects: Project[];
     revision: number;
     revisionHistory: WorkspaceRevision[];
@@ -869,6 +876,7 @@ export interface FeatureFlag {
     description: string;
     enabled: boolean;
     scope: "global" | "tenant" | "workspace";
+    scopeId?: string | null;
     value?: string | number | boolean | null;
     updatedAt: number;
     updatedBy?: string | null;
@@ -880,6 +888,8 @@ export interface GenerationJob {
     workspaceSnapshotId: string;
     projectId?: string | null;
     versionId?: string | null;
+    tenantId?: string | null;
+    tenantStatus?: "active" | "trial" | "suspended" | null;
     outputMode: string;
     templateKind?: string | null;
     releaseIntent?: string | null;
@@ -949,10 +959,21 @@ export interface EvaluateRemediationEvent {
 
 export interface Tenant {
     id: string;
+    orgId?: string | null;
     name: string;
     slug: string;
     status: "active" | "trial" | "suspended";
     workspaceCount: number;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface Org {
+    id: string;
+    name: string;
+    slug: string;
+    status: "active" | "suspended";
+    tenantCount: number;
     createdAt: number;
     updatedAt: number;
 }

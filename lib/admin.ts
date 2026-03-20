@@ -5,6 +5,14 @@ import {
 } from "@/lib/env";
 
 export type AdminRole = "none" | "viewer" | "operator" | "admin";
+export type AdminCapability =
+    | "feature_flags_write"
+    | "releases_publish"
+    | "releases_approve"
+    | "releases_rollback"
+    | "webhooks_replay"
+    | "tenants_manage"
+    | "governance_override";
 
 function normalizeEmail(value: string | null | undefined) {
     return (value || "").trim().toLowerCase();
@@ -38,11 +46,43 @@ function roleRank(role: AdminRole) {
     }
 }
 
+export function getAdminCapabilitiesForRole(role: AdminRole): AdminCapability[] {
+    if (role === "admin") {
+        return [
+            "feature_flags_write",
+            "releases_publish",
+            "releases_approve",
+            "releases_rollback",
+            "webhooks_replay",
+            "tenants_manage",
+            "governance_override"
+        ];
+    }
+    if (role === "operator") {
+        return [
+            "feature_flags_write",
+            "releases_publish",
+            "releases_approve",
+            "releases_rollback",
+            "webhooks_replay"
+        ];
+    }
+    return [];
+}
+
 export function hasAdminRole(
     user: { email?: string | null } | null | undefined,
     minimumRole: Exclude<AdminRole, "none"> = "viewer"
 ) {
     return roleRank(resolveAdminRole(user)) >= roleRank(minimumRole);
+}
+
+export function hasAdminCapability(
+    user: { email?: string | null } | null | undefined,
+    capability: AdminCapability
+) {
+    const role = resolveAdminRole(user);
+    return getAdminCapabilitiesForRole(role).includes(capability);
 }
 
 export function isAdminUser(user: { email?: string | null } | null | undefined) {

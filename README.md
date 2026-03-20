@@ -27,7 +27,15 @@ The primary durable artifact is the `ArchitecturePack`, not the chat transcript.
 - `/wizard`: main Architect workspace
 - `/api/evaluate`: streaming architecture conversation endpoint
 - `/api/generate`: scaffold generation endpoint, only available for a ready architecture pack
+- `/api/workspace`: optimistic-concurrency workspace envelope endpoint with revision + snapshot history
+- `/api/workspace/tasks`: task DAG execution and replay endpoint for version-scoped task runs
 - `/api/payments/stripe/*`: checkout and pricing for scaffold generation
+- `/api/admin/tenants`: tenant lifecycle governance API (active, trial, suspended)
+- `/api/admin/tenants/rebind`: reassign user/workspace tenant binding with audit trail
+- `/api/admin/releases`: release publishing and release list API
+- `/api/admin/releases/[releaseId]`: release detail and rollback impact API
+- `/api/admin/releases/approve`: release approve/reject mutation API
+- `/api/admin/releases/rollback`: release rollback mutation API
 - `/api/admin/observability`: admin SLO and alert snapshot endpoint
 
 ## Tech stack
@@ -110,14 +118,26 @@ FORECODING_ADMIN_VIEWER_EMAILS=viewer@example.com
 Role model:
 
 - `admin`: full platform control and payment bypass.
-- `operator`: can manage feature flags and publish release tags.
+- `operator`: can manage feature flags, publish release tags, approve/reject releases, and run rollback operations.
 - `viewer`: read-only access to the admin console.
+
+Capability model:
+
+- `feature_flags_write`: create/enable/disable feature flags
+- `releases_publish`: publish release tags
+- `releases_approve`: approve or reject release tags
+- `releases_rollback`: execute release rollback operations
+- `webhooks_replay`: replay stored Stripe webhook events
+- `tenants_manage`: update tenant lifecycle status (`active`, `trial`, `suspended`)
 
 Governance feature flags:
 
 - `generation.enabled`: pauses scaffold generation for non-admin users.
 - `releases.publish.enabled`: pauses release tag publishing from the admin API.
+- `releases.approval.enabled`: pauses release approve/reject actions from the admin console and admin API.
 - `releases.rollback.enabled`: pauses release rollback actions from the admin console and admin API.
+- `scope=tenant` and `scope=workspace` flags require `scopeId` (`tenantId` or workspace owner user id).
+- Runtime resolution priority is `workspace scope` > `tenant scope` > `global scope`.
 
 Dev only:
 
@@ -129,6 +149,8 @@ NEXT_PUBLIC_DEV_AUTH_BYPASS=0
 
 - Do not treat `density_score` as the only source of truth. Readiness is derived from the architecture pack and guardrails.
 - Scaffold generation must not run without a ready architecture pack.
+- Scaffold generation is blocked for suspended tenants unless an `admin` override is used.
+- Stripe quote and checkout APIs are blocked for suspended tenants unless an `admin` override is used.
 - PRD, architecture pack, and delivery guardrails stay synchronized before scaffold generation.
 - UI design is a subsection of architecture, not a separate product center.
 - Local chat history is not enough. Uploaded artifacts and structured architecture objects are persisted at version level.
@@ -158,6 +180,12 @@ For admin API regression smoke checks, run:
 
 ```bash
 npm run smoke:admin-api
+```
+
+For workspace task DAG API smoke checks, run:
+
+```bash
+npm run smoke:workspace-tasks-api
 ```
 
 For a self-contained local smoke run that auto-starts `next dev`, run:

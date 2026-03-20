@@ -381,6 +381,48 @@ async function runUnauthenticatedChecks(baseUrl, timeoutMs) {
         }
         logPass(`Unauthenticated GET ${path} returned 401 as expected.`);
     }
+
+    const protectedMutations = [
+        {
+            path: "/api/admin/releases/approve",
+            body: {
+                ownerUserId: "smoke-owner",
+                releaseTagId: "smoke-release",
+                decision: "approved"
+            }
+        },
+        {
+            path: "/api/admin/releases/rollback",
+            body: {
+                ownerUserId: "smoke-owner",
+                releaseTagId: "smoke-release"
+            }
+        },
+        {
+            path: "/api/admin/webhooks/stripe/replay",
+            body: {
+                eventId: "evt_smoke"
+            }
+        }
+    ];
+
+    for (const mutation of protectedMutations) {
+        const result = await requestJson(baseUrl, mutation.path, {
+            timeoutMs,
+            method: "POST",
+            headers: {
+                accept: "application/json",
+                "content-type": "application/json"
+            },
+            body: mutation.body
+        });
+        assertStatus(result, [401], `Unauthenticated POST ${mutation.path}`);
+        assertJsonObject(result.payload, `Unauthenticated POST ${mutation.path}`);
+        if (result.payload.error !== "Unauthorized") {
+            throw new Error(`Unauthenticated POST ${mutation.path} expected error "Unauthorized", received ${formatPayload(result.payload)}.`);
+        }
+        logPass(`Unauthenticated POST ${mutation.path} returned 401 as expected.`);
+    }
 }
 
 async function runAuthenticatedChecks(baseUrl, timeoutMs, cookie, options) {

@@ -5,7 +5,7 @@ import type { WebhookEventRecord } from "@/types";
 
 type Props = {
     initialEvents: WebhookEventRecord[];
-    canOperate: boolean;
+    canReplay: boolean;
     focusedEventId?: string | null;
     onSelectEvent?: (eventId: string) => void;
 };
@@ -15,7 +15,7 @@ function formatTimestamp(value: number | null | undefined) {
     return new Date(value).toLocaleString();
 }
 
-export function AdminStripeWebhookPanel({ initialEvents, canOperate, focusedEventId, onSelectEvent }: Props) {
+export function AdminStripeWebhookPanel({ initialEvents, canReplay, focusedEventId, onSelectEvent }: Props) {
     const [events, setEvents] = useState(initialEvents);
     const [query, setQuery] = useState("");
     const [eventName, setEventName] = useState("");
@@ -50,7 +50,7 @@ export function AdminStripeWebhookPanel({ initialEvents, canOperate, focusedEven
     };
 
     const replay = async (eventId: string) => {
-        if (!canOperate) return;
+        if (!canReplay) return;
 
         setBusyEventId(eventId);
         setFeedback(null);
@@ -115,7 +115,7 @@ export function AdminStripeWebhookPanel({ initialEvents, canOperate, focusedEven
                     className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                 />
                 <p className="text-xs text-slate-500 dark:text-slate-300">
-                    {canOperate ? "Operators can replay stored Stripe webhook events." : "Read-only role: replay is disabled."}
+                    {canReplay ? "Replay capability is enabled for this account." : "Replay capability is disabled for this role."}
                 </p>
             </div>
 
@@ -147,7 +147,7 @@ export function AdminStripeWebhookPanel({ initialEvents, canOperate, focusedEven
                                 <button
                                     type="button"
                                     onClick={() => void replay(event.eventId)}
-                                    disabled={!canOperate || busyEventId === event.eventId}
+                                    disabled={!canReplay || busyEventId === event.eventId}
                                     className="fc-button-secondary px-4 py-2 text-sm font-semibold disabled:opacity-60"
                                 >
                                     {busyEventId === event.eventId ? "Replaying..." : "Replay"}

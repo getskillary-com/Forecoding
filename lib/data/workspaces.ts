@@ -1,6 +1,7 @@
 import { adminDb } from "@/lib/firebase-admin";
 import { toDateOrNull } from "./firestore-utils";
 import { recordAuditEvent } from "./audit-events";
+import { syncTenantWorkspaceCount } from "./tenants";
 import {
     buildWorkspaceReleaseTag,
     createEmptyWorkspaceEnvelope,
@@ -47,6 +48,7 @@ export type WorkspaceReleaseRollbackResult =
         code:
             | "WORKSPACE_NOT_FOUND"
             | "RELEASE_NOT_FOUND"
+            | "RELEASE_NOT_APPROVED"
             | "SNAPSHOT_NOT_FOUND"
             | "SNAPSHOT_PAYLOAD_UNAVAILABLE";
         message: string;
@@ -54,6 +56,7 @@ export type WorkspaceReleaseRollbackResult =
 
 type WorkspaceDoc = {
     userId: string;
+    tenantId: string | null;
     projects: Project[];
     revision: number;
     envelope: WorkspaceEnvelope;
@@ -105,6 +108,7 @@ function toWorkspaceDocument(envelope: WorkspaceEnvelope) {
     return {
         version: envelope.version,
         ownerUserId: envelope.ownerUserId,
+        tenantId: envelope.tenantId ?? null,
         userId: envelope.ownerUserId,
         projects: envelope.projects,
         revision: envelope.revision,
@@ -150,6 +154,7 @@ export async function getWorkspaceByUserId(userId: string): Promise<WorkspaceDoc
 
     return {
         userId,
+        tenantId: envelope.tenantId ?? null,
         projects: envelope.projects,
         revision: envelope.revision,
         envelope,
@@ -160,6 +165,7 @@ export async function getWorkspaceByUserId(userId: string): Promise<WorkspaceDoc
 
 export async function saveWorkspaceEnvelopeByUserId(input: {
     userId: string;
+    tenantId?: string | null;
     projects: Project[];
     expectedRevision: number;
     actorId?: string | null;
@@ -174,13 +180,14 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
             const snap = await transaction.get(docRef);
             const currentEnvelope = snap.exists
                 ? fromWorkspaceSnapshot(input.userId, snap.data() || {})
-                : createEmptyWorkspaceEnvelope(input.userId);
+                : createEmptyWorkspaceEnvelope(input.userId, input.tenantId ?? null);
 
             if (currentEnvelope.revision !== input.expectedRevision) {
                 throw new WorkspaceRevisionConflictError(currentEnvelope);
             }
 
             const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
+                tenantId: input.tenantId ?? currentEnvelope.tenantId ?? null,
                 projects: input.projects,
                 summary: input.changeSummary,
                 actorId: input.actorId,
@@ -219,6 +226,9 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
             projectCount: String(savedEnvelope.projects.length)
         }
     });
+    if (savedEnvelope.tenantId) {
+        await syncTenantWorkspaceCount(savedEnvelope.tenantId);
+    }
 
     return {
         ok: true,
@@ -244,6 +254,77 @@ export async function saveWorkspaceByUserId(userId: string, projects: Project[])
     });
 
     return committedEnvelope;
+}
+
+export async function setWorkspaceTenantByUserId(input: {
+    userId: string;
+    tenantId: string;
+    actorId?: string | null;
+    actorEmail?: string | null;
+    reason?: string | null;
+}): Promise<WorkspaceEnvelope | null> {
+    const userId = input.userId.trim();
+    const normalizedTenantId = input.tenantId.trim();
+    if (!userId || !normalizedTenantId) return null;
+
+    const docRef = workspacesCollection().doc(userId);
+    let committedEnvelope: WorkspaceEnvelope | null = null;
+    let previousTenantId: string | null = null;
+    let changed = false;
+
+    await adminDb.runTransaction(async (transaction) => {
+        const snap = await transaction.get(docRef);
+        if (!snap.exists) return;
+
+        const currentEnvelope = fromWorkspaceSnapshot(userId, snap.data() || {});
+        previousTenantId = currentEnvelope.tenantId ?? null;
+
+        if ((currentEnvelope.tenantId ?? null) === normalizedTenantId) {
+            committedEnvelope = currentEnvelope;
+            return;
+        }
+
+        const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
+            tenantId: normalizedTenantId,
+            projects: currentEnvelope.projects,
+            summary: `Updated workspace tenant binding to ${normalizedTenantId}.`,
+            kind: "admin",
+            actorId: input.actorId,
+            actorEmail: input.actorEmail
+        });
+        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
+        committedEnvelope = nextEnvelope;
+        changed = true;
+    });
+
+    if (!committedEnvelope) return null;
+    const boundEnvelope = committedEnvelope as WorkspaceEnvelope;
+
+    await syncTenantWorkspaceCount(normalizedTenantId);
+    if (previousTenantId && previousTenantId !== normalizedTenantId) {
+        await syncTenantWorkspaceCount(previousTenantId);
+    }
+
+    if (changed) {
+        await recordAuditEvent({
+            eventType: "workspace.tenant_rebound",
+            severity: "warning",
+            actorId: input.actorId ?? null,
+            actorEmail: input.actorEmail ?? null,
+            resourceType: "workspace",
+            resourceId: userId,
+            summary: `Workspace ${userId} tenant binding moved to ${normalizedTenantId}.`,
+            metadata: {
+                userId,
+                previousTenantId: previousTenantId || "",
+                tenantId: normalizedTenantId,
+                revision: String(boundEnvelope.revision),
+                reason: input.reason || ""
+            }
+        });
+    }
+
+    return boundEnvelope;
 }
 
 export async function markProjectPaidInWorkspace(userId: string, projectId: string): Promise<boolean> {
@@ -311,6 +392,7 @@ export async function markProjectPaidInWorkspace(userId: string, projectId: stri
 
 export async function updateProjectVersionInWorkspaceByUserId(input: {
     userId: string;
+    tenantId?: string | null;
     projectId: string;
     versionId: string;
     actorId?: string | null;
@@ -350,6 +432,7 @@ export async function updateProjectVersionInWorkspaceByUserId(input: {
         if (!touched) return;
 
         const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
+            tenantId: input.tenantId ?? currentEnvelope.tenantId ?? null,
             projects: updatedProjects,
             summary: input.summary,
             kind: input.kind ?? "project_update",
@@ -376,8 +459,12 @@ export async function updateProjectVersionInWorkspaceByUserId(input: {
             kind: input.kind ?? "project_update"
         }
     });
+    const savedEnvelope = committedEnvelope as WorkspaceEnvelope | null;
+    if (savedEnvelope?.tenantId) {
+        await syncTenantWorkspaceCount(savedEnvelope.tenantId);
+    }
 
-    return committedEnvelope;
+    return savedEnvelope;
 }
 
 export async function createWorkspaceReleaseTagByUserId(input: {
@@ -399,7 +486,11 @@ export async function createWorkspaceReleaseTagByUserId(input: {
 
         const taggedEnvelope = buildWorkspaceReleaseTag(currentEnvelope, {
             label: input.label,
-            note: input.note ?? null
+            note: input.note ?? null,
+            approvalStatus: "pending",
+            approvalNote: null,
+            approvedBy: null,
+            approvedAt: null
         });
         nextRelease = taggedEnvelope.releaseTags[0] ?? null;
         transaction.set(docRef, toWorkspaceDocument(taggedEnvelope), { merge: false });
@@ -420,11 +511,86 @@ export async function createWorkspaceReleaseTagByUserId(input: {
             releaseTagId: createdRelease.id,
             releaseLabel: createdRelease.label,
             userId: input.userId,
-            snapshotId: createdRelease.snapshotId
+            snapshotId: createdRelease.snapshotId,
+            approvalStatus: createdRelease.approvalStatus || "pending"
         }
     });
 
     return createdRelease;
+}
+
+export async function updateWorkspaceReleaseApprovalByUserId(input: {
+    userId: string;
+    releaseTagId: string;
+    decision: "approved" | "rejected";
+    note?: string | null;
+    actorId?: string | null;
+    actorEmail?: string | null;
+}) {
+    const docRef = workspacesCollection().doc(input.userId);
+    let updatedRelease: ReleaseTag | null = null;
+    let updatedEnvelope: WorkspaceEnvelope | null = null;
+
+    await adminDb.runTransaction(async (transaction) => {
+        const snap = await transaction.get(docRef);
+        if (!snap.exists) return;
+
+        const currentEnvelope = fromWorkspaceSnapshot(input.userId, snap.data() || {});
+        const currentRelease = currentEnvelope.releaseTags.find((candidate) => candidate.id === input.releaseTagId);
+        if (!currentRelease) return;
+
+        const now = Date.now();
+        const nextReleaseTags = currentEnvelope.releaseTags.map((releaseTag) => {
+            if (releaseTag.id !== input.releaseTagId) return releaseTag;
+
+            const nextRelease: ReleaseTag = {
+                ...releaseTag,
+                approvalStatus: input.decision,
+                approvalNote: input.note ?? null,
+                approvedBy: input.actorEmail ?? input.actorId ?? null,
+                approvedAt: now
+            };
+            updatedRelease = nextRelease;
+            return nextRelease;
+        });
+
+        const nextEnvelope: WorkspaceEnvelope = {
+            ...currentEnvelope,
+            releaseTags: nextReleaseTags,
+            updatedAt: now
+        };
+        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
+        updatedEnvelope = nextEnvelope;
+    });
+
+    if (!updatedRelease || !updatedEnvelope) return null;
+    const approvedRelease = updatedRelease as ReleaseTag;
+    const envelope = updatedEnvelope as WorkspaceEnvelope;
+
+    await recordAuditEvent({
+        eventType: input.decision === "approved"
+            ? "workspace.release_approved"
+            : "workspace.release_rejected",
+        severity: input.decision === "approved" ? "info" : "warning",
+        actorId: input.actorId ?? null,
+        actorEmail: input.actorEmail ?? null,
+        resourceType: "releaseTag",
+        resourceId: approvedRelease.id,
+        summary: `Release ${approvedRelease.label} was ${input.decision} for workspace ${input.userId}.`,
+        metadata: {
+            userId: input.userId,
+            releaseTagId: approvedRelease.id,
+            decision: input.decision,
+            note: input.note || "",
+            approvedBy: approvedRelease.approvedBy || "",
+            approvedAt: approvedRelease.approvedAt ? String(approvedRelease.approvedAt) : ""
+        }
+    });
+
+    return {
+        release: approvedRelease,
+        envelope
+    };
 }
 
 export async function rollbackWorkspaceReleaseTagByUserId(input: {
@@ -458,6 +624,14 @@ export async function rollbackWorkspaceReleaseTagByUserId(input: {
                 ok: false,
                 code: "RELEASE_NOT_FOUND",
                 message: "Release tag not found for this workspace."
+            };
+            return;
+        }
+        if (release.approvalStatus !== "approved") {
+            rollbackResult = {
+                ok: false,
+                code: "RELEASE_NOT_APPROVED",
+                message: "Release rollback requires an approved release tag."
             };
             return;
         }
@@ -534,16 +708,23 @@ export async function listWorkspaceReleaseTags(limit = 20): Promise<WorkspaceRel
         const envelope = fromWorkspaceSnapshot(doc.id, doc.data() || {});
         envelope.releaseTags.forEach((tag) => {
             const snapshot = envelope.snapshots.find((candidate) => candidate.id === tag.snapshotId);
-            const rollbackReady = Boolean(snapshot && Array.isArray(snapshot.projects));
+            const rollbackReady = Boolean(
+                snapshot
+                && Array.isArray(snapshot.projects)
+                && tag.approvalStatus === "approved"
+            );
+            const rollbackReason = !snapshot
+                ? "Snapshot record is missing from the current workspace envelope."
+                : !Array.isArray(snapshot.projects)
+                ? "Legacy release tag without persisted snapshot payload."
+                : tag.approvalStatus !== "approved"
+                ? "Release tag is not approved yet."
+                : null;
             results.push({
                 ...tag,
                 ownerUserId: envelope.ownerUserId,
                 rollbackReady,
-                rollbackReason: !snapshot
-                    ? "Snapshot record is missing from the current workspace envelope."
-                    : rollbackReady
-                    ? null
-                    : "Legacy release tag without persisted snapshot payload.",
+                rollbackReason,
                 snapshotProjectCount: Array.isArray(snapshot?.projects) ? snapshot.projects.length : 0
             });
         });
@@ -565,7 +746,11 @@ export async function getWorkspaceReleaseTagById(releaseId: string): Promise<Wor
         if (!release) continue;
 
         const snapshot = envelope.snapshots.find((candidate) => candidate.id === release.snapshotId);
-        const rollbackReady = Boolean(snapshot && Array.isArray(snapshot.projects));
+        const rollbackReady = Boolean(
+            snapshot
+            && Array.isArray(snapshot.projects)
+            && release.approvalStatus === "approved"
+        );
         const snapshotProjectIds = uniqueIds(snapshot?.projectIds || []);
         const snapshotActiveVersionIds = uniqueIds(snapshot?.activeVersionIds || []);
         const currentProjectIds = uniqueIds(envelope.projects.map((project) => project.id));
@@ -581,9 +766,11 @@ export async function getWorkspaceReleaseTagById(releaseId: string): Promise<Wor
             rollbackReady,
             rollbackReason: !snapshot
                 ? "Snapshot record is missing from the current workspace envelope."
-                : rollbackReady
-                ? null
-                : "Legacy release tag without persisted snapshot payload.",
+                : !Array.isArray(snapshot.projects)
+                ? "Legacy release tag without persisted snapshot payload."
+                : release.approvalStatus !== "approved"
+                ? "Release tag is not approved yet."
+                : null,
             snapshotProjectCount: Array.isArray(snapshot?.projects) ? snapshot.projects.length : 0,
             latestWorkspaceRevision: envelope.revision,
             snapshotSummary: snapshot?.summary || null,
@@ -615,6 +802,7 @@ export async function listWorkspaceEnvelopeSummaries(limit = 20) {
         .map((doc) => fromWorkspaceSnapshot(doc.id, doc.data() || {}))
         .map((envelope) => ({
             ownerUserId: envelope.ownerUserId,
+            tenantId: envelope.tenantId ?? null,
             revision: envelope.revision,
             projectCount: envelope.projects.length,
             updatedAt: envelope.updatedAt,

@@ -7,7 +7,7 @@ import { AdminAuditPanel } from "@/components/AdminAuditPanel";
 import { AdminObservabilityPanel } from "@/components/AdminObservabilityPanel";
 import { AdminOperationsPanel } from "@/components/AdminOperationsPanel";
 import { AdminStripeWebhookPanel } from "@/components/AdminStripeWebhookPanel";
-import type { AdminRole } from "@/lib/admin";
+import type { AdminCapability, AdminRole } from "@/lib/admin";
 import type {
     AuditEvent,
     FeatureFlag,
@@ -27,6 +27,10 @@ type ReleaseSummary = {
     rollbackReady: boolean;
     rollbackReason?: string | null;
     snapshotProjectCount: number;
+    approvalStatus?: "pending" | "approved" | "rejected";
+    approvalNote?: string | null;
+    approvedBy?: string | null;
+    approvedAt?: number | null;
 };
 
 type ReleaseDetail = ReleaseSummary & {
@@ -48,6 +52,7 @@ type ReleaseDetail = ReleaseSummary & {
 
 type WorkspaceEnvelopeSummary = {
     ownerUserId: string;
+    tenantId?: string | null;
     revision: number;
     projectCount: number;
     updatedAt: number;
@@ -57,6 +62,7 @@ type WorkspaceEnvelopeSummary = {
 type Props = {
     email: string;
     role: AdminRole;
+    capabilities: AdminCapability[];
     auditEvents: AuditEvent[];
     operationEvents: AuditEvent[];
     observabilitySnapshot: ObservabilitySnapshot;
@@ -83,6 +89,10 @@ function normalizeFlagValue(raw: string) {
     return trimmed;
 }
 
+function buildFlagIdentity(flag: Pick<FeatureFlag, "key" | "scope" | "scopeId">) {
+    return `${flag.key}::${flag.scope}::${flag.scopeId || "global"}`;
+}
+
 function roleLabel(role: AdminRole) {
     switch (role) {
         case "admin":
@@ -106,6 +116,31 @@ function jobStatusClasses(status: GenerationJob["status"]) {
     return "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300";
 }
 
+function normalizeReleaseApprovalStatus(status?: ReleaseSummary["approvalStatus"]) {
+    if (status === "pending" || status === "rejected") {
+        return status;
+    }
+    return "approved";
+}
+
+function releaseApprovalBadgeClasses(status?: ReleaseSummary["approvalStatus"]) {
+    const normalized = normalizeReleaseApprovalStatus(status);
+    if (normalized === "approved") {
+        return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+    }
+    if (normalized === "rejected") {
+        return "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300";
+    }
+    return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
+}
+
+function releaseApprovalLabel(status?: ReleaseSummary["approvalStatus"]) {
+    const normalized = normalizeReleaseApprovalStatus(status);
+    if (normalized === "approved") return "Approved";
+    if (normalized === "rejected") return "Rejected";
+    return "Pending";
+}
+
 export function AdminConsoleClient(props: Props) {
     const searchParams = useSearchParams();
     const pathname = usePathname();
@@ -116,6 +151,8 @@ export function AdminConsoleClient(props: Props) {
     const [isRefreshing, startRefresh] = useTransition();
     const [featureFlags, setFeatureFlags] = useState(props.featureFlags);
     const [jobs, setJobs] = useState(props.jobs);
+    const [tenants, setTenants] = useState(props.tenants);
+    const [workspaces, setWorkspaces] = useState(props.workspaces);
     const [releases, setReleases] = useState(props.releases);
     const [expandedJobId, setExpandedJobId] = useState<string | null>(initialFocusedJobId);
     const [expandedReleaseId, setExpandedReleaseId] = useState<string | null>(initialFocusedReleaseId);
@@ -137,6 +174,7 @@ export function AdminConsoleClient(props: Props) {
         key: "",
         description: "",
         scope: "global" as FeatureFlag["scope"],
+        scopeId: "",
         value: ""
     });
     const [releaseForm, setReleaseForm] = useState({
@@ -146,6 +184,12 @@ export function AdminConsoleClient(props: Props) {
     });
     const [busyFlagKey, setBusyFlagKey] = useState<string | null>(null);
     const [busyReleaseId, setBusyReleaseId] = useState<string | null>(null);
+    const [busyReleaseApprovalId, setBusyReleaseApprovalId] = useState<string | null>(null);
+    const [busyTenantId, setBusyTenantId] = useState<string | null>(null);
+    const [busyWorkspaceOwnerId, setBusyWorkspaceOwnerId] = useState<string | null>(null);
+    const [tenantStatusDrafts, setTenantStatusDrafts] = useState<Record<string, Tenant["status"]>>({});
+    const [workspaceTenantDrafts, setWorkspaceTenantDrafts] = useState<Record<string, string>>({});
+    const [releaseApprovalNote, setReleaseApprovalNote] = useState("");
     const [pendingRollbackReleaseId, setPendingRollbackReleaseId] = useState<string | null>(null);
     const [isSavingFlag, setIsSavingFlag] = useState(false);
     const [isPublishingRelease, setIsPublishingRelease] = useState(false);
@@ -155,15 +199,59 @@ export function AdminConsoleClient(props: Props) {
     const [jobOutputMode, setJobOutputMode] = useState<"" | "virtual_spec" | "runnable_scaffold">("");
     const [feedback, setFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
-    const canOperate = props.role === "admin" || props.role === "operator";
+    const capabilitySet = useMemo(() => new Set(props.capabilities), [props.capabilities]);
+    const canManageFlags = capabilitySet.has("feature_flags_write");
+    const canPublishReleases = capabilitySet.has("releases_publish");
+    const canApproveReleases = capabilitySet.has("releases_approve");
+    const canRollbackReleases = capabilitySet.has("releases_rollback");
+    const canReplayWebhooks = capabilitySet.has("webhooks_replay");
+    const canManageTenants = capabilitySet.has("tenants_manage");
     const statusTone = feedback?.tone === "error"
         ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300"
         : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300";
 
     const sortedFlags = useMemo(
-        () => [...featureFlags].sort((left, right) => left.key.localeCompare(right.key)),
+        () => [...featureFlags].sort((left, right) => {
+            const leftIdentity = `${left.key}::${left.scope}::${left.scopeId || ""}`;
+            const rightIdentity = `${right.key}::${right.scope}::${right.scopeId || ""}`;
+            return leftIdentity.localeCompare(rightIdentity);
+        }),
         [featureFlags]
     );
+
+    useEffect(() => {
+        setReleaseApprovalNote("");
+    }, [expandedReleaseId]);
+
+    useEffect(() => {
+        if (flagForm.scope === "global") {
+            if (flagForm.scopeId) {
+                setFlagForm((current) => ({ ...current, scopeId: "" }));
+            }
+            return;
+        }
+
+        if (flagForm.scope === "tenant") {
+            if (flagForm.scopeId) return;
+            const defaultTenantId = tenants[0]?.id || "";
+            if (defaultTenantId) {
+                setFlagForm((current) => current.scope === "tenant" && !current.scopeId
+                    ? { ...current, scopeId: defaultTenantId }
+                    : current);
+            }
+            return;
+        }
+
+        if (flagForm.scope === "workspace") {
+            if (flagForm.scopeId) return;
+            const defaultWorkspaceId = workspaces[0]?.ownerUserId || "";
+            if (defaultWorkspaceId) {
+                setFlagForm((current) => current.scope === "workspace" && !current.scopeId
+                    ? { ...current, scopeId: defaultWorkspaceId }
+                    : current);
+            }
+        }
+    }, [flagForm.scope, flagForm.scopeId, tenants, workspaces]);
     const pendingRollbackDetail = pendingRollbackReleaseId && focusedRelease?.id === pendingRollbackReleaseId
         ? focusedRelease
         : null;
@@ -364,31 +452,42 @@ export function AdminConsoleClient(props: Props) {
         description: string;
         enabled: boolean;
         scope: FeatureFlag["scope"];
+        scopeId?: string | null;
         value?: string | number | boolean | null;
     }) => {
         setFeedback(null);
-        setBusyFlagKey(input.key);
+        const scopeId = (input.scopeId || "").trim() || null;
+        const identity = buildFlagIdentity({
+            key: input.key,
+            scope: input.scope,
+            scopeId
+        });
+        setBusyFlagKey(identity);
         try {
             const res = await fetch("/api/admin/flags", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(input)
+                body: JSON.stringify({
+                    ...input,
+                    scopeId
+                })
             });
             const payload = (await res.json()) as { flag?: FeatureFlag; error?: string };
             if (!res.ok || !payload.flag) {
                 throw new Error(payload.error || "Failed to save feature flag.");
             }
             const savedFlag = payload.flag;
+            const savedIdentity = buildFlagIdentity(savedFlag);
 
             setFeatureFlags((current) => {
-                const exists = current.some((flag) => flag.key === savedFlag.key);
+                const exists = current.some((flag) => buildFlagIdentity(flag) === savedIdentity);
                 return exists
-                    ? current.map((flag) => flag.key === savedFlag.key ? savedFlag : flag)
+                    ? current.map((flag) => buildFlagIdentity(flag) === savedIdentity ? savedFlag : flag)
                     : [savedFlag, ...current];
             });
             setFeedback({
                 tone: "success",
-                message: `Feature flag ${savedFlag.key} saved.`
+                message: `Feature flag ${savedFlag.key} (${savedFlag.scope}${savedFlag.scopeId ? `:${savedFlag.scopeId}` : ""}) saved.`
             });
             refreshAll();
         } catch (error) {
@@ -403,7 +502,7 @@ export function AdminConsoleClient(props: Props) {
 
     const handleFlagCreate = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        if (!canOperate) return;
+        if (!canManageFlags) return;
 
         setIsSavingFlag(true);
         try {
@@ -412,12 +511,14 @@ export function AdminConsoleClient(props: Props) {
                 description: flagForm.description.trim(),
                 enabled: true,
                 scope: flagForm.scope,
+                scopeId: flagForm.scope === "global" ? null : flagForm.scopeId.trim() || null,
                 value: normalizeFlagValue(flagForm.value)
             });
             setFlagForm({
                 key: "",
                 description: "",
                 scope: "global",
+                scopeId: "",
                 value: ""
             });
         } finally {
@@ -426,20 +527,21 @@ export function AdminConsoleClient(props: Props) {
     };
 
     const handleFlagToggle = async (flag: FeatureFlag) => {
-        if (!canOperate) return;
+        if (!canManageFlags) return;
 
         await upsertFlag({
             key: flag.key,
             description: flag.description,
             enabled: !flag.enabled,
             scope: flag.scope,
+            scopeId: flag.scopeId ?? null,
             value: flag.value ?? null
         });
     };
 
     const handleReleasePublish = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        if (!canOperate) return;
+        if (!canPublishReleases) return;
 
         setIsPublishingRelease(true);
         setFeedback(null);
@@ -480,8 +582,67 @@ export function AdminConsoleClient(props: Props) {
         }
     };
 
+    const applyReleaseUpdate = (release: ReleaseSummary) => {
+        setReleases((current) => {
+            const exists = current.some((item) => item.id === release.id);
+            const next = exists
+                ? current.map((item) => item.id === release.id ? { ...item, ...release } : item)
+                : [release, ...current];
+            return next
+                .sort((left, right) => right.createdAt - left.createdAt)
+                .slice(0, 12);
+        });
+        setFocusedRelease((current) => current?.id === release.id
+            ? { ...current, ...release }
+            : current);
+        if (normalizeReleaseApprovalStatus(release.approvalStatus) !== "approved") {
+            setPendingRollbackReleaseId((current) => current === release.id ? null : current);
+        }
+    };
+
+    const handleReleaseApproval = async (
+        release: ReleaseSummary | ReleaseDetail,
+        decision: "approved" | "rejected"
+    ) => {
+        if (!canApproveReleases) return;
+
+        setBusyReleaseApprovalId(release.id);
+        setFeedback(null);
+        try {
+            const res = await fetch("/api/admin/releases/approve", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ownerUserId: release.ownerUserId,
+                    releaseTagId: release.id,
+                    decision,
+                    note: releaseApprovalNote.trim() || undefined
+                })
+            });
+            const payload = (await res.json()) as { release?: ReleaseSummary; error?: string };
+            if (!res.ok || !payload.release) {
+                throw new Error(payload.error || "Failed to update release approval.");
+            }
+
+            applyReleaseUpdate(payload.release);
+            setReleaseApprovalNote("");
+            setFeedback({
+                tone: "success",
+                message: `${payload.release.label} marked as ${releaseApprovalLabel(payload.release.approvalStatus).toLowerCase()}.`
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to update release approval."
+            });
+        } finally {
+            setBusyReleaseApprovalId(null);
+        }
+    };
+
     const handleReleaseRollbackReview = (release: ReleaseSummary) => {
-        if (!canOperate || !release.rollbackReady) return;
+        if (!canRollbackReleases || !release.rollbackReady) return;
 
         setPendingRollbackReleaseId(release.id);
         if (expandedReleaseId !== release.id) {
@@ -492,7 +653,7 @@ export function AdminConsoleClient(props: Props) {
     };
 
     const handleReleaseRollback = async (release: ReleaseSummary | ReleaseDetail) => {
-        if (!canOperate || !release.rollbackReady) return;
+        if (!canRollbackReleases || !release.rollbackReady) return;
 
         setBusyReleaseId(release.id);
         setFeedback(null);
@@ -529,6 +690,129 @@ export function AdminConsoleClient(props: Props) {
             });
         } finally {
             setBusyReleaseId(null);
+        }
+    };
+
+    const handleTenantStatusSave = async (tenantId: string) => {
+        if (!canManageTenants) return;
+
+        const tenant = tenants.find((item) => item.id === tenantId);
+        if (!tenant) return;
+
+        const nextStatus = tenantStatusDrafts[tenantId] || tenant.status;
+        if (nextStatus === tenant.status) {
+            setFeedback({
+                tone: "success",
+                message: `Tenant ${tenant.slug} is already ${tenant.status}.`
+            });
+            return;
+        }
+
+        setBusyTenantId(tenantId);
+        setFeedback(null);
+        try {
+            const response = await fetch("/api/admin/tenants", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    tenantId,
+                    status: nextStatus
+                })
+            });
+            const payload = (await response.json()) as { tenant?: Tenant; error?: string };
+            if (!response.ok || !payload.tenant) {
+                throw new Error(payload.error || "Failed to update tenant status.");
+            }
+            setTenants((current) => current.map((item) => item.id === payload.tenant?.id ? payload.tenant : item));
+            setTenantStatusDrafts((current) => {
+                const next = { ...current };
+                delete next[tenantId];
+                return next;
+            });
+            setFeedback({
+                tone: "success",
+                message: `Tenant ${payload.tenant.slug} updated to ${payload.tenant.status}.`
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to update tenant status."
+            });
+        } finally {
+            setBusyTenantId(null);
+        }
+    };
+
+    const handleWorkspaceTenantSave = async (ownerUserId: string) => {
+        if (!canManageTenants) return;
+
+        const workspace = workspaces.find((item) => item.ownerUserId === ownerUserId);
+        if (!workspace) return;
+
+        const nextTenantId = (workspaceTenantDrafts[ownerUserId] || workspace.tenantId || "").trim();
+        if (!nextTenantId) {
+            setFeedback({
+                tone: "error",
+                message: "Select a tenant before saving workspace assignment."
+            });
+            return;
+        }
+
+        if (nextTenantId === (workspace.tenantId || "")) {
+            setFeedback({
+                tone: "success",
+                message: `Workspace ${ownerUserId} is already assigned to tenant ${nextTenantId}.`
+            });
+            return;
+        }
+
+        setBusyWorkspaceOwnerId(ownerUserId);
+        setFeedback(null);
+        try {
+            const response = await fetch("/api/admin/tenants/rebind", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ownerUserId,
+                    tenantId: nextTenantId
+                })
+            });
+            const payload = (await response.json()) as {
+                ok?: boolean;
+                tenantId?: string;
+                workspaceRevision?: number | null;
+                error?: string;
+            };
+            if (!response.ok || !payload.ok) {
+                throw new Error(payload.error || "Failed to rebind workspace tenant.");
+            }
+
+            setWorkspaces((current) => current.map((item) => (
+                item.ownerUserId === ownerUserId
+                    ? {
+                        ...item,
+                        tenantId: payload.tenantId || nextTenantId
+                    }
+                    : item
+            )));
+            setWorkspaceTenantDrafts((current) => {
+                const next = { ...current };
+                delete next[ownerUserId];
+                return next;
+            });
+            setFeedback({
+                tone: "success",
+                message: `Workspace ${ownerUserId} moved to tenant ${payload.tenantId || nextTenantId}${payload.workspaceRevision ? ` (r${payload.workspaceRevision})` : ""}.`
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to rebind workspace tenant."
+            });
+        } finally {
+            setBusyWorkspaceOwnerId(null);
         }
     };
 
@@ -621,7 +905,7 @@ export function AdminConsoleClient(props: Props) {
                     </article>
                     <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5">
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Tracked Workspaces</p>
-                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{props.workspaces.length}</p>
+                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{workspaces.length}</p>
                         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Workspace envelopes with revision-aware summaries.</p>
                     </article>
                     <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5 md:col-span-2 xl:col-span-4">
@@ -636,7 +920,7 @@ export function AdminConsoleClient(props: Props) {
                         <div className="flex items-center justify-between gap-3">
                             <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Feature Flags</h2>
                             <span className="text-xs text-slate-500 dark:text-slate-300">
-                                {canOperate ? "Operator actions enabled" : "Read-only role"}
+                                {canManageFlags ? "Flag write enabled" : "Read-only role for flags"}
                             </span>
                         </div>
 
@@ -648,21 +932,28 @@ export function AdminConsoleClient(props: Props) {
                                 value={flagForm.key}
                                 onChange={(event) => setFlagForm((current) => ({ ...current, key: event.target.value }))}
                                 placeholder="Flag key, e.g. generation.enabled"
-                                disabled={!canOperate || isSavingFlag}
+                                disabled={!canManageFlags || isSavingFlag}
                                 className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                             />
                             <input
                                 value={flagForm.description}
                                 onChange={(event) => setFlagForm((current) => ({ ...current, description: event.target.value }))}
                                 placeholder="What this flag controls"
-                                disabled={!canOperate || isSavingFlag}
+                                disabled={!canManageFlags || isSavingFlag}
                                 className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                             />
                             <div className="grid gap-3 sm:grid-cols-[140px_minmax(0,1fr)]">
                                 <select
                                     value={flagForm.scope}
-                                    onChange={(event) => setFlagForm((current) => ({ ...current, scope: event.target.value as FeatureFlag["scope"] }))}
-                                    disabled={!canOperate || isSavingFlag}
+                                    onChange={(event) => {
+                                        const nextScope = event.target.value as FeatureFlag["scope"];
+                                        setFlagForm((current) => ({
+                                            ...current,
+                                            scope: nextScope,
+                                            scopeId: nextScope === "global" ? "" : current.scopeId
+                                        }));
+                                    }}
+                                    disabled={!canManageFlags || isSavingFlag}
                                     className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                                 >
                                     <option value="global">global</option>
@@ -673,13 +964,49 @@ export function AdminConsoleClient(props: Props) {
                                     value={flagForm.value}
                                     onChange={(event) => setFlagForm((current) => ({ ...current, value: event.target.value }))}
                                     placeholder="Optional value: true, false, 42, or text"
-                                    disabled={!canOperate || isSavingFlag}
+                                    disabled={!canManageFlags || isSavingFlag}
                                     className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                                 />
                             </div>
+                            {flagForm.scope !== "global" ? (
+                                flagForm.scope === "tenant" ? (
+                                    <select
+                                        value={flagForm.scopeId}
+                                        onChange={(event) => setFlagForm((current) => ({ ...current, scopeId: event.target.value }))}
+                                        disabled={!canManageFlags || isSavingFlag || tenants.length === 0}
+                                        className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                    >
+                                        <option value="">Select tenant scope</option>
+                                        {tenants.map((tenant) => (
+                                            <option key={tenant.id} value={tenant.id}>
+                                                {tenant.id} ({tenant.status})
+                                            </option>
+                                        ))}
+                                    </select>
+                                ) : (
+                                    <select
+                                        value={flagForm.scopeId}
+                                        onChange={(event) => setFlagForm((current) => ({ ...current, scopeId: event.target.value }))}
+                                        disabled={!canManageFlags || isSavingFlag || workspaces.length === 0}
+                                        className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                    >
+                                        <option value="">Select workspace scope</option>
+                                        {workspaces.map((workspace) => (
+                                            <option key={workspace.ownerUserId} value={workspace.ownerUserId}>
+                                                {workspace.ownerUserId} ({workspace.tenantId || "unassigned"})
+                                            </option>
+                                        ))}
+                                    </select>
+                                )
+                            ) : null}
                             <button
                                 type="submit"
-                                disabled={!canOperate || isSavingFlag || !flagForm.key.trim()}
+                                disabled={
+                                    !canManageFlags
+                                    || isSavingFlag
+                                    || !flagForm.key.trim()
+                                    || (flagForm.scope !== "global" && !flagForm.scopeId.trim())
+                                }
                                 className="fc-button-primary px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                             >
                                 {isSavingFlag ? "Saving flag..." : "Create enabled flag"}
@@ -689,7 +1016,7 @@ export function AdminConsoleClient(props: Props) {
                         <div className="mt-4 space-y-3">
                             {sortedFlags.length > 0 ? sortedFlags.map((flag) => (
                                 <div
-                                    key={flag.key}
+                                    key={buildFlagIdentity(flag)}
                                     className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60"
                                 >
                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -697,7 +1024,7 @@ export function AdminConsoleClient(props: Props) {
                                             <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{flag.key}</p>
                                             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{flag.description || "No description."}</p>
                                             <p className="mt-2 text-xs text-slate-500 dark:text-slate-300">
-                                                Scope: {flag.scope} | Updated {formatTimestamp(flag.updatedAt)}
+                                                Scope: {flag.scope}{flag.scopeId ? `:${flag.scopeId}` : ""} | Updated {formatTimestamp(flag.updatedAt)}
                                             </p>
                                             {flag.value !== null && flag.value !== undefined ? (
                                                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Value: {String(flag.value)}</p>
@@ -706,10 +1033,10 @@ export function AdminConsoleClient(props: Props) {
                                         <button
                                             type="button"
                                             onClick={() => void handleFlagToggle(flag)}
-                                            disabled={!canOperate || busyFlagKey === flag.key}
+                                            disabled={!canManageFlags || busyFlagKey === buildFlagIdentity(flag)}
                                             className={`rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:opacity-60 ${flag.enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}
                                         >
-                                            {busyFlagKey === flag.key ? "Saving..." : flag.enabled ? "Disable" : "Enable"}
+                                            {busyFlagKey === buildFlagIdentity(flag) ? "Saving..." : flag.enabled ? "Disable" : "Enable"}
                                         </button>
                                     </div>
                                 </div>
@@ -723,7 +1050,11 @@ export function AdminConsoleClient(props: Props) {
                         <div className="flex items-center justify-between gap-3">
                             <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Release Publisher</h2>
                             <span className="text-xs text-slate-500 dark:text-slate-300">
-                                {canOperate ? "Ready to publish" : "Read-only role"}
+                                {canPublishReleases
+                                    ? canApproveReleases
+                                        ? "Publish + approval enabled"
+                                        : "Ready to publish"
+                                    : "Publish disabled for this role"}
                             </span>
                         </div>
 
@@ -734,10 +1065,10 @@ export function AdminConsoleClient(props: Props) {
                             <select
                                 value={releaseForm.ownerUserId}
                                 onChange={(event) => setReleaseForm((current) => ({ ...current, ownerUserId: event.target.value }))}
-                                disabled={!canOperate || isPublishingRelease || props.workspaces.length === 0}
+                                disabled={!canPublishReleases || isPublishingRelease || workspaces.length === 0}
                                 className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                             >
-                                {props.workspaces.map((workspace) => (
+                                {workspaces.map((workspace) => (
                                     <option key={workspace.ownerUserId} value={workspace.ownerUserId}>
                                         {workspace.ownerUserId} | r{workspace.revision}
                                     </option>
@@ -747,19 +1078,19 @@ export function AdminConsoleClient(props: Props) {
                                 value={releaseForm.label}
                                 onChange={(event) => setReleaseForm((current) => ({ ...current, label: event.target.value }))}
                                 placeholder="Release label, e.g. r42-platform-ready"
-                                disabled={!canOperate || isPublishingRelease}
+                                disabled={!canPublishReleases || isPublishingRelease}
                                 className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                             />
                             <input
                                 value={releaseForm.note}
                                 onChange={(event) => setReleaseForm((current) => ({ ...current, note: event.target.value }))}
                                 placeholder="Optional release note"
-                                disabled={!canOperate || isPublishingRelease}
+                                disabled={!canPublishReleases || isPublishingRelease}
                                 className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
                             />
                             <button
                                 type="submit"
-                                disabled={!canOperate || isPublishingRelease || !releaseForm.ownerUserId || !releaseForm.label.trim()}
+                                disabled={!canPublishReleases || isPublishingRelease || !releaseForm.ownerUserId || !releaseForm.label.trim()}
                                 className="fc-button-primary px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                             >
                                 {isPublishingRelease ? "Publishing..." : "Publish release tag"}
@@ -785,7 +1116,7 @@ export function AdminConsoleClient(props: Props) {
                                             >
                                                 Open full page
                                             </Link>
-                                            {canOperate && focusedRelease?.rollbackReady ? (
+                                            {canRollbackReleases && focusedRelease?.rollbackReady ? (
                                                 <button
                                                     type="button"
                                                     onClick={() => setPendingRollbackReleaseId((current) => current === focusedRelease.id ? null : focusedRelease.id)}
@@ -816,10 +1147,21 @@ export function AdminConsoleClient(props: Props) {
                                         <div className="mt-4 space-y-4">
                                             <div className="grid gap-4 sm:grid-cols-2">
                                                 <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
-                                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{focusedRelease.label}</p>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{focusedRelease.label}</p>
+                                                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${releaseApprovalBadgeClasses(focusedRelease.approvalStatus)}`}>
+                                                            {releaseApprovalLabel(focusedRelease.approvalStatus)}
+                                                        </span>
+                                                    </div>
                                                     <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">Workspace {focusedRelease.ownerUserId}</p>
                                                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Snapshot {focusedRelease.snapshotId}</p>
                                                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Created {formatTimestamp(focusedRelease.createdAt)}</p>
+                                                    {focusedRelease.approvedAt ? (
+                                                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                            Decision at {formatTimestamp(focusedRelease.approvedAt)}
+                                                            {focusedRelease.approvedBy ? ` by ${focusedRelease.approvedBy}` : ""}
+                                                        </p>
+                                                    ) : null}
                                                 </div>
                                                 <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
                                                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Restore Readiness</p>
@@ -832,8 +1174,61 @@ export function AdminConsoleClient(props: Props) {
                                                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                                                         Snapshot summary: {focusedRelease.snapshotSummary || "not available"}
                                                     </p>
+                                                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                        Approval status: {releaseApprovalLabel(focusedRelease.approvalStatus)}
+                                                    </p>
+                                                    {focusedRelease.approvalNote ? (
+                                                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                            Approval note: {focusedRelease.approvalNote}
+                                                        </p>
+                                                    ) : null}
                                                     {focusedRelease.rollbackReason ? (
                                                         <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">{focusedRelease.rollbackReason}</p>
+                                                    ) : null}
+                                                </div>
+                                            </div>
+
+                                            <div className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">
+                                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                    <div>
+                                                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Release Approval</p>
+                                                        <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                                                            Current state: {releaseApprovalLabel(focusedRelease.approvalStatus)}
+                                                        </p>
+                                                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                            Rollback is available only for approved releases with persisted snapshot payloads.
+                                                        </p>
+                                                    </div>
+                                                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${releaseApprovalBadgeClasses(focusedRelease.approvalStatus)}`}>
+                                                        {releaseApprovalLabel(focusedRelease.approvalStatus)}
+                                                    </span>
+                                                </div>
+                                                <textarea
+                                                    value={releaseApprovalNote}
+                                                    onChange={(event) => setReleaseApprovalNote(event.target.value)}
+                                                    placeholder="Optional approval note for audit trail"
+                                                    disabled={!canApproveReleases || busyReleaseApprovalId === focusedRelease.id}
+                                                    className="mt-3 min-h-[72px] w-full rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                />
+                                                <div className="mt-3 flex flex-wrap gap-3">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleReleaseApproval(focusedRelease, "approved")}
+                                                        disabled={!canApproveReleases || busyReleaseApprovalId === focusedRelease.id}
+                                                        className="fc-button-primary px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                                                    >
+                                                        {busyReleaseApprovalId === focusedRelease.id ? "Saving decision..." : "Approve release"}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleReleaseApproval(focusedRelease, "rejected")}
+                                                        disabled={!canApproveReleases || busyReleaseApprovalId === focusedRelease.id}
+                                                        className="fc-button-secondary px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                                                    >
+                                                        {busyReleaseApprovalId === focusedRelease.id ? "Saving decision..." : "Reject release"}
+                                                    </button>
+                                                    {!canApproveReleases ? (
+                                                        <p className="text-xs text-slate-500 dark:text-slate-300">Approval actions are disabled for this role.</p>
                                                     ) : null}
                                                 </div>
                                             </div>
@@ -968,7 +1363,7 @@ export function AdminConsoleClient(props: Props) {
                                                         <button
                                                             type="button"
                                                             onClick={() => void handleReleaseRollback(focusedRelease)}
-                                                            disabled={!canOperate || !focusedRelease.rollbackReady || busyReleaseId === focusedRelease.id || isPreparingRollbackReview}
+                                                            disabled={!canRollbackReleases || !focusedRelease.rollbackReady || busyReleaseId === focusedRelease.id || busyReleaseApprovalId === focusedRelease.id || isPreparingRollbackReview}
                                                             className="fc-button-primary px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                                                         >
                                                             {busyReleaseId === focusedRelease.id ? "Rolling back..." : "Confirm rollback"}
@@ -995,12 +1390,25 @@ export function AdminConsoleClient(props: Props) {
                                 >
                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                         <div>
-                                            <p className="font-semibold text-slate-900 dark:text-slate-100">{release.label}</p>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <p className="font-semibold text-slate-900 dark:text-slate-100">{release.label}</p>
+                                                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${releaseApprovalBadgeClasses(release.approvalStatus)}`}>
+                                                    {releaseApprovalLabel(release.approvalStatus)}
+                                                </span>
+                                            </div>
                                             <p className="mt-1 text-slate-600 dark:text-slate-300">{release.ownerUserId}</p>
                                             <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Snapshot: {release.snapshotId}</p>
                                             <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
                                                 Stored projects: {release.snapshotProjectCount} | Rollback {release.rollbackReady ? "ready" : "blocked"}
                                             </p>
+                                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+                                                Approval: {releaseApprovalLabel(release.approvalStatus)}
+                                            </p>
+                                            {release.approvedAt ? (
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+                                                    Decision: {formatTimestamp(release.approvedAt)}{release.approvedBy ? ` by ${release.approvedBy}` : ""}
+                                                </p>
+                                            ) : null}
                                             {release.rollbackReason ? (
                                                 <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">{release.rollbackReason}</p>
                                             ) : null}
@@ -1028,8 +1436,8 @@ export function AdminConsoleClient(props: Props) {
                                             <button
                                                 type="button"
                                                 onClick={() => handleReleaseRollbackReview(release)}
-                                                disabled={!canOperate || !release.rollbackReady || busyReleaseId === release.id}
-                                                className="fc-button-secondary px-3 py-2 text-xs font-semibold"
+                                                disabled={!canRollbackReleases || !release.rollbackReady || busyReleaseId === release.id || busyReleaseApprovalId === release.id}
+                                                className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
                                             >
                                                 {busyReleaseId === release.id ? "Rolling back..." : "Review rollback"}
                                             </button>
@@ -1152,6 +1560,9 @@ export function AdminConsoleClient(props: Props) {
                                                 Project {focusedJob.projectId || "unknown"} | Version {focusedJob.versionId || "unknown"}
                                             </p>
                                             <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                Tenant {focusedJob.tenantId || "unassigned"} | Status {focusedJob.tenantStatus || "unknown"}
+                                            </p>
+                                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                                                 Snapshot {focusedJob.workspaceSnapshotId || "n/a"}
                                             </p>
                                             <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
@@ -1213,6 +1624,9 @@ export function AdminConsoleClient(props: Props) {
                                         {job.projectId || "unknown project"} | {job.versionId || "unknown version"}
                                     </p>
                                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+                                        Tenant: {job.tenantId || "unassigned"} ({job.tenantStatus || "unknown"})
+                                    </p>
+                                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
                                         Snapshot: {job.workspaceSnapshotId || "n/a"} | Updated {formatTimestamp(job.updatedAt)}
                                     </p>
                                     {job.artifactManifest ? (
@@ -1236,6 +1650,7 @@ export function AdminConsoleClient(props: Props) {
                                                     <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">Created: {formatTimestamp(job.createdAt)}</p>
                                                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Updated: {formatTimestamp(job.updatedAt)}</p>
                                                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Release intent: {job.releaseIntent || "not set"}</p>
+                                                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Tenant: {job.tenantId || "unassigned"} ({job.tenantStatus || "unknown"})</p>
                                                 </div>
                                                 <div>
                                                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">
@@ -1383,7 +1798,7 @@ export function AdminConsoleClient(props: Props) {
                         ) : null}
                         <AdminStripeWebhookPanel
                             initialEvents={props.webhookEvents}
-                            canOperate={canOperate}
+                            canReplay={canReplayWebhooks}
                             focusedEventId={expandedWebhookId}
                             onSelectEvent={handleWebhookSelection}
                         />
@@ -1391,17 +1806,52 @@ export function AdminConsoleClient(props: Props) {
                         <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
                             <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Tracked Workspaces</h2>
                             <div className="mt-4 space-y-3">
-                                {props.workspaces.length > 0 ? props.workspaces.map((workspace) => (
+                                {workspaces.length > 0 ? workspaces.map((workspace) => (
                                     <div
                                         key={workspace.ownerUserId}
                                         className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm dark:bg-slate-900/60"
                                     >
                                         <p className="font-semibold text-slate-900 dark:text-slate-100">{workspace.ownerUserId}</p>
                                         <p className="mt-1 text-slate-600 dark:text-slate-300">
-                                            Revision {workspace.revision} | {workspace.projectCount} projects
+                                            Tenant {workspace.tenantId || "unassigned"} | Revision {workspace.revision} | {workspace.projectCount} projects
                                         </p>
                                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{workspace.latestSnapshotSummary}</p>
                                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Updated {formatTimestamp(workspace.updatedAt)}</p>
+                                        {canManageTenants ? (
+                                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                                <select
+                                                    value={workspaceTenantDrafts[workspace.ownerUserId] || workspace.tenantId || ""}
+                                                    onChange={(event) => {
+                                                        const nextTenantId = event.target.value;
+                                                        setWorkspaceTenantDrafts((current) => ({
+                                                            ...current,
+                                                            [workspace.ownerUserId]: nextTenantId
+                                                        }));
+                                                    }}
+                                                    disabled={busyWorkspaceOwnerId === workspace.ownerUserId}
+                                                    className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                >
+                                                    <option value="">Select tenant</option>
+                                                    {tenants.map((tenant) => (
+                                                        <option key={tenant.id} value={tenant.id}>
+                                                            {tenant.id} ({tenant.status})
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleWorkspaceTenantSave(workspace.ownerUserId)}
+                                                    disabled={
+                                                        busyWorkspaceOwnerId === workspace.ownerUserId
+                                                        || !(workspaceTenantDrafts[workspace.ownerUserId] || workspace.tenantId || "").trim()
+                                                        || (workspaceTenantDrafts[workspace.ownerUserId] || workspace.tenantId || "") === (workspace.tenantId || "")
+                                                    }
+                                                    className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                                >
+                                                    {busyWorkspaceOwnerId === workspace.ownerUserId ? "Saving..." : "Save tenant"}
+                                                </button>
+                                            </div>
+                                        ) : null}
                                     </div>
                                 )) : (
                                     <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">No workspaces tracked yet.</p>
@@ -1410,16 +1860,53 @@ export function AdminConsoleClient(props: Props) {
                         </article>
 
                         <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
-                            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Tenants</h2>
+                            <div className="flex items-center justify-between gap-3">
+                                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Tenants</h2>
+                                <span className="text-xs text-slate-500 dark:text-slate-300">
+                                    {canManageTenants ? "Tenant status management enabled" : "Read-only tenant view"}
+                                </span>
+                            </div>
                             <div className="mt-4 space-y-3">
-                                {props.tenants.length > 0 ? props.tenants.map((tenant) => (
+                                {tenants.length > 0 ? tenants.map((tenant) => (
                                     <div
                                         key={tenant.id}
                                         className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm dark:bg-slate-900/60"
                                     >
-                                        <p className="font-semibold text-slate-900 dark:text-slate-100">{tenant.name}</p>
-                                        <p className="mt-1 text-slate-600 dark:text-slate-300">{tenant.slug} | {tenant.status}</p>
-                                        <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Workspaces: {tenant.workspaceCount}</p>
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div>
+                                                <p className="font-semibold text-slate-900 dark:text-slate-100">{tenant.name}</p>
+                                                <p className="mt-1 text-slate-600 dark:text-slate-300">{tenant.slug} | {tenant.status}</p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Workspaces: {tenant.workspaceCount}</p>
+                                            </div>
+                                            {canManageTenants ? (
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <select
+                                                        value={tenantStatusDrafts[tenant.id] || tenant.status}
+                                                        onChange={(event) => {
+                                                            const nextStatus = event.target.value as Tenant["status"];
+                                                            setTenantStatusDrafts((current) => ({
+                                                                ...current,
+                                                                [tenant.id]: nextStatus
+                                                            }));
+                                                        }}
+                                                        disabled={busyTenantId === tenant.id}
+                                                        className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                    >
+                                                        <option value="active">active</option>
+                                                        <option value="trial">trial</option>
+                                                        <option value="suspended">suspended</option>
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleTenantStatusSave(tenant.id)}
+                                                        disabled={busyTenantId === tenant.id || (tenantStatusDrafts[tenant.id] || tenant.status) === tenant.status}
+                                                        className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                                    >
+                                                        {busyTenantId === tenant.id ? "Saving..." : "Save status"}
+                                                    </button>
+                                                </div>
+                                            ) : null}
+                                        </div>
                                     </div>
                                 )) : (
                                     <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">No tenants provisioned yet.</p>

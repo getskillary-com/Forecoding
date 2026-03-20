@@ -16,6 +16,8 @@ type GenerationJobInput = {
     workspaceSnapshotId: string;
     projectId?: string | null;
     versionId?: string | null;
+    tenantId?: string | null;
+    tenantStatus?: "active" | "trial" | "suspended" | null;
     outputMode: string;
     templateKind?: string | null;
     releaseIntent?: string | null;
@@ -178,6 +180,13 @@ function mapGenerationJob(id: string, data: Record<string, unknown>): Generation
         workspaceSnapshotId: typeof data.workspaceSnapshotId === "string" ? data.workspaceSnapshotId : "",
         projectId: typeof data.projectId === "string" ? data.projectId : null,
         versionId: typeof data.versionId === "string" ? data.versionId : null,
+        tenantId: typeof data.tenantId === "string" ? data.tenantId : null,
+        tenantStatus:
+            data.tenantStatus === "trial" || data.tenantStatus === "suspended"
+                ? data.tenantStatus
+                : data.tenantStatus === "active"
+                ? "active"
+                : null,
         outputMode: typeof data.outputMode === "string" ? data.outputMode : "virtual_spec",
         templateKind: typeof data.templateKind === "string" ? data.templateKind : null,
         releaseIntent: typeof data.releaseIntent === "string" ? data.releaseIntent : null,
@@ -200,6 +209,8 @@ async function writeGenerationJob(
         workspaceSnapshotId: input.workspaceSnapshotId,
         projectId: input.projectId ?? null,
         versionId: input.versionId ?? null,
+        tenantId: input.tenantId ?? null,
+        tenantStatus: input.tenantStatus ?? null,
         outputMode: input.outputMode,
         templateKind: input.templateKind ?? null,
         releaseIntent: input.releaseIntent ?? null,
@@ -218,6 +229,8 @@ async function writeGenerationJob(
         workspaceSnapshotId: input.workspaceSnapshotId,
         projectId: input.projectId ?? null,
         versionId: input.versionId ?? null,
+        tenantId: input.tenantId ?? null,
+        tenantStatus: input.tenantStatus ?? null,
         outputMode: input.outputMode,
         templateKind: input.templateKind ?? null,
         releaseIntent: input.releaseIntent ?? null,
@@ -257,6 +270,8 @@ export async function createGenerationJob(
             workspaceSnapshotId: job.workspaceSnapshotId,
             projectId: job.projectId || "",
             versionId: job.versionId || "",
+            tenantId: job.tenantId || "",
+            tenantStatus: job.tenantStatus || "",
             templateKind: job.templateKind || "",
             releaseIntent: job.releaseIntent || ""
         }
@@ -277,6 +292,8 @@ export async function updateGenerationJob(
     const next: GenerationJob = {
         ...current,
         status: update.status ?? current.status,
+        tenantId: update.tenantId ?? current.tenantId ?? null,
+        tenantStatus: update.tenantStatus ?? current.tenantStatus ?? null,
         templateKind: update.templateKind ?? current.templateKind ?? null,
         releaseIntent: update.releaseIntent ?? current.releaseIntent ?? null,
         artifactManifest: update.artifactManifest === undefined
@@ -298,6 +315,8 @@ export async function updateGenerationJob(
         workspaceSnapshotId: next.workspaceSnapshotId,
         projectId: next.projectId ?? null,
         versionId: next.versionId ?? null,
+        tenantId: next.tenantId ?? null,
+        tenantStatus: next.tenantStatus ?? null,
         outputMode: next.outputMode,
         templateKind: next.templateKind ?? null,
         releaseIntent: next.releaseIntent ?? null,
@@ -324,6 +343,8 @@ export async function updateGenerationJob(
             workspaceSnapshotId: next.workspaceSnapshotId,
             projectId: next.projectId || "",
             versionId: next.versionId || "",
+            tenantId: next.tenantId || "",
+            tenantStatus: next.tenantStatus || "",
             templateKind: next.templateKind || "",
             releaseIntent: next.releaseIntent || ""
         }
@@ -379,6 +400,8 @@ export async function searchGenerationJobs(input?: {
                     job.workspaceSnapshotId,
                     job.projectId || "",
                     job.versionId || "",
+                    job.tenantId || "",
+                    job.tenantStatus || "",
                     job.outputMode,
                     job.templateKind || "",
                     job.releaseIntent || "",

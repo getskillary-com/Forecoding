@@ -46,13 +46,28 @@ function normalizeReleaseTags(value: unknown): ReleaseTag[] {
     if (!Array.isArray(value)) return [];
     return value
         .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-        .map((item) => ({
-            id: typeof item.id === "string" && item.id.trim() ? item.id : randomId("release"),
-            label: typeof item.label === "string" && item.label.trim() ? item.label.trim() : "Release",
-            snapshotId: typeof item.snapshotId === "string" ? item.snapshotId : "",
-            note: typeof item.note === "string" ? item.note : null,
-            createdAt: normalizeTimestamp(item.createdAt, Date.now())
-        }))
+        .map((item) => {
+            const approvalStatus: ReleaseTag["approvalStatus"] =
+                item.approvalStatus === "pending" || item.approvalStatus === "rejected"
+                    ? item.approvalStatus
+                    : "approved";
+            return {
+                id: typeof item.id === "string" && item.id.trim() ? item.id : randomId("release"),
+                label: typeof item.label === "string" && item.label.trim() ? item.label.trim() : "Release",
+                snapshotId: typeof item.snapshotId === "string" ? item.snapshotId : "",
+                note: typeof item.note === "string" ? item.note : null,
+                createdAt: normalizeTimestamp(item.createdAt, Date.now()),
+                approvalStatus,
+                approvalNote: typeof item.approvalNote === "string" ? item.approvalNote : null,
+                approvedBy: typeof item.approvedBy === "string" ? item.approvedBy : null,
+                approvedAt:
+                    typeof item.approvedAt === "number"
+                        ? item.approvedAt
+                        : item.approvedAt instanceof Date
+                        ? item.approvedAt.getTime()
+                        : null
+            };
+        })
         .filter((item) => item.snapshotId)
         .slice(0, MAX_RELEASE_TAGS);
 }
@@ -144,11 +159,18 @@ function buildSnapshotSummary(projects: Project[]) {
     return `Updated ${projects.length} workspace projects`;
 }
 
-export function createEmptyWorkspaceEnvelope(ownerUserId: string): WorkspaceEnvelope {
+function normalizeTenantId(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+}
+
+export function createEmptyWorkspaceEnvelope(ownerUserId: string, tenantId?: string | null): WorkspaceEnvelope {
     const now = Date.now();
     return {
         version: WORKSPACE_ENVELOPE_VERSION,
         ownerUserId,
+        tenantId: normalizeTenantId(tenantId),
         projects: [],
         revision: 0,
         revisionHistory: [],
@@ -160,7 +182,7 @@ export function createEmptyWorkspaceEnvelope(ownerUserId: string): WorkspaceEnve
 }
 
 export function normalizeWorkspaceEnvelope(raw: unknown, ownerUserId: string): WorkspaceEnvelope {
-    const fallback = createEmptyWorkspaceEnvelope(ownerUserId);
+    const fallback = createEmptyWorkspaceEnvelope(ownerUserId, null);
     if (!raw || typeof raw !== "object") {
         return fallback;
     }
@@ -179,6 +201,7 @@ export function normalizeWorkspaceEnvelope(raw: unknown, ownerUserId: string): W
             (typeof source.ownerUserId === "string" && source.ownerUserId.trim()) ||
             (typeof source.userId === "string" && source.userId.trim()) ||
             ownerUserId,
+        tenantId: normalizeTenantId(source.tenantId),
         projects,
         revision,
         revisionHistory: normalizeRevisionHistory(source.revisionHistory),
@@ -197,6 +220,7 @@ export function createNextWorkspaceEnvelope(
         actorId?: string | null;
         actorEmail?: string | null;
         kind?: WorkspaceChangeKind;
+        tenantId?: string | null;
     }
 ) {
     const now = Date.now();
@@ -233,6 +257,7 @@ export function createNextWorkspaceEnvelope(
     return {
         ...currentEnvelope,
         version: WORKSPACE_ENVELOPE_VERSION,
+        tenantId: normalizeTenantId(input.tenantId) ?? normalizeTenantId(currentEnvelope.tenantId),
         projects,
         revision: revision.number,
         revisionHistory: [revision, ...currentEnvelope.revisionHistory].slice(0, MAX_REVISION_HISTORY),
@@ -244,7 +269,14 @@ export function createNextWorkspaceEnvelope(
 
 export function buildWorkspaceReleaseTag(
     envelope: WorkspaceEnvelope,
-    input: { label: string; note?: string | null }
+    input: {
+        label: string;
+        note?: string | null;
+        approvalStatus?: "pending" | "approved" | "rejected";
+        approvalNote?: string | null;
+        approvedBy?: string | null;
+        approvedAt?: number | null;
+    }
 ) {
     const latestSnapshot = envelope.snapshots[0];
     if (!latestSnapshot) return envelope;
@@ -254,7 +286,11 @@ export function buildWorkspaceReleaseTag(
         label: input.label.trim() || `r${envelope.revision}`,
         snapshotId: latestSnapshot.id,
         note: input.note ?? null,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        approvalStatus: input.approvalStatus ?? "pending",
+        approvalNote: input.approvalNote ?? null,
+        approvedBy: input.approvedBy ?? null,
+        approvedAt: input.approvedAt ?? null
     };
 
     return {

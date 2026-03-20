@@ -12,7 +12,7 @@ import { deriveArchitectureDiagramMermaid } from "@/lib/architecture-diagram";
 import { generateProjectResources } from "@/lib/gemini";
 import { isAdminUser } from "@/lib/admin";
 import { createGenerationJob, updateGenerationJob } from "@/lib/data/generation-jobs";
-import { isFeatureFlagEnabled } from "@/lib/data/feature-flags";
+import { isFeatureFlagEnabledForContext } from "@/lib/data/feature-flags";
 import { getWorkspaceByUserId, updateProjectVersionInWorkspaceByUserId } from "@/lib/data/workspaces";
 import { getServerUser } from "@/lib/server-auth";
 import {
@@ -394,7 +394,32 @@ export async function POST(req: Request) {
 
         const hasPaid = version.data.paymentStatus === "paid";
         const isAdmin = isAdminUser({ email: user.email });
-        const generationEnabled = await isFeatureFlagEnabled("generation.enabled", true);
+        const tenantId = user.tenantId ?? null;
+        const tenantStatus = user.tenantStatus ?? null;
+        if (tenantStatus === "suspended" && !isAdmin) {
+            return NextResponse.json(
+                {
+                    error: "Generation is blocked because this tenant is suspended.",
+                    code: "TENANT_SUSPENDED",
+                    remediationHints: [
+                        {
+                            code: "TENANT_SUSPENDED",
+                            severity: "error",
+                            message: `Tenant ${tenantId || "unknown"} is currently suspended.`,
+                            action: "Ask an admin to reactivate the tenant before retrying generation.",
+                            autoFixable: false
+                        }
+                    ]
+                },
+                { status: 423 }
+            );
+        }
+        const generationEnabled = await isFeatureFlagEnabledForContext({
+            key: "generation.enabled",
+            fallback: true,
+            tenantId,
+            workspaceId: user.uid
+        });
         if (!generationEnabled && !isAdmin) {
             return NextResponse.json(
                 {
@@ -467,6 +492,8 @@ export async function POST(req: Request) {
             workspaceSnapshotId,
             projectId,
             versionId,
+            tenantId,
+            tenantStatus,
             outputMode: parsedOutputMode,
             templateKind: parsedTemplateKindHint ?? null,
             releaseIntent,
@@ -557,6 +584,7 @@ export async function POST(req: Request) {
 
                 await updateProjectVersionInWorkspaceByUserId({
                     userId: user.uid,
+                    tenantId,
                     projectId,
                     versionId,
                     actorId: user.uid,

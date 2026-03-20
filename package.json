@@ -12,6 +12,7 @@
     "validate:generated": "node scripts/validate-generated-scaffold.mjs",
     "validate:fixtures": "node scripts/validate-spec-pack-fixtures.mjs",
     "smoke:generate-api": "node scripts/smoke-generate-api.mjs",
+    "smoke:workspace-tasks-api": "node scripts/smoke-workspace-tasks-api.mjs",
     "smoke:admin-api": "node scripts/smoke-admin-api.mjs",
     "smoke:admin-api:local": "node scripts/smoke-admin-api.mjs --spawn-dev-server --port 4041",
     "secrets:apphosting": "node scripts/apphosting-secrets.mjs",

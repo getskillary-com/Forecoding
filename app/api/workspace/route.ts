@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getServerSessionIdentity } from "@/lib/server-auth";
+import { getServerUser } from "@/lib/server-auth";
 import { getWorkspaceByUserId, saveWorkspaceEnvelopeByUserId } from "@/lib/data/workspaces";
 import { normalizeProjects } from "@/lib/project-language";
 import type { Project } from "@/types";
@@ -15,19 +15,19 @@ function parseProjects(raw: unknown): Project[] {
     return normalizeProjects(raw);
 }
 
-async function requireUserId() {
-    const user = await getServerSessionIdentity();
-    return user?.uid ?? null;
+async function requireUser() {
+    const user = await getServerUser();
+    return user?.uid ? user : null;
 }
 
 export async function GET(req: Request) {
     try {
-        const userId = await requireUserId();
-        if (!userId) {
+        const user = await requireUser();
+        if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const workspace = await getWorkspaceByUserId(userId);
+        const workspace = await getWorkspaceByUserId(user.uid);
 
         const url = new URL(req.url);
         const projectId = url.searchParams.get("projectId");
@@ -47,20 +47,20 @@ export async function GET(req: Request) {
 
 export async function PUT(req: Request) {
     try {
-        const userId = await requireUserId();
-        if (!userId) {
+        const user = await requireUser();
+        if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
         const parsedBody = WorkspacePutBodySchema.parse(await req.json());
         const projects = parseProjects(parsedBody.projects);
-        const user = await getServerSessionIdentity();
         const result = await saveWorkspaceEnvelopeByUserId({
-            userId,
+            userId: user.uid,
+            tenantId: user.tenantId ?? null,
             projects,
             expectedRevision: parsedBody.expectedRevision,
-            actorId: userId,
-            actorEmail: user?.email ?? null,
+            actorId: user.uid,
+            actorEmail: user.email ?? null,
             changeSummary: parsedBody.changeSummary
         });
 

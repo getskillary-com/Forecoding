@@ -120,11 +120,16 @@ export async function searchAuditEvents(input?: {
 export async function listGovernanceOperationEvents(limit = 12): Promise<AuditEvent[]> {
     const interestingEventTypes = new Set([
         "workspace.release_tag_created",
+        "workspace.release_approved",
+        "workspace.release_rejected",
         "workspace.release_rolled_back",
         "stripe.webhook_replayed",
         "stripe.webhook_replay_failed",
         "generation.job_failed",
-        "generation.job_succeeded"
+        "generation.job_succeeded",
+        "tenant.status_updated",
+        "tenant.user_reassigned",
+        "workspace.tenant_rebound"
     ]);
 
     const snap = await auditEventsCollection()

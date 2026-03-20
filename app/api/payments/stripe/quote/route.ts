@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Project } from "@/types";
 import { isAdminUser } from "@/lib/admin";
-import { getServerSessionIdentity } from "@/lib/server-auth";
+import { getServerUser } from "@/lib/server-auth";
 import {
     getStripeCurrency,
     getStripeMaxUnitAmountCents,
@@ -48,11 +48,23 @@ async function loadProjectForUser(userId: string, projectId: string) {
 
 export async function POST(req: Request) {
     try {
-        const user = await getServerSessionIdentity();
+        const user = await getServerUser();
         if (!user?.uid) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
-        if (isAdminUser({ email: user.email })) {
+
+        const isAdmin = isAdminUser({ email: user.email });
+        if (user.tenantStatus === "suspended" && !isAdmin) {
+            return NextResponse.json(
+                {
+                    error: "Pricing quote is unavailable because this tenant is suspended.",
+                    code: "TENANT_SUSPENDED"
+                },
+                { status: 423 }
+            );
+        }
+
+        if (isAdmin) {
             const currency = getStripeCurrency();
             return NextResponse.json({
                 ok: true,

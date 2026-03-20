@@ -65,6 +65,7 @@ export default async function AdminJobDetailPage({
                         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Target</p>
                         <p className="mt-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{job.projectId || "unknown project"}</p>
                         <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Version: {job.versionId || "unknown version"}</p>
+                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Tenant: {job.tenantId || "unassigned"} ({job.tenantStatus || "unknown"})</p>
                         <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Workspace snapshot: {job.workspaceSnapshotId || "n/a"}</p>
                     </article>
                     <article className="rounded-2xl border border-[color:var(--border)] bg-white/80 p-4 dark:bg-slate-900/60">

@@ -1,0 +1,282 @@
+#!/usr/bin/env node
+
+import path from "node:path";
+import process from "node:process";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, "..");
+
+function parseArgs(argv) {
+    const args = {
+        port: 4043,
+        timeoutMs: 90_000
+    };
+
+    for (let index = 2; index < argv.length; index += 1) {
+        const current = argv[index];
+        const next = argv[index + 1];
+
+        if (current === "--port" && next) {
+            const parsed = Number.parseInt(next, 10);
+            if (Number.isFinite(parsed) && parsed > 0) {
+                args.port = parsed;
+            }
+            index += 1;
+            continue;
+        }
+
+        if (current === "--timeout-ms" && next) {
+            const parsed = Number.parseInt(next, 10);
+            if (Number.isFinite(parsed) && parsed >= 10_000) {
+                args.timeoutMs = parsed;
+            }
+            index += 1;
+            continue;
+        }
+    }
+
+    return args;
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function trimOutput(text, maxChars = 6000) {
+    const normalized = String(text || "").trim();
+    if (normalized.length <= maxChars) {
+        return normalized;
+    }
+    return normalized.slice(normalized.length - maxChars);
+}
+
+function createOutputCollector() {
+    const buffer = [];
+    return {
+        push(chunk) {
+            const text = String(chunk || "");
+            if (!text) return;
+            buffer.push(text);
+            if (buffer.length > 400) {
+                buffer.splice(0, buffer.length - 400);
+            }
+        },
+        read() {
+            return trimOutput(buffer.join(""));
+        }
+    };
+}
+
+function quoteForCmdArg(value) {
+    if (!value) return '""';
+    const escaped = String(value).replace(/"/g, '""');
+    if (/[ \t&()^<>|]/.test(String(value))) {
+        return `"${escaped}"`;
+    }
+    return escaped;
+}
+
+function spawnDevServer(port) {
+    const child = process.platform === "win32"
+        ? spawn(
+            "cmd.exe",
+            [
+                "/d",
+                "/s",
+                "/c",
+                [
+                    "npm",
+                    "run",
+                    "dev",
+                    "--",
+                    "--port",
+                    String(port),
+                    "--hostname",
+                    "127.0.0.1"
+                ].map((part) => quoteForCmdArg(part)).join(" ")
+            ],
+            {
+                cwd: projectRoot,
+                env: {
+                    ...process.env,
+                    NEXT_TELEMETRY_DISABLED: "1"
+                },
+                stdio: ["ignore", "pipe", "pipe"],
+                windowsHide: true
+            }
+        )
+        : spawn(
+            "npm",
+            ["run", "dev", "--", "--port", String(port), "--hostname", "127.0.0.1"],
+            {
+                cwd: projectRoot,
+                env: {
+                    ...process.env,
+                    NEXT_TELEMETRY_DISABLED: "1"
+                },
+                stdio: ["ignore", "pipe", "pipe"],
+                windowsHide: true
+            }
+        );
+
+    const output = createOutputCollector();
+    child.stdout.on("data", (chunk) => output.push(chunk));
+    child.stderr.on("data", (chunk) => output.push(chunk));
+
+    return { child, output };
+}
+
+async function waitForServer(url, timeoutMs, readLogs, getExitState) {
+    const start = Date.now();
+    let lastError = "";
+
+    while (Date.now() - start < timeoutMs) {
+        const exitState = getExitState();
+        if (exitState.exited) {
+            const logs = readLogs();
+            throw new Error(
+                `Dev server exited before becoming ready (exitCode=${String(exitState.code)} signal=${String(exitState.signal)}).\n\nRecent logs:\n${logs || "(no output)"}`
+            );
+        }
+
+        try {
+            const response = await fetch(url, {
+                method: "GET",
+                headers: {
+                    accept: "application/json"
+                }
+            });
+
+            if (response.status >= 200 && response.status < 500) {
+                return;
+            }
+
+            lastError = `Unexpected readiness status: ${response.status}`;
+        } catch (error) {
+            lastError = error instanceof Error ? error.message : String(error);
+        }
+
+        await sleep(1000);
+    }
+
+    const logs = readLogs();
+    throw new Error(
+        `Timed out waiting for dev server at ${url}. Last error: ${lastError || "unknown"}\n\nRecent logs:\n${logs || "(no output)"}`
+    );
+}
+
+function terminateProcess(child) {
+    if (!child || child.exitCode !== null) {
+        return Promise.resolve();
+    }
+
+    if (process.platform === "win32") {
+        return new Promise((resolve) => {
+            const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+                stdio: "ignore",
+                windowsHide: true
+            });
+            killer.on("close", () => resolve());
+            killer.on("error", () => resolve());
+        });
+    }
+
+    return new Promise((resolve) => {
+        child.once("close", () => resolve());
+        child.kill("SIGTERM");
+        setTimeout(() => {
+            if (child.exitCode === null) {
+                child.kill("SIGKILL");
+            }
+        }, 3000);
+    });
+}
+
+async function assertUnauthorizedJson(response, context, readLogs) {
+    const contentType = response.headers.get("content-type") || "";
+    let payload = null;
+
+    try {
+        payload = await response.json();
+    } catch {
+        payload = null;
+    }
+
+    if (response.status !== 401) {
+        throw new Error(
+            `${context} expected 401, received ${response.status}.\nPayload: ${JSON.stringify(payload)}\n\nRecent logs:\n${readLogs() || "(no output)"}`
+        );
+    }
+    if (!contentType.includes("application/json")) {
+        throw new Error(`${context} expected JSON response, received content-type "${contentType}".`);
+    }
+    if (!payload || payload.error !== "Unauthorized") {
+        throw new Error(`${context} expected unauthorized payload, received ${JSON.stringify(payload)}.`);
+    }
+}
+
+async function main() {
+    const args = parseArgs(process.argv);
+    const port = args.port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const taskApiUrl = `${baseUrl}/api/workspace/tasks`;
+    const { child, output } = spawnDevServer(port);
+    const exitState = {
+        exited: false,
+        code: null,
+        signal: null
+    };
+
+    child.on("error", (error) => {
+        output.push(`\n[spawn-error] ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+    child.on("exit", (code, signal) => {
+        exitState.exited = true;
+        exitState.code = code;
+        exitState.signal = signal;
+    });
+
+    try {
+        await waitForServer(taskApiUrl, args.timeoutMs, () => output.read(), () => exitState);
+
+        const getRes = await fetch(
+            `${taskApiUrl}?projectId=smoke-project&versionId=smoke-version`,
+            {
+                method: "GET",
+                headers: {
+                    accept: "application/json"
+                }
+            }
+        );
+        await assertUnauthorizedJson(getRes, "GET /api/workspace/tasks", () => output.read());
+
+        const postRes = await fetch(taskApiUrl, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                accept: "application/json"
+            },
+            body: JSON.stringify({
+                projectId: "smoke-project",
+                versionId: "smoke-version",
+                mode: "strict",
+                persist: true
+            })
+        });
+        await assertUnauthorizedJson(postRes, "POST /api/workspace/tasks", () => output.read());
+
+        process.stdout.write(
+            `PASS /api/workspace/tasks smoke test - unauthenticated GET/POST returned 401 on ${taskApiUrl}\n`
+        );
+    } finally {
+        await terminateProcess(child);
+    }
+}
+
+main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+    process.exitCode = 1;
+});
