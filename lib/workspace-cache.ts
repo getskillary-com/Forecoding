@@ -154,18 +154,24 @@ function normalizeUpdatedAt(value: unknown, fallback: number): number {
     return fallback;
 }
 
+function mergeProjectsPreservingLocalProgress(remoteProjects: Project[], localProjects: Project[]): Project[] {
+    return mergeProjectsForConflictRetry(remoteProjects, localProjects);
+}
+
 function writeProjectsEnvelopeFromRemote(
     projects: Project[],
     metadata?: { revision?: unknown; updatedAt?: unknown }
 ): WorkspaceEnvelope {
     const current = readWorkspaceEnvelopeFromLocalStorage();
     const remoteRevision = normalizeRevision(metadata?.revision);
+    const remoteUpdatedAt = normalizeUpdatedAt(metadata?.updatedAt, current.updatedAt);
     const nextRevision = remoteRevision !== null ? Math.max(current.revision, remoteRevision) : current.revision;
+    const mergedProjects = mergeProjectsPreservingLocalProgress(normalizeProjects(projects), current.projects);
     const nextEnvelope: WorkspaceEnvelope = {
         ...current,
-        projects: normalizeProjects(projects),
+        projects: mergedProjects,
         revision: nextRevision,
-        updatedAt: normalizeUpdatedAt(metadata?.updatedAt, Date.now())
+        updatedAt: Math.max(current.updatedAt, remoteUpdatedAt)
     };
     writeWorkspaceEnvelopeToLocalStorage(nextEnvelope);
     return nextEnvelope;
@@ -308,7 +314,12 @@ export function readProjectsFromLocalStorage(): Project[] {
 }
 
 export function writeProjectsToLocalStorage(projects: Project[]): void {
-    writeProjectsEnvelopeFromRemote(projects, { updatedAt: Date.now() });
+    const current = readWorkspaceEnvelopeFromLocalStorage();
+    writeWorkspaceEnvelopeToLocalStorage({
+        ...current,
+        projects: normalizeProjects(projects),
+        updatedAt: Date.now()
+    });
 }
 
 export function getCachedProject(projectId?: string | null): Project | null {
@@ -352,9 +363,16 @@ export async function prefetchWorkspaceRemote(input?: PrefetchWorkspaceRemoteOpt
             if (!res.ok) return null;
             const data = (await res.json()) as RemoteWorkspacePayload;
             if (data.workspace) {
-                writeWorkspaceEnvelopeToLocalStorage(data.workspace);
+                const current = readWorkspaceEnvelopeFromLocalStorage();
+                const mergedProjects = mergeProjectsPreservingLocalProgress(data.workspace.projects, current.projects);
+                writeWorkspaceEnvelopeToLocalStorage({
+                    ...data.workspace,
+                    projects: mergedProjects,
+                    revision: Math.max(current.revision, data.workspace.revision),
+                    updatedAt: Math.max(current.updatedAt, data.workspace.updatedAt)
+                });
                 lastRemoteFetchAtByKey.set(fetchKey, Date.now());
-                return data.workspace.projects;
+                return mergedProjects;
             }
             if (!Array.isArray(data.projects)) return null;
             if (options.projectId && options.mergeProjectScopedResult) {
@@ -370,12 +388,12 @@ export async function prefetchWorkspaceRemote(input?: PrefetchWorkspaceRemoteOpt
                 lastRemoteFetchAtByKey.set(fetchKey, Date.now());
                 return mergedProjects;
             }
-            writeProjectsEnvelopeFromRemote(data.projects, {
+            const nextEnvelope = writeProjectsEnvelopeFromRemote(data.projects, {
                 revision: data.revision,
                 updatedAt: data.updatedAt
             });
             lastRemoteFetchAtByKey.set(fetchKey, Date.now());
-            return data.projects;
+            return nextEnvelope.projects;
         } catch {
             return null;
         } finally {
