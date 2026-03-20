@@ -90,6 +90,17 @@ function normalizeChangeSet(value: unknown): WorkspaceChangeSet | null {
         activeVersionIds,
         actorId: typeof item.actorId === "string" ? item.actorId : null,
         actorEmail: typeof item.actorEmail === "string" ? item.actorEmail : null,
+        saveMode: item.saveMode === "patch" ? "patch" : item.saveMode === "snapshot" ? "snapshot" : undefined,
+        idempotencyKey: typeof item.idempotencyKey === "string" ? item.idempotencyKey : null,
+        operationDigest: typeof item.operationDigest === "string" ? item.operationDigest : null,
+        rebaseCount:
+            typeof item.rebaseCount === "number" && Number.isFinite(item.rebaseCount)
+                ? Math.max(0, Math.round(item.rebaseCount))
+                : undefined,
+        appliedOperations:
+            typeof item.appliedOperations === "number" && Number.isFinite(item.appliedOperations)
+                ? Math.max(0, Math.round(item.appliedOperations))
+                : undefined,
         createdAt: normalizeTimestamp(item.createdAt, Date.now())
     };
 }
@@ -221,6 +232,11 @@ export function createNextWorkspaceEnvelope(
         actorEmail?: string | null;
         kind?: WorkspaceChangeKind;
         tenantId?: string | null;
+        saveMode?: "snapshot" | "patch";
+        idempotencyKey?: string | null;
+        operationDigest?: string | null;
+        rebaseCount?: number;
+        appliedOperations?: number;
     }
 ) {
     const now = Date.now();
@@ -235,6 +251,17 @@ export function createNextWorkspaceEnvelope(
         activeVersionIds: buildActiveVersionIds(projects),
         actorId: input.actorId ?? null,
         actorEmail: input.actorEmail ?? null,
+        saveMode: input.saveMode,
+        idempotencyKey: input.idempotencyKey ?? null,
+        operationDigest: input.operationDigest ?? null,
+        rebaseCount:
+            typeof input.rebaseCount === "number" && Number.isFinite(input.rebaseCount)
+                ? Math.max(0, Math.round(input.rebaseCount))
+                : undefined,
+        appliedOperations:
+            typeof input.appliedOperations === "number" && Number.isFinite(input.appliedOperations)
+                ? Math.max(0, Math.round(input.appliedOperations))
+                : undefined,
         createdAt: now
     };
     const revision: WorkspaceRevision = {

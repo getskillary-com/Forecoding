@@ -683,6 +683,86 @@ export interface TaskRun {
     rollbackExecuted?: boolean;
 }
 
+export type ProgressTemplateVersion = "readiness_v1";
+
+export interface ProgressTemplateRequirementV1 {
+    key: ReadinessRequirementKey;
+    label: string;
+}
+
+export interface ProgressTemplateCriterionV1 {
+    key: ReadinessCriterionKey;
+    label: string;
+    requirementKeys: ReadinessRequirementKey[];
+}
+
+export interface ProgressTemplateV1 {
+    version: "progress_template_v1";
+    templateVersion: ProgressTemplateVersion;
+    taxonomy: "readiness";
+    criteria: ProgressTemplateCriterionV1[];
+    requirements: ProgressTemplateRequirementV1[];
+    updatedAt: number;
+}
+
+export interface ProgressStateV1 {
+    version: "progress_state_v1";
+    templateVersion: ProgressTemplateVersion;
+    score: number;
+    functionalReady: boolean;
+    uiReady: boolean;
+    paymentReady: boolean;
+    blockingIssues: string[];
+    nextMilestone: string;
+    primaryBlocker: string | null;
+    currentFocus: string | null;
+    requirementStatuses: Partial<Record<ReadinessRequirementKey, ReadinessRequirementStatus>>;
+    changedRequirementKeys: ReadinessRequirementKey[];
+    updatedAt: number;
+}
+
+export type ProgressEventType =
+    | "requirement.focused"
+    | "requirement.filled"
+    | "readiness.recomputed"
+    | "task.run.updated"
+    | "generation.gate.changed"
+    | "workspace.patch.applied";
+
+export interface ProgressEventV1 {
+    id: string;
+    type: ProgressEventType;
+    createdAt: number;
+    projectId?: string;
+    versionId?: string;
+    requirementKey?: ReadinessRequirementKey | null;
+    questionKey?: string | null;
+    sourceMessageId?: string | null;
+    summary?: string | null;
+    metadata?: Record<string, string>;
+}
+
+export type WorkspacePatchOperation =
+    | {
+        type: "replace_projects";
+        projects: Project[];
+    }
+    | {
+        type: "upsert_project";
+        project: Project;
+    }
+    | {
+        type: "remove_project";
+        projectId: string;
+    }
+    | {
+        type: "append_progress_events";
+        projectId: string;
+        versionId: string;
+        events: ProgressEventV1[];
+        progressState?: ProgressStateV1 | null;
+    };
+
 export interface ProviderRunLog {
     id: string;
     provider: "openai" | "gemini" | "claude" | "unknown";
@@ -804,6 +884,11 @@ export interface ProjectVersionData {
     taskRuns?: TaskRun[];
     providerRunLogs?: ProviderRunLog[];
     billingEvents?: BillingEvent[];
+    progressTemplateVersion?: ProgressTemplateVersion;
+    progressTemplate?: ProgressTemplateV1;
+    progressState?: ProgressStateV1;
+    progressEvents?: ProgressEventV1[];
+    progressCursor?: string;
 }
 
 // Represents a specific snapshot/iteration of a project
@@ -848,6 +933,11 @@ export interface WorkspaceChangeSet {
     activeVersionIds: string[];
     actorId?: string | null;
     actorEmail?: string | null;
+    saveMode?: "snapshot" | "patch";
+    idempotencyKey?: string | null;
+    operationDigest?: string | null;
+    rebaseCount?: number;
+    appliedOperations?: number;
     createdAt: number;
 }
 

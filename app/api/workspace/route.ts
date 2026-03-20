@@ -4,16 +4,55 @@ import { getServerUser } from "@/lib/server-auth";
 import {
     getWorkspaceByUserId,
     saveWorkspaceEnvelopeByUserId,
+    saveWorkspacePatchByUserId,
     WorkspaceDocumentTooLargeError
 } from "@/lib/data/workspaces";
 import { normalizeProjects } from "@/lib/project-language";
-import type { Project, WorkspaceEnvelope } from "@/types";
+import type { Project, WorkspaceEnvelope, WorkspacePatchOperation } from "@/types";
 
-const WorkspacePutBodySchema = z.object({
+const WorkspaceSnapshotPutBodySchema = z.object({
+    saveMode: z.literal("snapshot").optional(),
     projects: z.array(z.unknown()),
     expectedRevision: z.number().int().min(0),
     changeSummary: z.string().trim().min(1).max(160).optional()
 });
+
+const WorkspacePatchOperationSchema = z.discriminatedUnion("type", [
+    z.object({
+        type: z.literal("replace_projects"),
+        projects: z.array(z.unknown())
+    }),
+    z.object({
+        type: z.literal("upsert_project"),
+        project: z.unknown()
+    }),
+    z.object({
+        type: z.literal("remove_project"),
+        projectId: z.string().trim().min(1)
+    }),
+    z.object({
+        type: z.literal("append_progress_events"),
+        projectId: z.string().trim().min(1),
+        versionId: z.string().trim().min(1),
+        events: z.array(z.unknown()),
+        progressState: z.unknown().optional()
+    })
+]);
+
+const WorkspacePatchPutBodySchema = z.object({
+    saveMode: z.literal("patch"),
+    idempotencyKey: z.string().trim().min(8).max(220),
+    expectedRevision: z.number().int().min(0),
+    projectId: z.string().trim().min(1).optional(),
+    versionId: z.string().trim().min(1).optional(),
+    operations: z.array(WorkspacePatchOperationSchema).min(1),
+    changeSummary: z.string().trim().min(1).max(160).optional()
+});
+
+const WorkspacePutBodySchema = z.union([
+    WorkspaceSnapshotPutBodySchema,
+    WorkspacePatchPutBodySchema
+]);
 
 function parseProjects(raw: unknown): Project[] {
     return normalizeProjects(raw);
@@ -87,6 +126,55 @@ export async function PUT(req: Request) {
         }
 
         const parsedBody = WorkspacePutBodySchema.parse(await req.json());
+        if (parsedBody.saveMode === "patch") {
+            const result = await saveWorkspacePatchByUserId({
+                userId: user.uid,
+                tenantId: user.tenantId ?? null,
+                expectedRevision: parsedBody.expectedRevision,
+                idempotencyKey: parsedBody.idempotencyKey,
+                operations: parsedBody.operations as WorkspacePatchOperation[],
+                projectId: parsedBody.projectId,
+                versionId: parsedBody.versionId,
+                actorId: user.uid,
+                actorEmail: user.email ?? null,
+                changeSummary: parsedBody.changeSummary
+            });
+
+            if (!result.ok) {
+                const conflictWorkspace = stripSnapshotProjects(result.currentEnvelope);
+                return NextResponse.json(
+                    {
+                        error: result.message,
+                        code: result.code,
+                        revision: conflictWorkspace.revision,
+                        workspace: conflictWorkspace,
+                        saveMode: "patch",
+                        idempotent: false,
+                        rebaseCount: 0,
+                        appliedOperations: 0,
+                        progressCursor: null
+                    },
+                    { status: 409 }
+                );
+            }
+
+            const successWorkspace = stripSnapshotProjects(result.envelope);
+            return NextResponse.json(
+                {
+                    ok: true,
+                    revision: successWorkspace.revision,
+                    workspace: successWorkspace,
+                    projects: successWorkspace.projects,
+                    saveMode: "patch",
+                    idempotent: result.idempotent,
+                    rebaseCount: result.rebaseCount,
+                    appliedOperations: result.appliedOperations,
+                    progressCursor: result.progressCursor
+                },
+                { status: 200 }
+            );
+        }
+
         const projects = parseProjects(parsedBody.projects);
         const result = await saveWorkspaceEnvelopeByUserId({
             userId: user.uid,
@@ -105,7 +193,12 @@ export async function PUT(req: Request) {
                     error: "Workspace revision conflict.",
                     code: "WORKSPACE_REVISION_CONFLICT",
                     revision: conflictWorkspace.revision,
-                    workspace: conflictWorkspace
+                    workspace: conflictWorkspace,
+                    saveMode: "snapshot",
+                    idempotent: false,
+                    rebaseCount: 0,
+                    appliedOperations: 0,
+                    progressCursor: null
                 },
                 { status: 409 }
             );
@@ -116,7 +209,12 @@ export async function PUT(req: Request) {
             ok: true,
             revision: successWorkspace.revision,
             workspace: successWorkspace,
-            projects: successWorkspace.projects
+            projects: successWorkspace.projects,
+            saveMode: "snapshot",
+            idempotent: false,
+            rebaseCount: 0,
+            appliedOperations: 1,
+            progressCursor: null
         });
     } catch (error) {
         if (error instanceof z.ZodError) {

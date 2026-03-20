@@ -1,4 +1,10 @@
-import type { Project, ProjectVersion, ProjectVersionData, WorkspaceEnvelope } from "@/types";
+import type {
+    Project,
+    ProjectVersion,
+    ProjectVersionData,
+    WorkspaceEnvelope,
+    WorkspacePatchOperation
+} from "@/types";
 import { normalizeProjects } from "@/lib/project-language";
 import { createEmptyWorkspaceEnvelope, normalizeWorkspaceEnvelope } from "@/lib/workspace-envelope";
 
@@ -66,6 +72,8 @@ const LOCAL_OWNER_USER_ID = "__local__";
 const remoteFetchPromises = new Map<string, Promise<Project[] | null>>();
 const lastRemoteFetchAtByKey = new Map<string, number>();
 let workspaceSyncQueue: Promise<void> = Promise.resolve();
+let workspaceRequestNonce = 0;
+const pendingLocalWriteBaselines: Project[][] = [];
 
 type WorkspaceWindow = Window & {
     [CACHE_KEY]?: WorkspaceCache;
@@ -173,6 +181,109 @@ function delay(ms: number) {
     return new Promise<void>((resolve) => {
         window.setTimeout(resolve, ms);
     });
+}
+
+function shouldUsePatchSave(projects: Project[]) {
+    return projects.some((project) =>
+        project.versions.some((version) => version.data.progressTemplateVersion === "readiness_v1")
+    );
+}
+
+function createWorkspaceIdempotencyKey() {
+    workspaceRequestNonce += 1;
+    return `ws_patch_${Date.now().toString(36)}_${workspaceRequestNonce.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildProjectFingerprint(project: Project): string {
+    try {
+        const normalized = normalizeProjects([project])[0];
+        return JSON.stringify(normalized || null);
+    } catch {
+        return "";
+    }
+}
+
+function buildPatchOperations(projects: Project[], baselineProjects: Project[]): WorkspacePatchOperation[] {
+    const normalizedProjects = normalizeProjects(projects);
+    const normalizedBaseline = normalizeProjects(baselineProjects);
+    const baselineById = new Map<string, Project>();
+    normalizedBaseline.forEach((project) => {
+        baselineById.set(project.id, project);
+    });
+
+    const operations: WorkspacePatchOperation[] = [];
+    const seenProjectIds = new Set<string>();
+
+    for (const project of normalizedProjects) {
+        seenProjectIds.add(project.id);
+        const baselineProject = baselineById.get(project.id);
+        if (!baselineProject) {
+            operations.push({
+                type: "upsert_project",
+                project
+            });
+            continue;
+        }
+        const baselineFingerprint = buildProjectFingerprint(baselineProject);
+        const nextFingerprint = buildProjectFingerprint(project);
+        if (baselineFingerprint === nextFingerprint) {
+            continue;
+        }
+        operations.push({
+            type: "upsert_project",
+            project
+        });
+    }
+
+    for (const baselineProject of normalizedBaseline) {
+        if (seenProjectIds.has(baselineProject.id)) {
+            continue;
+        }
+        operations.push({
+            type: "remove_project",
+            projectId: baselineProject.id
+        });
+    }
+
+    return operations;
+}
+
+function resolvePatchScope(operations: WorkspacePatchOperation[], projects: Project[]) {
+    for (const operation of operations) {
+        if (operation.type === "append_progress_events") {
+            return {
+                projectId: operation.projectId,
+                versionId: operation.versionId
+            };
+        }
+        if (operation.type === "upsert_project") {
+            const latestVersion = operation.project.versions[operation.project.versions.length - 1];
+            if (!latestVersion) continue;
+            if (latestVersion.data.progressTemplateVersion === "readiness_v1") {
+                return {
+                    projectId: operation.project.id,
+                    versionId: latestVersion.id
+                };
+            }
+        }
+    }
+
+    for (const project of projects) {
+        const latestVersion = project.versions[project.versions.length - 1];
+        if (!latestVersion) continue;
+        if (latestVersion.data.progressTemplateVersion === "readiness_v1") {
+            return {
+                projectId: project.id,
+                versionId: latestVersion.id
+            };
+        }
+    }
+    const fallbackProject = projects[0];
+    const fallbackVersion = fallbackProject?.versions[fallbackProject.versions.length - 1];
+    return {
+        projectId: fallbackProject?.id || undefined,
+        versionId: fallbackVersion?.id || undefined
+    };
 }
 
 function writeProjectsEnvelopeFromRemote(
@@ -330,8 +441,17 @@ export function readProjectsFromLocalStorage(): Project[] {
     return readWorkspaceEnvelopeFromLocalStorage().projects;
 }
 
-export function writeProjectsToLocalStorage(projects: Project[]): void {
+export function writeProjectsToLocalStorage(
+    projects: Project[],
+    options?: { trackBaseline?: boolean }
+): void {
     const current = readWorkspaceEnvelopeFromLocalStorage();
+    if (options?.trackBaseline) {
+        pendingLocalWriteBaselines.push(normalizeProjects(current.projects));
+        if (pendingLocalWriteBaselines.length > 24) {
+            pendingLocalWriteBaselines.splice(0, pendingLocalWriteBaselines.length - 24);
+        }
+    }
     writeWorkspaceEnvelopeToLocalStorage({
         ...current,
         projects: normalizeProjects(projects),
@@ -430,18 +550,47 @@ async function performWorkspaceProjectsSync(
     const changeSummary = input?.changeSummary || "Workspace update";
     let nextExpectedRevision = current.revision;
     let nextProjects = normalizeProjects(projects);
+    const queuedBaselineProjects = pendingLocalWriteBaselines.shift();
+    let baselineProjects = normalizeProjects(queuedBaselineProjects ?? current.projects);
     let lastConflictWorkspace: WorkspaceEnvelope | null = null;
+    const patchMode = shouldUsePatchSave(nextProjects);
+    let patchIdempotencyKey = patchMode ? createWorkspaceIdempotencyKey() : null;
+    let patchSignature = "";
 
     try {
         for (let attempt = 0; attempt <= WORKSPACE_CONFLICT_MAX_RETRIES; attempt += 1) {
-            const res = await fetch("/api/workspace", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+            const patchOperations = patchMode ? buildPatchOperations(nextProjects, baselineProjects) : [];
+            const shouldUsePatchRequest = patchMode && patchOperations.length > 0;
+
+            if (shouldUsePatchRequest) {
+                const nextPatchSignature = JSON.stringify(patchOperations);
+                if (!patchIdempotencyKey || nextPatchSignature !== patchSignature) {
+                    patchIdempotencyKey = createWorkspaceIdempotencyKey();
+                    patchSignature = nextPatchSignature;
+                }
+            }
+
+            const patchScope = shouldUsePatchRequest ? resolvePatchScope(patchOperations, nextProjects) : null;
+            const requestBody = shouldUsePatchRequest
+                ? {
+                    saveMode: "patch" as const,
+                    idempotencyKey: patchIdempotencyKey,
+                    expectedRevision: nextExpectedRevision,
+                    projectId: patchScope?.projectId,
+                    versionId: patchScope?.versionId,
+                    operations: patchOperations,
+                    changeSummary
+                }
+                : {
+                    saveMode: "snapshot" as const,
                     projects: nextProjects,
                     expectedRevision: nextExpectedRevision,
                     changeSummary
-                })
+                };
+            const res = await fetch("/api/workspace", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(requestBody)
             });
             const payload = await res.json().catch(() => null);
 
@@ -466,6 +615,19 @@ async function performWorkspaceProjectsSync(
                     };
                 }
 
+                if (shouldUsePatchRequest && payload?.code === "WORKSPACE_PATCH_CONFLICT") {
+                    writeWorkspaceEnvelopeToLocalStorage(serverWorkspace);
+                    return {
+                        ok: false,
+                        conflict: true,
+                        message: typeof payload?.error === "string"
+                            ? payload.error
+                            : "Workspace patch conflict. Refresh and retry.",
+                        revision: typeof payload.revision === "number" ? payload.revision : serverWorkspace.revision,
+                        workspace: serverWorkspace
+                    };
+                }
+
                 const rebasedProjects = mergeProjectsForConflictRetry(serverWorkspace.projects, nextProjects);
                 const mergedConflictWorkspace: WorkspaceEnvelope = {
                     ...serverWorkspace,
@@ -475,6 +637,7 @@ async function performWorkspaceProjectsSync(
                 lastConflictWorkspace = mergedConflictWorkspace;
                 nextProjects = rebasedProjects;
                 nextExpectedRevision = serverWorkspace.revision;
+                baselineProjects = normalizeProjects(serverWorkspace.projects);
 
                 if (attempt < WORKSPACE_CONFLICT_MAX_RETRIES) {
                     await delay(WORKSPACE_CONFLICT_RETRY_BASE_DELAY_MS * (attempt + 1));

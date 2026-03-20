@@ -1,5 +1,6 @@
 import { adminDb } from "@/lib/firebase-admin";
 import type { DocumentData, DocumentReference, Transaction } from "firebase-admin/firestore";
+import { createHash } from "node:crypto";
 import { toDateOrNull } from "./firestore-utils";
 import { recordAuditEvent } from "./audit-events";
 import { syncTenantWorkspaceCount } from "./tenants";
@@ -10,6 +11,12 @@ import {
     normalizeWorkspaceEnvelope
 } from "@/lib/workspace-envelope";
 import { normalizeProjects } from "@/lib/project-language";
+import {
+    appendProgressEvents,
+    normalizeProgressEvents,
+    normalizeProgressState,
+    resolveProgressCursor
+} from "@/lib/progress-template";
 import type {
     AcceptanceCase,
     Attachment,
@@ -21,10 +28,12 @@ import type {
     Project,
     ProjectVersion,
     ProjectVersionData,
+    ProgressStateV1,
     ReleaseTag,
     RequirementRecord,
     TaskDefinition,
     TaskRun,
+    WorkspacePatchOperation,
     WorkspaceChangeKind,
     WorkspaceEnvelope
 } from "@/types";
@@ -183,6 +192,23 @@ type WorkspaceSaveSuccess = {
     envelope: WorkspaceEnvelope;
 };
 
+export type WorkspacePatchSaveConflict = {
+    ok: false;
+    conflict: true;
+    code: "WORKSPACE_PATCH_CONFLICT";
+    message: string;
+    currentEnvelope: WorkspaceEnvelope;
+};
+
+export type WorkspacePatchSaveSuccess = {
+    ok: true;
+    envelope: WorkspaceEnvelope;
+    idempotent: boolean;
+    rebaseCount: number;
+    appliedOperations: number;
+    progressCursor: string | null;
+};
+
 const WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES = 1_000_000;
 const WORKSPACE_MIN_REVISION_HISTORY_FOR_COMPACTION = 8;
 const WORKSPACE_MIN_SNAPSHOTS_FOR_COMPACTION = 4;
@@ -211,6 +237,17 @@ export class WorkspaceDocumentTooLargeError extends Error {
     }
 }
 
+class WorkspacePatchConflictError extends Error {
+    currentEnvelope: WorkspaceEnvelope;
+    code: "WORKSPACE_PATCH_CONFLICT";
+
+    constructor(message: string, currentEnvelope: WorkspaceEnvelope) {
+        super(message);
+        this.currentEnvelope = currentEnvelope;
+        this.code = "WORKSPACE_PATCH_CONFLICT";
+    }
+}
+
 function workspacesCollection() {
     return adminDb.collection("workspaces");
 }
@@ -225,6 +262,225 @@ function areProjectListsEquivalent(left: Project[], right: Project[]) {
     } catch {
         return false;
     }
+}
+
+function buildWorkspaceOperationDigest(operations: WorkspacePatchOperation[]) {
+    const payload = JSON.stringify(operations);
+    return createHash("sha1").update(payload, "utf8").digest("hex");
+}
+
+function findRevisionByIdempotencyKey(envelope: WorkspaceEnvelope, idempotencyKey: string) {
+    if (!idempotencyKey) return null;
+    return envelope.revisionHistory.find((revision) => revision.changeSet.idempotencyKey === idempotencyKey) || null;
+}
+
+function normalizeWorkspacePatchOperations(operations: WorkspacePatchOperation[]): WorkspacePatchOperation[] {
+    const normalized: WorkspacePatchOperation[] = [];
+    for (const operation of operations) {
+        if (operation.type === "replace_projects") {
+            normalized.push({
+                type: "replace_projects",
+                projects: normalizeProjects(operation.projects)
+            });
+            continue;
+        }
+        if (operation.type === "upsert_project") {
+            const normalizedProject = normalizeProjects([operation.project])[0];
+            if (!normalizedProject?.id) continue;
+            normalized.push({
+                type: "upsert_project",
+                project: normalizedProject
+            });
+            continue;
+        }
+        if (operation.type === "remove_project") {
+            const projectId = operation.projectId.trim();
+            if (!projectId) continue;
+            normalized.push({
+                type: "remove_project",
+                projectId
+            });
+            continue;
+        }
+        if (operation.type === "append_progress_events") {
+            const normalizedProgressState = normalizeProgressState(operation.progressState as unknown) as ProgressStateV1 | null;
+            normalized.push({
+                type: "append_progress_events",
+                projectId: operation.projectId.trim(),
+                versionId: operation.versionId.trim(),
+                events: normalizeProgressEvents(operation.events as unknown),
+                progressState: normalizedProgressState ?? undefined
+            });
+        }
+    }
+    return normalized;
+}
+
+function applyAppendProgressEventsOperation(input: {
+    projects: Project[];
+    operation: Extract<WorkspacePatchOperation, { type: "append_progress_events" }>;
+}): {
+    projects: Project[];
+    progressCursor: string | null;
+    applied: boolean;
+} {
+    const operation = input.operation;
+    const projectId = operation.projectId.trim();
+    const versionId = operation.versionId.trim();
+    if (!projectId || !versionId) {
+        throw new Error("append_progress_events requires projectId and versionId.");
+    }
+    const incomingEvents = normalizeProgressEvents(operation.events);
+    if (incomingEvents.length === 0 && !operation.progressState) {
+        return {
+            projects: input.projects,
+            progressCursor: null,
+            applied: false
+        };
+    }
+
+    let touchedProject = false;
+    let touchedVersion = false;
+    let latestCursor: string | null = null;
+    const nextProjects = input.projects.map((project) => {
+        if (project.id !== projectId) return project;
+        touchedProject = true;
+        let projectVersionTouched = false;
+        const nextVersions = project.versions.map((version) => {
+            if (version.id !== versionId) return version;
+            touchedVersion = true;
+            projectVersionTouched = true;
+            const currentEvents = normalizeProgressEvents(version.data.progressEvents);
+            const nextEvents = appendProgressEvents(currentEvents, incomingEvents);
+            latestCursor = resolveProgressCursor(nextEvents) || null;
+            return {
+                ...version,
+                data: {
+                    ...version.data,
+                    progressEvents: nextEvents,
+                    progressState: operation.progressState ?? version.data.progressState,
+                    progressCursor: latestCursor || version.data.progressCursor
+                }
+            };
+        });
+        return {
+            ...project,
+            updatedAt: projectVersionTouched ? Date.now() : project.updatedAt,
+            versions: nextVersions
+        };
+    });
+
+    if (!touchedProject) {
+        throw new Error(`append_progress_events projectId ${projectId} was not found in workspace.`);
+    }
+    if (!touchedVersion) {
+        throw new Error(`append_progress_events versionId ${versionId} was not found in project ${projectId}.`);
+    }
+
+    return {
+        projects: nextProjects,
+        progressCursor: latestCursor,
+        applied: true
+    };
+}
+
+function applyWorkspacePatchOperations(input: {
+    envelope: WorkspaceEnvelope;
+    operations: WorkspacePatchOperation[];
+}): {
+    projects: Project[];
+    appliedOperations: number;
+    progressCursor: string | null;
+} {
+    let projects = normalizeProjects(input.envelope.projects);
+    let appliedOperations = 0;
+    let progressCursor: string | null = null;
+
+    for (const operation of normalizeWorkspacePatchOperations(input.operations)) {
+        if (operation.type === "replace_projects") {
+            projects = normalizeProjects(operation.projects);
+            appliedOperations += 1;
+            continue;
+        }
+        if (operation.type === "upsert_project") {
+            const existingIndex = projects.findIndex((project) => project.id === operation.project.id);
+            if (existingIndex < 0) {
+                projects = [operation.project, ...projects];
+                appliedOperations += 1;
+                continue;
+            }
+
+            const existingProject = projects[existingIndex];
+            if (areProjectListsEquivalent([existingProject], [operation.project])) {
+                continue;
+            }
+
+            const nextProjects = [...projects];
+            nextProjects[existingIndex] = operation.project;
+            projects = nextProjects;
+            appliedOperations += 1;
+            continue;
+        }
+        if (operation.type === "remove_project") {
+            const nextProjects = projects.filter((project) => project.id !== operation.projectId);
+            if (nextProjects.length === projects.length) {
+                continue;
+            }
+            projects = nextProjects;
+            appliedOperations += 1;
+            continue;
+        }
+        if (operation.type === "append_progress_events") {
+            const applied = applyAppendProgressEventsOperation({
+                projects,
+                operation
+            });
+            projects = applied.projects;
+            if (applied.applied) {
+                appliedOperations += 1;
+            }
+            if (applied.progressCursor) {
+                progressCursor = applied.progressCursor;
+            }
+            continue;
+        }
+    }
+
+    return {
+        projects,
+        appliedOperations,
+        progressCursor
+    };
+}
+
+function resolveProgressCursorFromEnvelope(
+    envelope: WorkspaceEnvelope,
+    projectId?: string | null,
+    versionId?: string | null
+) {
+    const scopedProjectId = (projectId || "").trim();
+    const scopedVersionId = (versionId || "").trim();
+    const preferredProject = scopedProjectId
+        ? envelope.projects.find((project) => project.id === scopedProjectId) || null
+        : null;
+
+    if (preferredProject) {
+        const preferredVersion = scopedVersionId
+            ? preferredProject.versions.find((version) => version.id === scopedVersionId) || null
+            : preferredProject.versions[preferredProject.versions.length - 1] || null;
+        if (preferredVersion?.data?.progressCursor) {
+            return preferredVersion.data.progressCursor;
+        }
+    }
+
+    for (const project of envelope.projects) {
+        const latestVersion = project.versions[project.versions.length - 1];
+        if (latestVersion?.data?.progressCursor) {
+            return latestVersion.data.progressCursor;
+        }
+    }
+
+    return null;
 }
 
 function diffIds(source: string[], compareTo: string[]) {
@@ -846,7 +1102,12 @@ function compactVersionDataForWorkspace(data: ProjectVersionData, aggressive: bo
         ...compactedData,
         providerRunLogs: (compactedData.providerRunLogs || []).slice(-40),
         taskRuns: (compactedData.taskRuns || []).slice(-80),
-        billingEvents: (compactedData.billingEvents || []).slice(-60)
+        billingEvents: (compactedData.billingEvents || []).slice(-60),
+        progressEvents: normalizeProgressEvents(compactedData.progressEvents).slice(-200),
+        progressCursor:
+            (typeof compactedData.progressCursor === "string" && compactedData.progressCursor.trim())
+                ? compactedData.progressCursor.trim()
+                : resolveProgressCursor(normalizeProgressEvents(compactedData.progressEvents))
     };
 }
 
@@ -1232,7 +1493,8 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
                 projects: input.projects,
                 summary: input.changeSummary,
                 actorId: input.actorId,
-                actorEmail: input.actorEmail
+                actorEmail: input.actorEmail,
+                saveMode: "snapshot"
             });
 
             const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
@@ -1285,6 +1547,161 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
     };
 }
 
+export async function saveWorkspacePatchByUserId(input: {
+    userId: string;
+    tenantId?: string | null;
+    expectedRevision: number;
+    idempotencyKey: string;
+    operations: WorkspacePatchOperation[];
+    projectId?: string | null;
+    versionId?: string | null;
+    actorId?: string | null;
+    actorEmail?: string | null;
+    changeSummary?: string;
+}): Promise<WorkspacePatchSaveConflict | WorkspacePatchSaveSuccess> {
+    const docRef = workspacesCollection().doc(input.userId);
+    let committedEnvelope: WorkspaceEnvelope | null = null;
+    let idempotent = false;
+    let rebaseCount = 0;
+    let appliedOperations = 0;
+    let progressCursor: string | null = null;
+    let didPersistMutation = false;
+    const normalizedIdempotencyKey = input.idempotencyKey.trim();
+    const normalizedOperations = normalizeWorkspacePatchOperations(input.operations);
+    const operationDigest = buildWorkspaceOperationDigest(normalizedOperations);
+
+    if (!normalizedIdempotencyKey) {
+        return {
+            ok: false,
+            conflict: true,
+            code: "WORKSPACE_PATCH_CONFLICT",
+            message: "Patch save requires a non-empty idempotencyKey.",
+            currentEnvelope: createEmptyWorkspaceEnvelope(input.userId, input.tenantId ?? null)
+        };
+    }
+
+    try {
+        await adminDb.runTransaction(async (transaction) => {
+            const snap = await transaction.get(docRef);
+            const currentEnvelope = snap.exists
+                ? fromWorkspaceSnapshot(input.userId, snap.data() || {})
+                : createEmptyWorkspaceEnvelope(input.userId, input.tenantId ?? null);
+            rebaseCount = Math.max(0, currentEnvelope.revision - input.expectedRevision);
+
+            const existingRevision = findRevisionByIdempotencyKey(currentEnvelope, normalizedIdempotencyKey);
+            if (existingRevision) {
+                const existingDigest = existingRevision.changeSet.operationDigest || "";
+                if (existingDigest && existingDigest !== operationDigest) {
+                    throw new WorkspacePatchConflictError(
+                        "Idempotency key reuse detected with a different operation digest.",
+                        currentEnvelope
+                    );
+                }
+
+                committedEnvelope = currentEnvelope;
+                idempotent = true;
+                appliedOperations = 0;
+                progressCursor = resolveProgressCursorFromEnvelope(
+                    currentEnvelope,
+                    input.projectId,
+                    input.versionId
+                );
+                return;
+            }
+
+            let patchResult: ReturnType<typeof applyWorkspacePatchOperations>;
+            try {
+                patchResult = applyWorkspacePatchOperations({
+                    envelope: currentEnvelope,
+                    operations: normalizedOperations
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : "Workspace patch operation failed.";
+                throw new WorkspacePatchConflictError(message, currentEnvelope);
+            }
+
+            if (patchResult.appliedOperations <= 0) {
+                committedEnvelope = currentEnvelope;
+                idempotent = true;
+                appliedOperations = 0;
+                progressCursor = patchResult.progressCursor
+                    || resolveProgressCursorFromEnvelope(currentEnvelope, input.projectId, input.versionId);
+                return;
+            }
+
+            const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
+                tenantId: input.tenantId ?? currentEnvelope.tenantId ?? null,
+                projects: patchResult.projects,
+                summary: input.changeSummary || "Workspace patch update",
+                actorId: input.actorId,
+                actorEmail: input.actorEmail,
+                saveMode: "patch",
+                idempotencyKey: normalizedIdempotencyKey,
+                operationDigest,
+                rebaseCount,
+                appliedOperations: patchResult.appliedOperations
+            });
+
+            const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
+            committedEnvelope = persistedEnvelope;
+            idempotent = false;
+            appliedOperations = patchResult.appliedOperations;
+            progressCursor = patchResult.progressCursor
+                || resolveProgressCursorFromEnvelope(persistedEnvelope, input.projectId, input.versionId);
+            didPersistMutation = true;
+        });
+    } catch (error) {
+        if (error instanceof WorkspacePatchConflictError) {
+            return {
+                ok: false,
+                conflict: true,
+                code: error.code,
+                message: error.message,
+                currentEnvelope: error.currentEnvelope
+            };
+        }
+        throw error;
+    }
+
+    if (!committedEnvelope) {
+        throw new Error("Workspace patch save completed without a committed envelope.");
+    }
+    const savedEnvelope = committedEnvelope as WorkspaceEnvelope;
+
+    if (didPersistMutation) {
+        await recordAuditEvent({
+            eventType: "workspace.patch_saved",
+            severity: "info",
+            actorId: input.actorId ?? null,
+            actorEmail: input.actorEmail ?? null,
+            resourceType: "workspace",
+            resourceId: input.userId,
+            summary: input.changeSummary || "Workspace patch saved through idempotent rebase flow.",
+            metadata: {
+                revision: String(savedEnvelope.revision),
+                saveMode: "patch",
+                idempotencyKey: normalizedIdempotencyKey,
+                operationDigest,
+                rebaseCount: String(rebaseCount),
+                appliedOperations: String(appliedOperations),
+                progressCursor: progressCursor || ""
+            }
+        });
+        if (savedEnvelope.tenantId) {
+            await syncTenantWorkspaceCount(savedEnvelope.tenantId);
+        }
+    }
+
+    return {
+        ok: true,
+        envelope: savedEnvelope,
+        idempotent,
+        rebaseCount,
+        appliedOperations,
+        progressCursor
+    };
+}
+
 export async function saveWorkspaceByUserId(userId: string, projects: Project[]) {
     const docRef = workspacesCollection().doc(userId);
     let committedEnvelope: WorkspaceEnvelope | null = null;
@@ -1296,7 +1713,8 @@ export async function saveWorkspaceByUserId(userId: string, projects: Project[])
             : createEmptyWorkspaceEnvelope(userId);
         const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
             projects,
-            summary: "Workspace synchronized from a trusted server mutation."
+            summary: "Workspace synchronized from a trusted server mutation.",
+            saveMode: "snapshot"
         });
         const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
         committedEnvelope = persistedEnvelope;

@@ -22,6 +22,11 @@ import {
     getWorkspaceLanguageLabel,
     type WorkspaceLanguage
 } from "@/lib/project-language";
+import {
+    PROGRESS_TEMPLATE_VERSION,
+    createEmptyProgressState,
+    createEmptyProgressTemplate
+} from "@/lib/progress-template";
 
 function yieldToBrowser(): Promise<void> {
     return new Promise((resolve) => {
@@ -215,7 +220,7 @@ export default function DashboardPage() {
     const saveProjects = (newProjects: Project[]) => {
         hasLocalProjectMutationsRef.current = true;
         setProjects(newProjects);
-        writeProjectsToLocalStorage(newProjects);
+        writeProjectsToLocalStorage(newProjects, { trackBaseline: true });
         void syncWorkspaceRemote(newProjects);
     };
 
@@ -288,7 +293,12 @@ export default function DashboardPage() {
                     designStage: "functional_architecture",
                     uiDesignState: buildDefaultUiDesignState(),
                     functionalLockedAt: null,
-                    uiReadyAt: null
+                    uiReadyAt: null,
+                    progressTemplateVersion: PROGRESS_TEMPLATE_VERSION,
+                    progressTemplate: createEmptyProgressTemplate(),
+                    progressState: createEmptyProgressState(),
+                    progressEvents: [],
+                    progressCursor: ""
                 }
             };
 

@@ -37,6 +37,7 @@ import {
     Task,
     ProjectVersion,
     PendingEvaluation,
+    ProgressEventV1,
     PrdDelta,
     Attachment,
     FileNode
@@ -105,6 +106,17 @@ import {
 } from "@/lib/architecture-diagram";
 import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
 import { loadAdminStatus } from "@/lib/admin-status-client";
+import {
+    PROGRESS_TEMPLATE_VERSION,
+    appendProgressEvents,
+    createProgressEvent,
+    createProgressStateFromReadiness,
+    createProgressTemplateFromReadiness,
+    normalizeProgressEvents,
+    normalizeProgressTemplate,
+    normalizeProgressState,
+    resolveProgressCursor
+} from "@/lib/progress-template";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
 const STRUCTURE_SNIPPET_MAX_CHARS = 200;
 const MESSAGE_WINDOW_SIZE = 24;
@@ -1756,6 +1768,33 @@ function normalizeVersionDesignState(
             ? (hasLegacyUiStage ? null : data.uiReadyAt)
             : (designStage === "ready_to_generate" ? Date.now() : null);
     const prdDeltas = normalizePrdDeltas(data?.prdDeltas, messages);
+    const progressTemplateEnabled = data?.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION;
+    const progressEvents = progressTemplateEnabled
+        ? normalizeProgressEvents(data?.progressEvents)
+        : [];
+    const progressTemplate = progressTemplateEnabled
+        ? (
+            normalizeProgressTemplate(data?.progressTemplate)
+            || createProgressTemplateFromReadiness(readiness)
+        )
+        : undefined;
+    const progressState = progressTemplateEnabled
+        ? (
+            normalizeProgressState(data?.progressState)
+            || createProgressStateFromReadiness({
+                readiness,
+                prdDeltas,
+                currentFocus: readiness.nextMilestone
+            })
+        )
+        : undefined;
+    const progressCursor = progressTemplateEnabled
+        ? (
+            typeof data?.progressCursor === "string" && data.progressCursor.trim()
+                ? data.progressCursor.trim()
+                : resolveProgressCursor(progressEvents)
+        )
+        : undefined;
     const currentDiagram = deriveArchitectureDiagramMermaid({
         architecturePack,
         decisionRecords,
@@ -1780,8 +1819,73 @@ function normalizeVersionDesignState(
         readinessOverrides,
         prdDeltas,
         functionalLockedAt,
-        uiReadyAt
+        uiReadyAt,
+        progressTemplateVersion: progressTemplateEnabled ? PROGRESS_TEMPLATE_VERSION : undefined,
+        progressTemplate,
+        progressState,
+        progressEvents,
+        progressCursor
     };
+}
+
+function buildProgressDataForVersion(input: {
+    baseData: ProjectVersion["data"];
+    architecturePack: ArchitecturePack;
+    decisionRecords: DecisionRecord[];
+    guardrailChecklist: GuardrailChecklist;
+    readinessOverrides: ReadinessOverride[];
+    prdDeltas: PrdDelta[];
+    progressEvents?: ProgressEventV1[] | null;
+    currentFocus?: string | null;
+}) {
+    const progressTemplateVersion = input.baseData.progressTemplateVersion;
+    if (progressTemplateVersion !== PROGRESS_TEMPLATE_VERSION) {
+        return {
+            progressTemplateVersion: input.baseData.progressTemplateVersion,
+            progressTemplate: input.baseData.progressTemplate,
+            progressState: input.baseData.progressState,
+            progressEvents: input.baseData.progressEvents,
+            progressCursor: input.baseData.progressCursor
+        };
+    }
+
+    const readiness = computeScaffoldEligibility({
+        architecturePack: input.architecturePack,
+        decisionRecords: input.decisionRecords,
+        guardrailChecklist: input.guardrailChecklist,
+        readinessOverrides: input.readinessOverrides
+    }).readiness;
+    const existingEvents = normalizeProgressEvents(input.baseData.progressEvents);
+    const nextEvents = appendProgressEvents(existingEvents, input.progressEvents || undefined);
+    const progressTemplate = createProgressTemplateFromReadiness(readiness);
+    const progressState = createProgressStateFromReadiness({
+        readiness,
+        prdDeltas: input.prdDeltas,
+        currentFocus: input.currentFocus || readiness.nextMilestone
+    });
+
+    return {
+        progressTemplateVersion: PROGRESS_TEMPLATE_VERSION,
+        progressTemplate,
+        progressState,
+        progressEvents: nextEvents,
+        progressCursor: resolveProgressCursor(nextEvents)
+    };
+}
+
+function areProgressEventsEqual(left: ProgressEventV1[] | undefined, right: ProgressEventV1[] | undefined) {
+    const normalizedLeft = left || [];
+    const normalizedRight = right || [];
+    if (normalizedLeft.length !== normalizedRight.length) return false;
+    for (let index = 0; index < normalizedLeft.length; index += 1) {
+        const current = normalizedLeft[index];
+        const candidate = normalizedRight[index];
+        if (!candidate) return false;
+        if (current.id !== candidate.id) return false;
+        if (current.type !== candidate.type) return false;
+        if (current.createdAt !== candidate.createdAt) return false;
+    }
+    return true;
 }
 
 function summarizeStructureContent(content: string): string {
@@ -4756,6 +4860,9 @@ function WizardContent() {
     const pendingEvaluationRef = useRef<PendingEvaluation | null>(initialPendingEvaluation);
     const [prdDeltas, setPrdDeltas] = useState<PrdDelta[]>(initialNormalizedState.prdDeltas);
     const prdDeltasRef = useRef<PrdDelta[]>(initialNormalizedState.prdDeltas);
+    const [progressEvents, setProgressEvents] = useState<ProgressEventV1[]>(initialNormalizedState.progressEvents ?? []);
+    const progressEventsRef = useRef<ProgressEventV1[]>(initialNormalizedState.progressEvents ?? []);
+    const [progressCursor, setProgressCursor] = useState<string>(initialNormalizedState.progressCursor ?? "");
 
     // Core Domain State
     const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(initialEvaluation);
@@ -4922,6 +5029,32 @@ function WizardContent() {
         const baseProject = localProjects.find((candidate) => candidate.id === project.id) ?? project;
         const baseVersion = baseProject.versions.find((candidate) => candidate.id === currentVersion.id) ?? currentVersion;
         const hasPendingEvaluationOverride = Object.prototype.hasOwnProperty.call(overrides, "pendingEvaluation");
+        const hasProgressEventsOverride = Object.prototype.hasOwnProperty.call(overrides, "progressEvents");
+        const nextArchitecturePack = overrides.architecturePack ?? architecturePack;
+        const nextDecisionRecords = overrides.decisionRecords ?? decisionRecords;
+        const nextGuardrailChecklist = overrides.guardrailChecklist ?? guardrailChecklist;
+        const nextReadinessOverrides = overrides.readinessOverrides ?? readinessOverrides;
+        const nextPrdDeltas = overrides.prdDeltas ?? prdDeltasRef.current;
+        const nextProgressEvents = hasProgressEventsOverride
+            ? appendProgressEvents(progressEventsRef.current, overrides.progressEvents ?? [])
+            : progressEventsRef.current;
+        const progressBaseData: ProjectVersion["data"] = {
+            ...baseVersion.data,
+            progressTemplateVersion: overrides.progressTemplateVersion ?? baseVersion.data.progressTemplateVersion,
+            progressTemplate: overrides.progressTemplate ?? baseVersion.data.progressTemplate,
+            progressState: overrides.progressState ?? baseVersion.data.progressState,
+            progressEvents: nextProgressEvents,
+            progressCursor: overrides.progressCursor ?? baseVersion.data.progressCursor
+        };
+        const nextProgressData = buildProgressDataForVersion({
+            baseData: progressBaseData,
+            architecturePack: nextArchitecturePack,
+            decisionRecords: nextDecisionRecords,
+            guardrailChecklist: nextGuardrailChecklist,
+            readinessOverrides: nextReadinessOverrides,
+            prdDeltas: nextPrdDeltas,
+            progressEvents: nextProgressEvents
+        });
         const nextVersion: ProjectVersion = {
             ...baseVersion,
             status: currentVersion.status,
@@ -4941,17 +5074,27 @@ function WizardContent() {
                 functionalLockedAt: overrides.functionalLockedAt ?? functionalLockedAt,
                 uiReadyAt: overrides.uiReadyAt ?? uiReadyAt,
                 sourceArtifacts: overrides.sourceArtifacts ?? sourceArtifacts,
-                architecturePack: overrides.architecturePack ?? architecturePack,
-                decisionRecords: overrides.decisionRecords ?? decisionRecords,
-                guardrailChecklist: overrides.guardrailChecklist ?? guardrailChecklist,
+                architecturePack: nextArchitecturePack,
+                decisionRecords: nextDecisionRecords,
+                guardrailChecklist: nextGuardrailChecklist,
                 architectureStage: overrides.architectureStage ?? architectureStage,
-                readinessOverrides: overrides.readinessOverrides ?? readinessOverrides,
-                prdDeltas: overrides.prdDeltas ?? prdDeltasRef.current,
+                readinessOverrides: nextReadinessOverrides,
+                prdDeltas: nextPrdDeltas,
                 pendingEvaluation: hasPendingEvaluationOverride
                     ? overrides.pendingEvaluation ?? undefined
-                    : pendingEvaluationRef.current ?? undefined
+                    : pendingEvaluationRef.current ?? undefined,
+                ...nextProgressData
             }
         };
+        const nextProgressEventsForState = nextProgressData.progressEvents || [];
+        if (!areProgressEventsEqual(progressEventsRef.current, nextProgressEventsForState)) {
+            progressEventsRef.current = nextProgressEventsForState;
+            setProgressEvents(nextProgressEventsForState);
+        }
+        const nextProgressCursor = nextProgressData.progressCursor || "";
+        if (nextProgressCursor !== progressCursor) {
+            setProgressCursor(nextProgressCursor);
+        }
         const versionExists = baseProject.versions.some((candidate) => candidate.id === nextVersion.id);
         const nextProject: Project = {
             ...baseProject,
@@ -4963,7 +5106,7 @@ function WizardContent() {
         const nextProjects = localProjects.some((candidate) => candidate.id === nextProject.id)
             ? localProjects.map((candidate) => candidate.id === nextProject.id ? nextProject : candidate)
             : [nextProject, ...localProjects];
-        writeProjectsToLocalStorage(nextProjects);
+        writeProjectsToLocalStorage(nextProjects, { trackBaseline: true });
     };
 
     const commitArchitectureStageSnapshot = (
@@ -5109,6 +5252,10 @@ function WizardContent() {
     }, [prdDeltas]);
 
     useEffect(() => {
+        progressEventsRef.current = progressEvents;
+    }, [progressEvents]);
+
+    useEffect(() => {
         if (!hasMeaningfulDiagramChange(currentDiagram, committedDerivedDiagram)) {
             return;
         }
@@ -5203,6 +5350,8 @@ function WizardContent() {
             setArchitectureStage(normalizedDesignState.architectureStage);
             setArchitectureReadiness(normalizedDesignState.readiness);
             setPrdDeltas(normalizedDesignState.prdDeltas);
+            setProgressEvents(normalizedDesignState.progressEvents ?? []);
+            setProgressCursor(normalizedDesignState.progressCursor ?? "");
             setFunctionalLockedAt(normalizedDesignState.functionalLockedAt);
             setUiReadyAt(normalizedDesignState.uiReadyAt);
             setActiveTab(getPreferredGeneratedTab(normalizedGenerationArtifacts));
@@ -5611,6 +5760,18 @@ function WizardContent() {
         // Debounce save or just save on change?
         // For simplicity, we save on every significant state change logic handle
         // But here we can sync state back to the object for persistence
+        const nextProgressData = buildProgressDataForVersion({
+            baseData: currentVersion.data,
+            architecturePack,
+            decisionRecords,
+            guardrailChecklist,
+            readinessOverrides,
+            prdDeltas,
+            progressEvents
+        });
+        if ((nextProgressData.progressCursor || "") !== progressCursor) {
+            setProgressCursor(nextProgressData.progressCursor || "");
+        }
 
         const updatedVersion: ProjectVersion = {
             ...currentVersion,
@@ -5635,7 +5796,8 @@ function WizardContent() {
                 sourceArtifacts,
                 architectureStage,
                 functionalLockedAt,
-                uiReadyAt
+                uiReadyAt,
+                ...nextProgressData
             }
         };
 
@@ -5653,7 +5815,7 @@ function WizardContent() {
             ? projects.map((p) => (p.id === project.id ? updatedProject : p))
             : [updatedProject, ...projects];
 
-        writeProjectsToLocalStorage(newProjects);
+        writeProjectsToLocalStorage(newProjects, { trackBaseline: true });
         const syncTimer = window.setTimeout(() => {
             void syncWorkspaceRemote(newProjects);
         }, 400);
@@ -5685,6 +5847,7 @@ function WizardContent() {
         guardrailChecklist,
         readinessOverrides,
         prdDeltas,
+        progressEvents,
         pendingEvaluation,
         sourceArtifacts,
         architectureStage,
@@ -5695,7 +5858,8 @@ function WizardContent() {
         projectId,
         isHydrating,
         loadedVersionId,
-        hasUserEdited
+        hasUserEdited,
+        progressCursor
     ]);
 
     // 4. Scroll to bottom
@@ -7398,6 +7562,28 @@ Do you want to start scaffold generation now?`;
         const next = [...previous, nextDelta].slice(-24);
         prdDeltasRef.current = next;
         setPrdDeltas(next);
+
+        if (currentVersion?.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION) {
+            const eventType =
+                input.action === "focus_requirement"
+                    ? "requirement.focused"
+                    : input.action === "fill_requirement"
+                    ? "requirement.filled"
+                    : "readiness.recomputed";
+            const nextEvent = createProgressEvent({
+                type: eventType,
+                projectId: projectId || undefined,
+                versionId: currentVersion?.id || undefined,
+                requirementKey: input.requirementKey ?? undefined,
+                questionKey: input.questionKey ?? undefined,
+                sourceMessageId: input.sourceMessageId ?? undefined,
+                summary: `PRD delta: ${input.action}`
+            });
+            const nextProgressEvents = appendProgressEvents(progressEventsRef.current, [nextEvent]);
+            progressEventsRef.current = nextProgressEvents;
+            setProgressEvents(nextProgressEvents);
+            setProgressCursor(resolveProgressCursor(nextProgressEvents));
+        }
         return next;
     };
 
@@ -7905,6 +8091,25 @@ Do you want to start scaffold generation now?`;
                 { id: '1', title: uiText.setupProjectStructure, status: 'pending', description: uiText.setupProjectStructureDesc, source: 'scaffold' },
                 { id: '2', title: uiText.implementCoreFeatures, status: 'pending', description: uiText.implementCoreFeaturesDesc, source: 'scaffold' },
             ]);
+            if (currentVersion.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION) {
+                const nextProgressEvents = appendProgressEvents(progressEventsRef.current, [
+                    createProgressEvent({
+                        type: "generation.gate.changed",
+                        projectId,
+                        versionId: currentVersion.id,
+                        summary: "Generation artifacts were produced."
+                    }),
+                    createProgressEvent({
+                        type: "task.run.updated",
+                        projectId,
+                        versionId: currentVersion.id,
+                        summary: "Scaffold task placeholders were refreshed."
+                    })
+                ]);
+                progressEventsRef.current = nextProgressEvents;
+                setProgressEvents(nextProgressEvents);
+                setProgressCursor(resolveProgressCursor(nextProgressEvents));
+            }
 
             if (partialFailure) {
                 console.warn("[generate] partial artifact generation failure", partialFailure.message);

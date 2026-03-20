@@ -3,6 +3,12 @@ import { NextResponse } from "next/server";
 import { requireAdminRoute } from "@/lib/admin-api";
 import { normalizeProjects } from "@/lib/project-language";
 import { executeTaskDag } from "@/lib/task-dag";
+import {
+    appendProgressEvents,
+    createProgressEvent,
+    resolveProgressCursor,
+    PROGRESS_TEMPLATE_VERSION
+} from "@/lib/progress-template";
 import { getWorkspaceByUserId, updateProjectVersionInWorkspaceByUserId } from "@/lib/data/workspaces";
 import type { Project, TaskDefinition, TaskRun } from "@/types";
 
@@ -95,6 +101,25 @@ export async function POST(req: Request) {
             const currentTaskDefinitions = Array.isArray(currentVersion.data.taskDefinitions)
                 ? currentVersion.data.taskDefinitions
                 : [];
+            const progressEvents = currentVersion.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION
+                ? appendProgressEvents(
+                    currentVersion.data.progressEvents || [],
+                    [
+                        createProgressEvent({
+                            type: "task.run.updated",
+                            projectId: payload.projectId,
+                            versionId: payload.versionId,
+                            summary: `Admin replayed task DAG (${payload.mode}).`,
+                            metadata: {
+                                mode: payload.mode,
+                                succeeded: String(execution.counts.succeeded),
+                                failed: String(execution.counts.failed),
+                                blocked: String(execution.counts.blocked)
+                            }
+                        })
+                    ]
+                )
+                : currentVersion.data.progressEvents;
 
             return {
                 ...currentVersion,
@@ -104,7 +129,12 @@ export async function POST(req: Request) {
                     taskDefinitions: currentTaskDefinitions.map((task) => ({
                         ...task,
                         status: deriveTaskStatusFromRun(runByTask.get(task.id), task.status)
-                    }))
+                    })),
+                    progressEvents,
+                    progressCursor:
+                        currentVersion.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION
+                            ? resolveProgressCursor(progressEvents || [])
+                            : currentVersion.data.progressCursor
                 }
             };
         }
