@@ -544,6 +544,7 @@ export interface EvaluationResponse {
     decisionDrafts?: DecisionRecord[];
     guardrailDrafts?: GuardrailChecklist;
     readiness?: ReadinessChecklist;
+    nextAction?: UnifiedProgressNextActionV1 | null;
 }
 
 export interface FileNode {
@@ -683,7 +684,7 @@ export interface TaskRun {
     rollbackExecuted?: boolean;
 }
 
-export type ProgressTemplateVersion = "readiness_v1";
+export type ProgressTemplateVersion = "readiness_v1" | "readiness_v2";
 
 export interface ProgressTemplateRequirementV1 {
     key: ReadinessRequirementKey;
@@ -721,10 +722,40 @@ export interface ProgressStateV1 {
     updatedAt: number;
 }
 
+export interface UnifiedProgressNextActionV1 {
+    type: "generate_scaffold" | "collect_requirement" | "resolve_conflict";
+    enabled: boolean;
+    detail: string;
+    requirementKey?: ReadinessRequirementKey | null;
+    workspaceSnapshotId?: string | null;
+    revision?: number | null;
+}
+
+export interface UnifiedProgressStateV1 {
+    version: "unified_progress_state_v1";
+    templateVersion: ProgressTemplateVersion;
+    pendingCount: number;
+    readinessScore: number;
+    stage: ArchitectureStage;
+    canGenerate: boolean;
+    blockers: string[];
+    currentFocus: string | null;
+    requirementStatuses: Partial<Record<ReadinessRequirementKey, ReadinessRequirementStatus>>;
+    nextAction: UnifiedProgressNextActionV1;
+    progressCursor?: string | null;
+    updatedAt: number;
+}
+
 export type ProgressEventType =
     | "requirement.focused"
     | "requirement.filled"
+    | "requirement.confirmed"
+    | "requirement.updated"
     | "readiness.recomputed"
+    | "stage.changed"
+    | "gate.changed"
+    | "scaffold.prompted"
+    | "scaffold.triggered"
     | "task.run.updated"
     | "generation.gate.changed"
     | "workspace.patch.applied";
@@ -761,6 +792,11 @@ export type WorkspacePatchOperation =
         versionId: string;
         events: ProgressEventV1[];
         progressState?: ProgressStateV1 | null;
+    }
+    | {
+        type: "migrate.progress_template_v2";
+        projectId?: string | null;
+        versionId?: string | null;
     };
 
 export interface ProviderRunLog {
@@ -887,6 +923,7 @@ export interface ProjectVersionData {
     progressTemplateVersion?: ProgressTemplateVersion;
     progressTemplate?: ProgressTemplateV1;
     progressState?: ProgressStateV1;
+    unifiedProgressState?: UnifiedProgressStateV1;
     progressEvents?: ProgressEventV1[];
     progressCursor?: string;
 }

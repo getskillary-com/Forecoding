@@ -6,8 +6,8 @@ import { executeTaskDag } from "@/lib/task-dag";
 import {
     appendProgressEvents,
     createProgressEvent,
-    resolveProgressCursor,
-    PROGRESS_TEMPLATE_VERSION
+    isProgressTemplateEnabled,
+    resolveProgressCursor
 } from "@/lib/progress-template";
 import {
     getWorkspaceByUserId,
@@ -243,7 +243,7 @@ export async function POST(req: Request) {
                 const currentTaskDefinitions = Array.isArray(currentVersion.data.taskDefinitions)
                     ? currentVersion.data.taskDefinitions
                     : [];
-                const progressEvents = currentVersion.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION
+                const progressEvents = isProgressTemplateEnabled(currentVersion.data.progressTemplateVersion)
                     ? appendProgressEvents(
                         currentVersion.data.progressEvents || [],
                         [
@@ -273,7 +273,7 @@ export async function POST(req: Request) {
                         })),
                         progressEvents,
                         progressCursor:
-                            currentVersion.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION
+                            isProgressTemplateEnabled(currentVersion.data.progressTemplateVersion)
                                 ? resolveProgressCursor(progressEvents || [])
                                 : currentVersion.data.progressCursor
                     }

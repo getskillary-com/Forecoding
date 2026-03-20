@@ -13,10 +13,15 @@ import {
 import { normalizeProjects } from "@/lib/project-language";
 import {
     appendProgressEvents,
+    buildProgressProjectionFromReadiness,
+    isProgressTemplateEnabled,
     normalizeProgressEvents,
     normalizeProgressState,
+    normalizeUnifiedProgressState,
+    PROGRESS_TEMPLATE_VERSION,
     resolveProgressCursor
 } from "@/lib/progress-template";
+import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
 import type {
     AcceptanceCase,
     Attachment,
@@ -26,6 +31,7 @@ import type {
     GenerationResponse,
     Message,
     Project,
+    ProgressEventV1,
     ProjectVersion,
     ProjectVersionData,
     ProgressStateV1,
@@ -33,6 +39,7 @@ import type {
     RequirementRecord,
     TaskDefinition,
     TaskRun,
+    UnifiedProgressStateV1,
     WorkspacePatchOperation,
     WorkspaceChangeKind,
     WorkspaceEnvelope
@@ -207,6 +214,7 @@ export type WorkspacePatchSaveSuccess = {
     rebaseCount: number;
     appliedOperations: number;
     progressCursor: string | null;
+    unifiedProgress: UnifiedProgressStateV1 | null;
 };
 
 const WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES = 1_000_000;
@@ -311,9 +319,139 @@ function normalizeWorkspacePatchOperations(operations: WorkspacePatchOperation[]
                 events: normalizeProgressEvents(operation.events as unknown),
                 progressState: normalizedProgressState ?? undefined
             });
+            continue;
+        }
+        if (operation.type === "migrate.progress_template_v2") {
+            normalized.push({
+                type: "migrate.progress_template_v2",
+                projectId: typeof operation.projectId === "string" ? operation.projectId.trim() : null,
+                versionId: typeof operation.versionId === "string" ? operation.versionId.trim() : null
+            });
         }
     }
     return normalized;
+}
+
+function applyUnifiedProgressProjectionToVersion(
+    version: ProjectVersion,
+    options?: {
+        forceTemplateVersion?: string | null;
+        progressEvents?: ProgressEventV1[];
+        currentFocus?: string | null;
+    }
+): ProjectVersion {
+    const forcedTemplateVersion = options?.forceTemplateVersion ?? null;
+    const currentTemplateVersion = forcedTemplateVersion || version.data.progressTemplateVersion;
+    if (!isProgressTemplateEnabled(currentTemplateVersion)) {
+        return version;
+    }
+
+    const readiness = computeScaffoldEligibility({
+        architecturePack: version.data.architecturePack,
+        decisionRecords: version.data.decisionRecords,
+        guardrailChecklist: version.data.guardrailChecklist,
+        readinessOverrides: version.data.readinessOverrides
+    }).readiness;
+    const progressEvents = appendProgressEvents(
+        normalizeProgressEvents(version.data.progressEvents),
+        options?.progressEvents || []
+    );
+    const currentFocus = (options?.currentFocus || "").trim()
+        || (typeof version.data.progressState?.currentFocus === "string" ? version.data.progressState.currentFocus : "")
+        || (typeof version.data.unifiedProgressState?.currentFocus === "string" ? version.data.unifiedProgressState.currentFocus : "")
+        || readiness.nextMilestone;
+    const projection = buildProgressProjectionFromReadiness({
+        readiness,
+        prdDeltas: version.data.prdDeltas,
+        currentFocus,
+        stage: version.data.architectureStage ?? null,
+        progressEvents,
+        templateVersion: currentTemplateVersion,
+        updatedAt: Date.now()
+    });
+    const normalizedExistingUnified = normalizeUnifiedProgressState(version.data.unifiedProgressState);
+    const mergedUnifiedProgress = normalizedExistingUnified
+        ? {
+            ...projection.unifiedProgressState,
+            nextAction: {
+                ...projection.unifiedProgressState.nextAction,
+                workspaceSnapshotId: normalizedExistingUnified.nextAction.workspaceSnapshotId
+                    ?? projection.unifiedProgressState.nextAction.workspaceSnapshotId,
+                revision: normalizedExistingUnified.nextAction.revision
+                    ?? projection.unifiedProgressState.nextAction.revision
+            }
+        }
+        : projection.unifiedProgressState;
+
+    return {
+        ...version,
+        data: {
+            ...version.data,
+            ...projection,
+            unifiedProgressState: mergedUnifiedProgress
+        }
+    };
+}
+
+function applyUnifiedProgressProjectionToProjects(projects: Project[]): Project[] {
+    return projects.map((project) => ({
+        ...project,
+        versions: project.versions.map((version) => applyUnifiedProgressProjectionToVersion(version))
+    }));
+}
+
+function applyProgressTemplateMigrationOperation(input: {
+    projects: Project[];
+    operation: Extract<WorkspacePatchOperation, { type: "migrate.progress_template_v2" }>;
+}): {
+    projects: Project[];
+    applied: boolean;
+} {
+    const targetProjectId = (input.operation.projectId || "").trim();
+    const targetVersionId = (input.operation.versionId || "").trim();
+    let applied = false;
+
+    const nextProjects = input.projects.map((project) => {
+        if (targetProjectId && project.id !== targetProjectId) {
+            return project;
+        }
+        let projectTouched = false;
+        const nextVersions = project.versions.map((version) => {
+            if (targetVersionId && version.id !== targetVersionId) {
+                return version;
+            }
+            const templateVersionChanged = version.data.progressTemplateVersion !== PROGRESS_TEMPLATE_VERSION;
+            if (!templateVersionChanged && isProgressTemplateEnabled(version.data.progressTemplateVersion)) {
+                return applyUnifiedProgressProjectionToVersion(version);
+            }
+            const migratedVersion: ProjectVersion = {
+                ...version,
+                data: {
+                    ...version.data,
+                    progressTemplateVersion: PROGRESS_TEMPLATE_VERSION
+                }
+            };
+            projectTouched = true;
+            applied = true;
+            return applyUnifiedProgressProjectionToVersion(migratedVersion, {
+                forceTemplateVersion: PROGRESS_TEMPLATE_VERSION
+            });
+        });
+
+        if (!projectTouched) {
+            return project;
+        }
+        return {
+            ...project,
+            updatedAt: Date.now(),
+            versions: nextVersions
+        };
+    });
+
+    return {
+        projects: nextProjects,
+        applied
+    };
 }
 
 function applyAppendProgressEventsOperation(input: {
@@ -350,18 +488,23 @@ function applyAppendProgressEventsOperation(input: {
             if (version.id !== versionId) return version;
             touchedVersion = true;
             projectVersionTouched = true;
-            const currentEvents = normalizeProgressEvents(version.data.progressEvents);
-            const nextEvents = appendProgressEvents(currentEvents, incomingEvents);
+            const existingEvents = normalizeProgressEvents(version.data.progressEvents);
+            const nextEvents = appendProgressEvents(existingEvents, incomingEvents);
             latestCursor = resolveProgressCursor(nextEvents) || null;
-            return {
+            const nextProgressState = operation.progressState ?? version.data.progressState;
+            const patchedVersion: ProjectVersion = {
                 ...version,
                 data: {
                     ...version.data,
                     progressEvents: nextEvents,
-                    progressState: operation.progressState ?? version.data.progressState,
+                    progressState: nextProgressState,
                     progressCursor: latestCursor || version.data.progressCursor
                 }
             };
+            return applyUnifiedProgressProjectionToVersion(patchedVersion, {
+                progressEvents: nextEvents,
+                currentFocus: nextProgressState?.currentFocus ?? null
+            });
         });
         return {
             ...project,
@@ -398,25 +541,26 @@ function applyWorkspacePatchOperations(input: {
 
     for (const operation of normalizeWorkspacePatchOperations(input.operations)) {
         if (operation.type === "replace_projects") {
-            projects = normalizeProjects(operation.projects);
+            projects = applyUnifiedProgressProjectionToProjects(normalizeProjects(operation.projects));
             appliedOperations += 1;
             continue;
         }
         if (operation.type === "upsert_project") {
-            const existingIndex = projects.findIndex((project) => project.id === operation.project.id);
+            const projectedOperationProject = applyUnifiedProgressProjectionToProjects([operation.project])[0] || operation.project;
+            const existingIndex = projects.findIndex((project) => project.id === projectedOperationProject.id);
             if (existingIndex < 0) {
-                projects = [operation.project, ...projects];
+                projects = [projectedOperationProject, ...projects];
                 appliedOperations += 1;
                 continue;
             }
 
             const existingProject = projects[existingIndex];
-            if (areProjectListsEquivalent([existingProject], [operation.project])) {
+            if (areProjectListsEquivalent([existingProject], [projectedOperationProject])) {
                 continue;
             }
 
             const nextProjects = [...projects];
-            nextProjects[existingIndex] = operation.project;
+            nextProjects[existingIndex] = projectedOperationProject;
             projects = nextProjects;
             appliedOperations += 1;
             continue;
@@ -441,6 +585,17 @@ function applyWorkspacePatchOperations(input: {
             }
             if (applied.progressCursor) {
                 progressCursor = applied.progressCursor;
+            }
+            continue;
+        }
+        if (operation.type === "migrate.progress_template_v2") {
+            const migrated = applyProgressTemplateMigrationOperation({
+                projects,
+                operation
+            });
+            projects = migrated.projects;
+            if (migrated.applied) {
+                appliedOperations += 1;
             }
             continue;
         }
@@ -477,6 +632,52 @@ function resolveProgressCursorFromEnvelope(
         const latestVersion = project.versions[project.versions.length - 1];
         if (latestVersion?.data?.progressCursor) {
             return latestVersion.data.progressCursor;
+        }
+    }
+
+    return null;
+}
+
+function resolveUnifiedProgressFromEnvelope(
+    envelope: WorkspaceEnvelope,
+    projectId?: string | null,
+    versionId?: string | null
+) {
+    const attachWorkspaceTrace = (state: UnifiedProgressStateV1 | null) => {
+        if (!state) return null;
+        const latestSnapshotId = envelope.snapshots[0]?.id || null;
+        return {
+            ...state,
+            nextAction: {
+                ...state.nextAction,
+                workspaceSnapshotId: state.nextAction.workspaceSnapshotId ?? latestSnapshotId,
+                revision: typeof state.nextAction.revision === "number"
+                    ? state.nextAction.revision
+                    : envelope.revision
+            }
+        };
+    };
+    const scopedProjectId = (projectId || "").trim();
+    const scopedVersionId = (versionId || "").trim();
+    const preferredProject = scopedProjectId
+        ? envelope.projects.find((project) => project.id === scopedProjectId) || null
+        : null;
+
+    if (preferredProject) {
+        const preferredVersion = scopedVersionId
+            ? preferredProject.versions.find((version) => version.id === scopedVersionId) || null
+            : preferredProject.versions[preferredProject.versions.length - 1] || null;
+        const preferredUnified = normalizeUnifiedProgressState(preferredVersion?.data?.unifiedProgressState);
+        if (preferredUnified) {
+            return attachWorkspaceTrace(preferredUnified);
+        }
+    }
+
+    for (const project of envelope.projects) {
+        const latestVersion = project.versions[project.versions.length - 1];
+        const unified = normalizeUnifiedProgressState(latestVersion?.data?.unifiedProgressState);
+        if (unified) {
+            return attachWorkspaceTrace(unified);
         }
     }
 
@@ -1490,6 +1691,7 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
     const docRef = workspacesCollection().doc(input.userId);
     let committedEnvelope: WorkspaceEnvelope | null = null;
     let didPersistMutation = false;
+    const projectedProjects = applyUnifiedProgressProjectionToProjects(normalizeProjects(input.projects));
 
     try {
         await adminDb.runTransaction(async (transaction) => {
@@ -1499,7 +1701,7 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
                 : createEmptyWorkspaceEnvelope(input.userId, input.tenantId ?? null);
 
             if (currentEnvelope.revision !== input.expectedRevision) {
-                if (areProjectListsEquivalent(currentEnvelope.projects, input.projects)) {
+                if (areProjectListsEquivalent(currentEnvelope.projects, projectedProjects)) {
                     committedEnvelope = currentEnvelope;
                     return;
                 }
@@ -1508,7 +1710,7 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
 
             const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
                 tenantId: input.tenantId ?? currentEnvelope.tenantId ?? null,
-                projects: input.projects,
+                projects: projectedProjects,
                 summary: input.changeSummary,
                 actorId: input.actorId,
                 actorEmail: input.actorEmail,
@@ -1583,6 +1785,7 @@ export async function saveWorkspacePatchByUserId(input: {
     let rebaseCount = 0;
     let appliedOperations = 0;
     let progressCursor: string | null = null;
+    let unifiedProgress: UnifiedProgressStateV1 | null = null;
     let didPersistMutation = false;
     const normalizedIdempotencyKey = input.idempotencyKey.trim();
     const normalizedOperations = normalizeWorkspacePatchOperations(input.operations);
@@ -1624,6 +1827,11 @@ export async function saveWorkspacePatchByUserId(input: {
                     input.projectId,
                     input.versionId
                 );
+                unifiedProgress = resolveUnifiedProgressFromEnvelope(
+                    currentEnvelope,
+                    input.projectId,
+                    input.versionId
+                );
                 return;
             }
 
@@ -1644,6 +1852,11 @@ export async function saveWorkspacePatchByUserId(input: {
                 appliedOperations = 0;
                 progressCursor = patchResult.progressCursor
                     || resolveProgressCursorFromEnvelope(currentEnvelope, input.projectId, input.versionId);
+                unifiedProgress = resolveUnifiedProgressFromEnvelope(
+                    currentEnvelope,
+                    input.projectId,
+                    input.versionId
+                );
                 return;
             }
 
@@ -1666,6 +1879,11 @@ export async function saveWorkspacePatchByUserId(input: {
             appliedOperations = patchResult.appliedOperations;
             progressCursor = patchResult.progressCursor
                 || resolveProgressCursorFromEnvelope(persistedEnvelope, input.projectId, input.versionId);
+            unifiedProgress = resolveUnifiedProgressFromEnvelope(
+                persistedEnvelope,
+                input.projectId,
+                input.versionId
+            );
             didPersistMutation = true;
         });
     } catch (error) {
@@ -1716,13 +1934,15 @@ export async function saveWorkspacePatchByUserId(input: {
         idempotent,
         rebaseCount,
         appliedOperations,
-        progressCursor
+        progressCursor,
+        unifiedProgress
     };
 }
 
 export async function saveWorkspaceByUserId(userId: string, projects: Project[]) {
     const docRef = workspacesCollection().doc(userId);
     let committedEnvelope: WorkspaceEnvelope | null = null;
+    const projectedProjects = applyUnifiedProgressProjectionToProjects(normalizeProjects(projects));
 
     await adminDb.runTransaction(async (transaction) => {
         const snap = await transaction.get(docRef);
@@ -1730,7 +1950,7 @@ export async function saveWorkspaceByUserId(userId: string, projects: Project[])
             ? fromWorkspaceSnapshot(userId, snap.data() || {})
             : createEmptyWorkspaceEnvelope(userId);
         const nextEnvelope = createNextWorkspaceEnvelope(currentEnvelope, {
-            projects,
+            projects: projectedProjects,
             summary: "Workspace synchronized from a trusted server mutation.",
             saveMode: "snapshot"
         });
@@ -1912,7 +2132,8 @@ export async function updateProjectVersionInWorkspaceByUserId(input: {
                 if (version.id !== input.versionId) return version;
                 projectTouched = true;
                 touched = true;
-                return input.mutateVersion(version);
+                const mutatedVersion = input.mutateVersion(version);
+                return applyUnifiedProgressProjectionToVersion(mutatedVersion);
             });
 
             if (!projectTouched) return project;

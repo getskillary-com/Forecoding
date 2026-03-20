@@ -8,6 +8,7 @@ import {
     WorkspaceDocumentTooLargeError
 } from "@/lib/data/workspaces";
 import { normalizeProjects } from "@/lib/project-language";
+import { normalizeUnifiedProgressState } from "@/lib/progress-template";
 import type { Project, WorkspaceEnvelope, WorkspacePatchOperation } from "@/types";
 
 const WorkspaceSnapshotPutBodySchema = z.object({
@@ -36,6 +37,11 @@ const WorkspacePatchOperationSchema = z.discriminatedUnion("type", [
         versionId: z.string().trim().min(1),
         events: z.array(z.unknown()),
         progressState: z.unknown().optional()
+    }),
+    z.object({
+        type: z.literal("migrate.progress_template_v2"),
+        projectId: z.string().trim().min(1).optional(),
+        versionId: z.string().trim().min(1).optional()
     })
 ]);
 
@@ -76,6 +82,51 @@ function stripSnapshotProjects(envelope: WorkspaceEnvelope): WorkspaceEnvelope {
             return nextSnapshot;
         })
     };
+}
+
+function resolveUnifiedProgressFromWorkspace(
+    envelope: WorkspaceEnvelope,
+    projectId?: string | null,
+    versionId?: string | null
+) {
+    const attachWorkspaceTrace = (state: ReturnType<typeof normalizeUnifiedProgressState>) => {
+        if (!state) return null;
+        const latestSnapshotId = envelope.snapshots[0]?.id || null;
+        return {
+            ...state,
+            nextAction: {
+                ...state.nextAction,
+                workspaceSnapshotId: state.nextAction.workspaceSnapshotId ?? latestSnapshotId,
+                revision: typeof state.nextAction.revision === "number"
+                    ? state.nextAction.revision
+                    : envelope.revision
+            }
+        };
+    };
+    const scopedProjectId = (projectId || "").trim();
+    const scopedVersionId = (versionId || "").trim();
+    const preferredProject = scopedProjectId
+        ? envelope.projects.find((project) => project.id === scopedProjectId) || null
+        : null;
+
+    if (preferredProject) {
+        const preferredVersion = scopedVersionId
+            ? preferredProject.versions.find((version) => version.id === scopedVersionId) || null
+            : preferredProject.versions[preferredProject.versions.length - 1] || null;
+        const preferredUnified = normalizeUnifiedProgressState(preferredVersion?.data?.unifiedProgressState);
+        if (preferredUnified) {
+            return attachWorkspaceTrace(preferredUnified);
+        }
+    }
+
+    for (const project of envelope.projects) {
+        const latestVersion = project.versions[project.versions.length - 1];
+        const unified = normalizeUnifiedProgressState(latestVersion?.data?.unifiedProgressState);
+        if (unified) {
+            return attachWorkspaceTrace(unified);
+        }
+    }
+    return null;
 }
 
 async function requireUser() {
@@ -152,7 +203,12 @@ export async function PUT(req: Request) {
                         idempotent: false,
                         rebaseCount: 0,
                         appliedOperations: 0,
-                        progressCursor: null
+                        progressCursor: null,
+                        unifiedProgress: resolveUnifiedProgressFromWorkspace(
+                            conflictWorkspace,
+                            parsedBody.projectId,
+                            parsedBody.versionId
+                        )
                     },
                     { status: 409 }
                 );
@@ -169,7 +225,8 @@ export async function PUT(req: Request) {
                     idempotent: result.idempotent,
                     rebaseCount: result.rebaseCount,
                     appliedOperations: result.appliedOperations,
-                    progressCursor: result.progressCursor
+                    progressCursor: result.progressCursor,
+                    unifiedProgress: result.unifiedProgress
                 },
                 { status: 200 }
             );
@@ -198,7 +255,8 @@ export async function PUT(req: Request) {
                     idempotent: false,
                     rebaseCount: 0,
                     appliedOperations: 0,
-                    progressCursor: null
+                    progressCursor: null,
+                    unifiedProgress: resolveUnifiedProgressFromWorkspace(conflictWorkspace)
                 },
                 { status: 409 }
             );
@@ -214,7 +272,8 @@ export async function PUT(req: Request) {
             idempotent: false,
             rebaseCount: 0,
             appliedOperations: 1,
-            progressCursor: null
+            progressCursor: null,
+            unifiedProgress: resolveUnifiedProgressFromWorkspace(successWorkspace)
         });
     } catch (error) {
         if (error instanceof z.ZodError) {

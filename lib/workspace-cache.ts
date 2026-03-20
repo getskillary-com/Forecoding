@@ -7,6 +7,7 @@ import type {
 } from "@/types";
 import { normalizeProjects } from "@/lib/project-language";
 import { createEmptyWorkspaceEnvelope, normalizeWorkspaceEnvelope } from "@/lib/workspace-envelope";
+import { isProgressTemplateEnabled } from "@/lib/progress-template";
 
 type WorkspaceCache = {
     envelope: WorkspaceEnvelope;
@@ -185,7 +186,7 @@ function delay(ms: number) {
 
 function shouldUsePatchSave(projects: Project[]) {
     return projects.some((project) =>
-        project.versions.some((version) => version.data.progressTemplateVersion === "readiness_v1")
+        project.versions.some((version) => isProgressTemplateEnabled(version.data.progressTemplateVersion))
     );
 }
 
@@ -259,7 +260,7 @@ function resolvePatchScope(operations: WorkspacePatchOperation[], projects: Proj
         if (operation.type === "upsert_project") {
             const latestVersion = operation.project.versions[operation.project.versions.length - 1];
             if (!latestVersion) continue;
-            if (latestVersion.data.progressTemplateVersion === "readiness_v1") {
+            if (isProgressTemplateEnabled(latestVersion.data.progressTemplateVersion)) {
                 return {
                     projectId: operation.project.id,
                     versionId: latestVersion.id
@@ -271,7 +272,7 @@ function resolvePatchScope(operations: WorkspacePatchOperation[], projects: Proj
     for (const project of projects) {
         const latestVersion = project.versions[project.versions.length - 1];
         if (!latestVersion) continue;
-        if (latestVersion.data.progressTemplateVersion === "readiness_v1") {
+        if (isProgressTemplateEnabled(latestVersion.data.progressTemplateVersion)) {
             return {
                 projectId: project.id,
                 versionId: latestVersion.id

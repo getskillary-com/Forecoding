@@ -40,7 +40,8 @@ import {
     ProgressEventV1,
     PrdDelta,
     Attachment,
-    FileNode
+    FileNode,
+    UnifiedProgressStateV1
 } from "@/types";
 import { ChatBubble } from "@/components/ChatBubble";
 import { useNavigationFeedback } from "@/components/NavigationFeedback";
@@ -108,13 +109,16 @@ import { computeScaffoldEligibility } from "@/lib/scaffold-eligibility";
 import { loadAdminStatus } from "@/lib/admin-status-client";
 import {
     PROGRESS_TEMPLATE_VERSION,
+    buildProgressProjectionFromReadiness,
     appendProgressEvents,
     createProgressEvent,
     createProgressStateFromReadiness,
     createProgressTemplateFromReadiness,
+    isProgressTemplateEnabled,
     normalizeProgressEvents,
     normalizeProgressTemplate,
     normalizeProgressState,
+    normalizeUnifiedProgressState,
     resolveProgressCursor
 } from "@/lib/progress-template";
 const STRUCTURE_CONTEXT_MAX_CHARS = 12000;
@@ -1768,19 +1772,31 @@ function normalizeVersionDesignState(
             ? (hasLegacyUiStage ? null : data.uiReadyAt)
             : (designStage === "ready_to_generate" ? Date.now() : null);
     const prdDeltas = normalizePrdDeltas(data?.prdDeltas, messages);
-    const progressTemplateEnabled = data?.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION;
+    const progressTemplateEnabled = isProgressTemplateEnabled(data?.progressTemplateVersion);
     const progressEvents = progressTemplateEnabled
         ? normalizeProgressEvents(data?.progressEvents)
         : [];
+    const projectedProgress = progressTemplateEnabled
+        ? buildProgressProjectionFromReadiness({
+            readiness,
+            prdDeltas,
+            currentFocus: readiness.nextMilestone,
+            stage: architectureStage,
+            progressEvents,
+            templateVersion: data?.progressTemplateVersion
+        })
+        : null;
     const progressTemplate = progressTemplateEnabled
         ? (
             normalizeProgressTemplate(data?.progressTemplate)
+            || projectedProgress?.progressTemplate
             || createProgressTemplateFromReadiness(readiness)
         )
         : undefined;
     const progressState = progressTemplateEnabled
         ? (
             normalizeProgressState(data?.progressState)
+            || projectedProgress?.progressState
             || createProgressStateFromReadiness({
                 readiness,
                 prdDeltas,
@@ -1788,11 +1804,17 @@ function normalizeVersionDesignState(
             })
         )
         : undefined;
+    const unifiedProgressState = progressTemplateEnabled
+        ? (
+            normalizeUnifiedProgressState(data?.unifiedProgressState)
+            || projectedProgress?.unifiedProgressState
+        )
+        : undefined;
     const progressCursor = progressTemplateEnabled
         ? (
             typeof data?.progressCursor === "string" && data.progressCursor.trim()
                 ? data.progressCursor.trim()
-                : resolveProgressCursor(progressEvents)
+                : projectedProgress?.progressCursor || resolveProgressCursor(progressEvents)
         )
         : undefined;
     const currentDiagram = deriveArchitectureDiagramMermaid({
@@ -1820,9 +1842,12 @@ function normalizeVersionDesignState(
         prdDeltas,
         functionalLockedAt,
         uiReadyAt,
-        progressTemplateVersion: progressTemplateEnabled ? PROGRESS_TEMPLATE_VERSION : undefined,
+        progressTemplateVersion: progressTemplateEnabled
+            ? (projectedProgress?.progressTemplateVersion || PROGRESS_TEMPLATE_VERSION)
+            : undefined,
         progressTemplate,
         progressState,
+        unifiedProgressState,
         progressEvents,
         progressCursor
     };
@@ -1838,38 +1863,42 @@ function buildProgressDataForVersion(input: {
     progressEvents?: ProgressEventV1[] | null;
     currentFocus?: string | null;
 }) {
-    const progressTemplateVersion = input.baseData.progressTemplateVersion;
-    if (progressTemplateVersion !== PROGRESS_TEMPLATE_VERSION) {
+    if (!isProgressTemplateEnabled(input.baseData.progressTemplateVersion)) {
         return {
             progressTemplateVersion: input.baseData.progressTemplateVersion,
             progressTemplate: input.baseData.progressTemplate,
             progressState: input.baseData.progressState,
+            unifiedProgressState: input.baseData.unifiedProgressState,
             progressEvents: input.baseData.progressEvents,
             progressCursor: input.baseData.progressCursor
         };
     }
 
-    const readiness = computeScaffoldEligibility({
+    const eligibility = computeScaffoldEligibility({
         architecturePack: input.architecturePack,
         decisionRecords: input.decisionRecords,
         guardrailChecklist: input.guardrailChecklist,
         readinessOverrides: input.readinessOverrides
-    }).readiness;
+    });
+    const readiness = eligibility.readiness;
     const existingEvents = normalizeProgressEvents(input.baseData.progressEvents);
     const nextEvents = appendProgressEvents(existingEvents, input.progressEvents || undefined);
-    const progressTemplate = createProgressTemplateFromReadiness(readiness);
-    const progressState = createProgressStateFromReadiness({
+    const projection = buildProgressProjectionFromReadiness({
         readiness,
         prdDeltas: input.prdDeltas,
-        currentFocus: input.currentFocus || readiness.nextMilestone
+        currentFocus: input.currentFocus || readiness.nextMilestone,
+        stage: input.baseData.architectureStage ?? undefined,
+        progressEvents: nextEvents,
+        templateVersion: input.baseData.progressTemplateVersion
     });
 
     return {
-        progressTemplateVersion: PROGRESS_TEMPLATE_VERSION,
-        progressTemplate,
-        progressState,
-        progressEvents: nextEvents,
-        progressCursor: resolveProgressCursor(nextEvents)
+        progressTemplateVersion: projection.progressTemplateVersion,
+        progressTemplate: projection.progressTemplate,
+        progressState: projection.progressState,
+        unifiedProgressState: projection.unifiedProgressState,
+        progressEvents: projection.progressEvents,
+        progressCursor: projection.progressCursor
     };
 }
 
@@ -3646,11 +3675,13 @@ function joinPrdItems(language: "zh" | "en", items: string[], maxItems: number =
 
 function buildPrdProgressLine(
     language: "zh" | "en",
-    readiness: ReadinessChecklist
+    readiness: ReadinessChecklist,
+    unifiedProgress?: UnifiedProgressStateV1 | null
 ) {
-    const readinessText = `${Math.round(readiness.score)}%`;
+    const score = unifiedProgress ? unifiedProgress.readinessScore : readiness.score;
+    const readinessText = `${Math.round(score)}%`;
     const nextMilestone = clipText(
-        readiness.nextMilestone || "",
+        unifiedProgress?.currentFocus || readiness.nextMilestone || "",
         96
     );
     return language === "zh"
@@ -3740,13 +3771,16 @@ function buildPrdProjectionModel(
     architecturePack: ArchitecturePack,
     guardrailChecklist: GuardrailChecklist,
     readiness: ReadinessChecklist,
-    prdDeltas: PrdDelta[],
-    canGenerate: boolean
+    unifiedProgress: UnifiedProgressStateV1 | null,
+    prdDeltas: PrdDelta[]
 ): PrdProjectionModel {
-    const readinessGateReady = isReadinessGateReady(readiness);
-    const effectiveCanGenerate = canGenerate && readinessGateReady;
+    const effectiveCanGenerate = unifiedProgress
+        ? unifiedProgress.canGenerate
+        : isReadinessGateReady(readiness);
     const incompleteRequirements = listIncompleteReadinessRequirements(readiness);
-    const blockingReasons = buildReadinessBlockingReasons(readiness);
+    const blockingReasons = unifiedProgress?.blockers?.length
+        ? unifiedProgress.blockers
+        : buildReadinessBlockingReasons(readiness);
     const confirmedScope: string[] = [];
     const pendingQuestions: PrdPendingQuestionItem[] = [];
     const changeLog = buildPrdChangeLog(language, prdDeltas);
@@ -3848,7 +3882,7 @@ function buildPrdProjectionModel(
     const currentFocus = clipText(
         translateReadinessText(
             language,
-            readiness.nextMilestone || pendingQuestions[0]?.detail || (
+            unifiedProgress?.currentFocus || readiness.nextMilestone || pendingQuestions[0]?.detail || (
                 effectiveCanGenerate
                     ? (
                         language === "zh"
@@ -3947,7 +3981,7 @@ function buildPrdProjectionModel(
     const currentStatus: PrdStatusCardItem[] = [
         {
             label: language === "zh" ? "总体进度" : "Overall progress",
-            value: buildPrdProgressLine(language, readiness),
+            value: buildPrdProgressLine(language, readiness, unifiedProgress),
             detail: effectiveCanGenerate
                 ? (
                     language === "zh"
@@ -3976,11 +4010,11 @@ function buildPrdProjectionModel(
         {
             label: language === "zh" ? "当前阻塞" : "Primary blocker",
             value: primaryBlocker,
-            detail: readiness.nextMilestone
+            detail: unifiedProgress?.currentFocus || readiness.nextMilestone
                 ? (
                     language === "zh"
-                        ? `下一步：${clipText(readiness.nextMilestone, 120)}`
-                        : `Next: ${clipText(readiness.nextMilestone, 120)}`
+                        ? `下一步：${clipText(unifiedProgress?.currentFocus || readiness.nextMilestone, 120)}`
+                        : `Next: ${clipText(unifiedProgress?.currentFocus || readiness.nextMilestone, 120)}`
                 )
                 : (
                     language === "zh"
@@ -4926,6 +4960,7 @@ function WizardContent() {
     const evalRequestIdRef = useRef(0);
     const resumedPendingEvaluationIdsRef = useRef<Set<string>>(new Set());
     const isUnmountingRef = useRef(false);
+    const lastAutoGeneratePromptKeyRef = useRef("");
 
     // Chat Attachments
     const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
@@ -5010,17 +5045,25 @@ function WizardContent() {
         guardrailChecklist: workingArchitectureState.guardrailChecklist,
         readinessOverrides
     });
+    const activeUnifiedProgress = normalizeUnifiedProgressState(currentVersion?.data.unifiedProgressState)
+        || buildProgressProjectionFromReadiness({
+            readiness: workingScaffoldEligibility.readiness,
+            prdDeltas,
+            currentFocus: workingScaffoldEligibility.readiness.nextMilestone,
+            stage: workingArchitectureState.stage,
+            progressEvents: progressEventsRef.current,
+            templateVersion: currentVersion?.data.progressTemplateVersion
+        }).unifiedProgressState;
     const computedReadinessBlockers = buildReadinessBlockingReasons(workingScaffoldEligibility.readiness);
-    const generationReady = workingScaffoldEligibility.canGenerate
-        && isReadinessGateReady(workingScaffoldEligibility.readiness);
+    const generationReady = activeUnifiedProgress.canGenerate;
     const activeScaffoldEligibility = workingScaffoldEligibility;
     const activeArchitectureStage = workingArchitectureState.stage;
     const activeDesignStage = activeScaffoldEligibility.designStage;
-    const architectureCompletion = activeScaffoldEligibility.readiness.score;
+    const architectureCompletion = activeUnifiedProgress.readinessScore;
     const readinessBlockers = generationReady
         ? []
-        : (activeScaffoldEligibility.blockingReasons.length > 0
-            ? activeScaffoldEligibility.blockingReasons
+        : (activeUnifiedProgress.blockers.length > 0
+            ? activeUnifiedProgress.blockers
             : computedReadinessBlockers);
     const isReadyToGenerateStage = generationReady;
     const architectureViewerCode = workingDerivedDiagram;
@@ -5074,6 +5117,7 @@ function WizardContent() {
             progressTemplateVersion: overrides.progressTemplateVersion ?? baseVersion.data.progressTemplateVersion,
             progressTemplate: overrides.progressTemplate ?? baseVersion.data.progressTemplate,
             progressState: overrides.progressState ?? baseVersion.data.progressState,
+            unifiedProgressState: overrides.unifiedProgressState ?? baseVersion.data.unifiedProgressState,
             progressEvents: nextProgressEvents,
             progressCursor: overrides.progressCursor ?? baseVersion.data.progressCursor
         };
@@ -5216,6 +5260,14 @@ function WizardContent() {
             designStage: nextEligibility.designStage,
             readinessOverrides: nextReadinessOverrides
         });
+        const nextUnifiedProgress = buildProgressProjectionFromReadiness({
+            readiness: nextEligibility.readiness,
+            prdDeltas: prdDeltasRef.current,
+            currentFocus: nextEligibility.readiness.nextMilestone,
+            stage: nextStage,
+            progressEvents: progressEventsRef.current,
+            templateVersion: currentVersion?.data.progressTemplateVersion
+        }).unifiedProgressState;
 
         return {
             architecturePack: snapshot.architecturePack,
@@ -5224,8 +5276,8 @@ function WizardContent() {
             readinessOverrides: nextReadinessOverrides,
             readiness: nextEligibility.readiness,
             stage: nextStage,
-            canGenerate: nextEligibility.canGenerate && isReadinessGateReady(nextEligibility.readiness),
-            blockingReasons: buildReadinessBlockingReasons(nextEligibility.readiness),
+            canGenerate: nextUnifiedProgress.canGenerate,
+            blockingReasons: nextUnifiedProgress.blockers,
             designStage: nextEligibility.designStage,
             currentDiagram: nextDiagram,
             messages: nextMessages
@@ -5253,6 +5305,66 @@ function WizardContent() {
             cancelled = true;
         };
     }, []);
+
+    useEffect(() => {
+        if (!project?.id || !currentVersion?.id) return;
+        if (isConversationLocked || isLoading || !activeUnifiedProgress.canGenerate) {
+            if (!activeUnifiedProgress.canGenerate) {
+                lastAutoGeneratePromptKeyRef.current = "";
+            }
+            return;
+        }
+
+        const latestPendingQuestion = getLatestPendingQuestion(messages);
+        const latestMessage = messages[messages.length - 1];
+        const hasGeneratePrompt = latestPendingQuestion?.questionAction === "generate_scaffold"
+            || latestMessage?.questionAction === "generate_scaffold"
+            || Boolean(latestMessage?.options?.some((option) => option.action === "generate_scaffold"));
+        if (hasGeneratePrompt) {
+            return;
+        }
+
+        const readyKey = [
+            project.id,
+            currentVersion.id,
+            activeUnifiedProgress.progressCursor || "",
+            String(activeUnifiedProgress.readinessScore)
+        ].join(":");
+        if (lastAutoGeneratePromptKeyRef.current === readyKey) {
+            return;
+        }
+        lastAutoGeneratePromptKeyRef.current = readyKey;
+
+        const readyMessage = buildAssistantQuestionMessage(buildReadyToGenerateMessage(workspaceLanguage));
+        setMessages((prev) => [
+            ...closeOpenAssistantQuestions(prev),
+            readyMessage
+        ]);
+        if (isProgressTemplateEnabled(currentVersion.data.progressTemplateVersion)) {
+            const promptedEvent = createProgressEvent({
+                type: "scaffold.prompted",
+                projectId: project.id,
+                versionId: currentVersion.id,
+                sourceMessageId: readyMessage.id,
+                summary: "Scaffold action was prompted from unified progress state."
+            });
+            const nextProgressEvents = appendProgressEvents(progressEventsRef.current, [promptedEvent]);
+            progressEventsRef.current = nextProgressEvents;
+            setProgressEvents(nextProgressEvents);
+            setProgressCursor(resolveProgressCursor(nextProgressEvents));
+        }
+    }, [
+        project?.id,
+        currentVersion?.id,
+        currentVersion?.data.progressTemplateVersion,
+        activeUnifiedProgress.canGenerate,
+        activeUnifiedProgress.progressCursor,
+        activeUnifiedProgress.readinessScore,
+        isConversationLocked,
+        isLoading,
+        messages,
+        workspaceLanguage
+    ]);
 
     useEffect(() => {
         if (activeTab !== "architecture" || shouldMountArchitectureViewer) return;
@@ -6574,12 +6686,20 @@ function WizardContent() {
                     guardrailChecklist: resolvedGuardrails,
                     readinessOverrides
                 });
+                const resolvedUnifiedProgress = buildProgressProjectionFromReadiness({
+                    readiness: resolvedEligibility.readiness,
+                    prdDeltas: prdDeltasRef.current,
+                    currentFocus: resolvedEligibility.readiness.nextMilestone,
+                    stage: resolvedStage,
+                    progressEvents: progressEventsRef.current,
+                    templateVersion: currentVersion?.data.progressTemplateVersion
+                }).unifiedProgressState;
                 setEvaluation(finalEvaluation);
                 commitArchitectureStageSnapshot(finalWorkingArchitectureState);
                 const coercedPlatformQuestion = interactionMode === "architecture" && shouldPrioritizePlatformQuestion(resolvedPack)
                     ? buildPlatformDiscoveryQuestion(workspaceLanguage)
                     : null;
-                const resolvedReady = resolvedEligibility.canGenerate && isReadinessGateReady(resolvedEligibility.readiness);
+                const resolvedReady = resolvedUnifiedProgress.canGenerate;
                 const coercedGenerateQuestion = interactionMode === "architecture" && currentQuestionAction === "generate_scaffold" && !resolvedReady
                     ? buildBlockedGenerateQuestion(
                         workspaceLanguage,
@@ -7595,12 +7715,14 @@ Do you want to start scaffold generation now?`;
         prdDeltasRef.current = next;
         setPrdDeltas(next);
 
-        if (currentVersion?.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION) {
+        if (isProgressTemplateEnabled(currentVersion?.data.progressTemplateVersion)) {
             const eventType =
                 input.action === "focus_requirement"
                     ? "requirement.focused"
+                    : input.action === "confirmed"
+                    ? "requirement.confirmed"
                     : input.action === "fill_requirement"
-                    ? "requirement.filled"
+                    ? "requirement.updated"
                     : "readiness.recomputed";
             const nextEvent = createProgressEvent({
                 type: eventType,
@@ -7725,7 +7847,14 @@ Do you want to start scaffold generation now?`;
         setGenerateError(null);
 
         const followUp = nextEligibility.canGenerate
-            && isReadinessGateReady(nextEligibility.readiness)
+            && buildProgressProjectionFromReadiness({
+                readiness: nextEligibility.readiness,
+                prdDeltas: prdDeltasRef.current,
+                currentFocus: nextEligibility.readiness.nextMilestone,
+                stage: nextStage,
+                progressEvents: progressEventsRef.current,
+                templateVersion: currentVersion?.data.progressTemplateVersion
+            }).unifiedProgressState.canGenerate
             ? buildReadyToGenerateMessage(language)
             : buildNextArchitectureFollowUpQuestion(
                 language,
@@ -8124,7 +8253,7 @@ Do you want to start scaffold generation now?`;
                 { id: '1', title: uiText.setupProjectStructure, status: 'pending', description: uiText.setupProjectStructureDesc, source: 'scaffold' },
                 { id: '2', title: uiText.implementCoreFeatures, status: 'pending', description: uiText.implementCoreFeaturesDesc, source: 'scaffold' },
             ]);
-            if (currentVersion.data.progressTemplateVersion === PROGRESS_TEMPLATE_VERSION) {
+            if (isProgressTemplateEnabled(currentVersion.data.progressTemplateVersion)) {
                 const nextProgressEvents = appendProgressEvents(progressEventsRef.current, [
                     createProgressEvent({
                         type: "generation.gate.changed",
@@ -8275,7 +8404,7 @@ Do you want to start scaffold generation now?`;
         setMessages(committedMessages);
 
         setGenerateError(null);
-        const committedReady = committedSnapshot.canGenerate && isReadinessGateReady(committedSnapshot.readiness);
+        const committedReady = committedSnapshot.canGenerate;
         if (!committedReady) {
             const blockingReasons = committedSnapshot.blockingReasons.length > 0
                 ? committedSnapshot.blockingReasons
@@ -8310,6 +8439,18 @@ Do you want to start scaffold generation now?`;
             }
             return;
         }
+        if (isProgressTemplateEnabled(currentVersion?.data.progressTemplateVersion)) {
+            const triggeredEvent = createProgressEvent({
+                type: "scaffold.triggered",
+                projectId: project.id,
+                versionId: currentVersion?.id || undefined,
+                summary: "User triggered scaffold generation."
+            });
+            const nextProgressEvents = appendProgressEvents(progressEventsRef.current, [triggeredEvent]);
+            progressEventsRef.current = nextProgressEvents;
+            setProgressEvents(nextProgressEvents);
+            setProgressCursor(resolveProgressCursor(nextProgressEvents));
+        }
         if (requiresPayment) {
             await startCheckout(committedSnapshot);
             return;
@@ -8332,8 +8473,8 @@ Do you want to start scaffold generation now?`;
             workingArchitectureState.architecturePack,
             workingArchitectureState.guardrailChecklist,
             activeScaffoldEligibility.readiness,
-            prdDeltas,
-            generationReady
+            activeUnifiedProgress,
+            prdDeltas
         )
         : null;
     const prdStatusCards = prdProjection?.currentStatus ?? [];
