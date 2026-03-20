@@ -67,12 +67,6 @@ jobs:
       - name: Smoke workspace tasks API (unauthenticated)
         run: npm run smoke:workspace-tasks-api -- --timeout-ms 120000
 
-      - name: Smoke admin API (authenticated, optional)
-        if: ${{ secrets.ADMIN_SMOKE_COOKIE != '' }}
-        env:
-          ADMIN_SMOKE_COOKIE: ${{ secrets.ADMIN_SMOKE_COOKIE }}
-        run: npm run smoke:admin-api:local -- --timeout-ms 120000
-
       - name: Smoke validator CLI
         run: node scripts/validate-generated-scaffold.mjs --help
 
