@@ -47,6 +47,13 @@ type NormalizedPrefetchWorkspaceRemoteOptions = {
     mergeProjectScopedResult: boolean;
 };
 
+type RemoteWorkspacePayload = {
+    projects?: Project[];
+    workspace?: WorkspaceEnvelope | null;
+    revision?: number;
+    updatedAt?: string | null;
+};
+
 const CACHE_KEY = "__fc_workspace_cache";
 const PERSISTED_LOCAL_KEY = "__fc_workspace_envelope_v1";
 const LEGACY_PROJECTS_KEY = "__fc_workspace_projects_v1";
@@ -125,6 +132,78 @@ function mergeProjectScopedProjects(currentProjects: Project[], remoteProjects: 
     }
 
     return merged;
+}
+
+function normalizeRevision(value: unknown): number | null {
+    if (typeof value !== "number") return null;
+    if (!Number.isInteger(value)) return null;
+    if (value < 0) return null;
+    return value;
+}
+
+function normalizeUpdatedAt(value: unknown, fallback: number): number {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        return Math.round(value);
+    }
+    if (typeof value === "string") {
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return Math.round(parsed);
+        }
+    }
+    return fallback;
+}
+
+function writeProjectsEnvelopeFromRemote(
+    projects: Project[],
+    metadata?: { revision?: unknown; updatedAt?: unknown }
+): WorkspaceEnvelope {
+    const current = readWorkspaceEnvelopeFromLocalStorage();
+    const remoteRevision = normalizeRevision(metadata?.revision);
+    const nextRevision = remoteRevision !== null ? Math.max(current.revision, remoteRevision) : current.revision;
+    const nextEnvelope: WorkspaceEnvelope = {
+        ...current,
+        projects: normalizeProjects(projects),
+        revision: nextRevision,
+        updatedAt: normalizeUpdatedAt(metadata?.updatedAt, Date.now())
+    };
+    writeWorkspaceEnvelopeToLocalStorage(nextEnvelope);
+    return nextEnvelope;
+}
+
+function mergeProjectsForConflictRetry(serverProjects: Project[], intendedProjects: Project[]): Project[] {
+    const mergedById = new Map<string, Project>();
+    const remoteOnlyOrder: Project[] = [];
+    const result: Project[] = [];
+    const consumedServerIds = new Set<string>();
+
+    for (const project of serverProjects) {
+        mergedById.set(project.id, project);
+        remoteOnlyOrder.push(project);
+    }
+
+    for (const project of intendedProjects) {
+        if (!project?.id) continue;
+        const serverProject = mergedById.get(project.id);
+        const winner = !serverProject
+            ? project
+            : (project.updatedAt || 0) >= (serverProject.updatedAt || 0)
+                ? project
+                : serverProject;
+        mergedById.set(project.id, winner);
+        consumedServerIds.add(project.id);
+        result.push(winner);
+    }
+
+    for (const project of remoteOnlyOrder) {
+        if (!project?.id || consumedServerIds.has(project.id)) continue;
+        const mergedProject = mergedById.get(project.id);
+        if (mergedProject) {
+            result.push(mergedProject);
+        }
+    }
+
+    return result;
 }
 
 function getCache(): WorkspaceCache | null {
@@ -229,12 +308,7 @@ export function readProjectsFromLocalStorage(): Project[] {
 }
 
 export function writeProjectsToLocalStorage(projects: Project[]): void {
-    const current = readWorkspaceEnvelopeFromLocalStorage();
-    writeWorkspaceEnvelopeToLocalStorage({
-        ...current,
-        projects: normalizeProjects(projects),
-        updatedAt: Date.now()
-    });
+    writeProjectsEnvelopeFromRemote(projects, { updatedAt: Date.now() });
 }
 
 export function getCachedProject(projectId?: string | null): Project | null {
@@ -276,10 +350,7 @@ export async function prefetchWorkspaceRemote(input?: PrefetchWorkspaceRemoteOpt
         try {
             const res = await fetch(buildRemoteFetchUrl(options), { cache: "no-store" });
             if (!res.ok) return null;
-            const data = (await res.json()) as {
-                projects?: Project[];
-                workspace?: WorkspaceEnvelope | null;
-            };
+            const data = (await res.json()) as RemoteWorkspacePayload;
             if (data.workspace) {
                 writeWorkspaceEnvelopeToLocalStorage(data.workspace);
                 lastRemoteFetchAtByKey.set(fetchKey, Date.now());
@@ -292,11 +363,17 @@ export async function prefetchWorkspaceRemote(input?: PrefetchWorkspaceRemoteOpt
                     data.projects,
                     options.projectId
                 );
-                writeProjectsToLocalStorage(mergedProjects);
+                writeProjectsEnvelopeFromRemote(mergedProjects, {
+                    revision: data.revision,
+                    updatedAt: data.updatedAt
+                });
                 lastRemoteFetchAtByKey.set(fetchKey, Date.now());
                 return mergedProjects;
             }
-            writeProjectsToLocalStorage(data.projects);
+            writeProjectsEnvelopeFromRemote(data.projects, {
+                revision: data.revision,
+                updatedAt: data.updatedAt
+            });
             lastRemoteFetchAtByKey.set(fetchKey, Date.now());
             return data.projects;
         } catch {
@@ -315,6 +392,7 @@ export async function syncWorkspaceProjectsRemote(
     input?: { changeSummary?: string }
 ): Promise<WorkspaceSyncResult> {
     const current = readWorkspaceEnvelopeFromLocalStorage();
+    const changeSummary = input?.changeSummary || "Workspace update";
 
     try {
         const res = await fetch("/api/workspace", {
@@ -323,7 +401,7 @@ export async function syncWorkspaceProjectsRemote(
             body: JSON.stringify({
                 projects,
                 expectedRevision: current.revision,
-                changeSummary: input?.changeSummary || "Workspace update"
+                changeSummary
             })
         });
 
@@ -338,12 +416,41 @@ export async function syncWorkspaceProjectsRemote(
         }
 
         if (res.status === 409 && payload?.workspace) {
+            const serverWorkspace = payload.workspace as WorkspaceEnvelope;
+            const rebasedProjects = mergeProjectsForConflictRetry(serverWorkspace.projects, projects);
+            const retryRes = await fetch("/api/workspace", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    projects: rebasedProjects,
+                    expectedRevision: serverWorkspace.revision,
+                    changeSummary
+                })
+            });
+            const retryPayload = await retryRes.json().catch(() => null);
+            if (retryRes.ok && retryPayload?.workspace) {
+                writeWorkspaceEnvelopeToLocalStorage(retryPayload.workspace as WorkspaceEnvelope);
+                return {
+                    ok: true,
+                    revision: typeof retryPayload.revision === "number" ? retryPayload.revision : serverWorkspace.revision,
+                    workspace: retryPayload.workspace as WorkspaceEnvelope
+                };
+            }
+            if (retryRes.status === 409 && retryPayload?.workspace) {
+                return {
+                    ok: false,
+                    conflict: true,
+                    message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
+                    revision: typeof retryPayload.revision === "number" ? retryPayload.revision : serverWorkspace.revision,
+                    workspace: retryPayload.workspace as WorkspaceEnvelope
+                };
+            }
             return {
                 ok: false,
                 conflict: true,
                 message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
                 revision: typeof payload.revision === "number" ? payload.revision : current.revision,
-                workspace: payload.workspace as WorkspaceEnvelope
+                workspace: serverWorkspace
             };
         }
 
