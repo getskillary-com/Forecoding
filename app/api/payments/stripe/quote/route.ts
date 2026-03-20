@@ -16,10 +16,27 @@ export const runtime = "nodejs";
 type QuoteRequestBody = {
     projectId?: string;
     projectSnapshot?: unknown;
+    workspaceSnapshotId?: unknown;
+    expectedRevision?: unknown;
 };
 
 function sanitizeText(value: string | undefined) {
     return (value || "").trim().slice(0, 120);
+}
+
+function parseExpectedRevision(value: unknown): number | null {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+        return value;
+    }
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const parsed = Number.parseInt(trimmed, 10);
+        if (Number.isInteger(parsed) && parsed >= 0) {
+            return parsed;
+        }
+    }
+    return null;
 }
 
 function parseProjects(raw: unknown): Project[] {
@@ -40,9 +57,8 @@ function parseProjectSnapshot(raw: unknown, projectId: string): Project | null {
     return candidate;
 }
 
-async function loadProjectForUser(userId: string, projectId: string) {
-    const workspace = await getWorkspaceByUserId(userId);
-    const projects = parseProjects(workspace?.projects);
+function loadProjectFromWorkspace(rawProjects: unknown, projectId: string) {
+    const projects = parseProjects(rawProjects);
     return projects.find((project) => project.id === projectId) || null;
 }
 
@@ -96,9 +112,76 @@ export async function POST(req: Request) {
         if (!projectId) {
             return NextResponse.json({ error: "Missing projectId." }, { status: 400 });
         }
+        const workspaceSnapshotId = sanitizeText(
+            typeof body.workspaceSnapshotId === "string" ? body.workspaceSnapshotId : ""
+        );
+        if (!workspaceSnapshotId) {
+            return NextResponse.json(
+                {
+                    error: "Missing workspaceSnapshotId.",
+                    code: "WORKSPACE_SNAPSHOT_REQUIRED"
+                },
+                { status: 400 }
+            );
+        }
+        const expectedRevision = parseExpectedRevision(body.expectedRevision);
+        if (expectedRevision === null) {
+            return NextResponse.json(
+                {
+                    error: "Missing expectedRevision.",
+                    code: "WORKSPACE_REVISION_REQUIRED"
+                },
+                { status: 400 }
+            );
+        }
+
+        const workspace = await getWorkspaceByUserId(user.uid);
+        if (!workspace) {
+            return NextResponse.json(
+                { error: "Workspace not found for pricing quote." },
+                { status: 404 }
+            );
+        }
+        if (workspace.revision !== expectedRevision) {
+            return NextResponse.json(
+                {
+                    error: "Workspace revision conflict.",
+                    code: "WORKSPACE_REVISION_CONFLICT",
+                    revision: workspace.revision
+                },
+                { status: 409 }
+            );
+        }
+        const selectedSnapshot = workspace.envelope.snapshots.find(
+            (snapshot) => snapshot.id === workspaceSnapshotId
+        ) || null;
+        if (!selectedSnapshot) {
+            return NextResponse.json(
+                {
+                    error: "Workspace snapshot mismatch.",
+                    code: "WORKSPACE_SNAPSHOT_MISMATCH",
+                    workspaceSnapshotId
+                },
+                { status: 409 }
+            );
+        }
+        if (
+            Array.isArray(selectedSnapshot.projectIds)
+            && selectedSnapshot.projectIds.length > 0
+            && !selectedSnapshot.projectIds.includes(projectId)
+        ) {
+            return NextResponse.json(
+                {
+                    error: "Workspace snapshot does not include this project.",
+                    code: "WORKSPACE_SNAPSHOT_MISMATCH",
+                    workspaceSnapshotId
+                },
+                { status: 409 }
+            );
+        }
 
         const projectFromSnapshot = parseProjectSnapshot(body.projectSnapshot, projectId);
-        const projectFromWorkspace = await loadProjectForUser(user.uid, projectId);
+        const projectFromWorkspace = loadProjectFromWorkspace(workspace.projects, projectId);
         const project = projectFromWorkspace || projectFromSnapshot;
         const currency = getStripeCurrency();
         const quote = quoteProjectCreditPrice(project, {
@@ -119,7 +202,9 @@ export async function POST(req: Request) {
                 uiDesignScore: quote.uiDesignScore,
                 pricingBreakdown: quote.pricingBreakdown,
                 factors: quote.factors
-            }
+            },
+            workspaceSnapshotId,
+            revision: workspace.revision
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to calculate quote.";

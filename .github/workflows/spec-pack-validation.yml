@@ -32,8 +32,34 @@ jobs:
       - name: Drift checks
         run: npm run check:drift
 
+      - name: Evaluate SSE contract fixtures
+        run: npm run check:evaluate-sse-contract
+
+      - name: Runtime preflight gate (CI baseline env)
+        env:
+          APP_BASE_URL: https://ci.example.com
+          AUTH_SESSION_COOKIE_NAME: __session
+          AUTH_CODE_SECRET: ci-auth-secret
+          EMAIL_SERVER: smtp://user:pass@smtp.example.com:587
+          EMAIL_FROM: no-reply@example.com
+          FIREBASE_PROJECT_ID: ci-firebase-project
+          FIREBASE_CLIENT_EMAIL: ci-service-account@example.iam.gserviceaccount.com
+          FIREBASE_PRIVATE_KEY: ci-private-key
+          STRIPE_SECRET_KEY: sk_test_ci
+          STRIPE_WEBHOOK_SECRET: whsec_ci
+          AI_PROVIDER: openai
+          OPENAI_API_KEY: sk-ci-openai
+          FORECODING_ADMIN_EMAILS: admin@example.com
+        run: npm run gate:runtime-preflight
+
       - name: Build
         run: npm run build
+
+      - name: Smoke generate API (unauthenticated)
+        run: npm run smoke:generate-api -- --timeout-ms 120000
+
+      - name: Smoke evaluate SSE API
+        run: npm run smoke:evaluate-sse-api -- --timeout-ms 120000 --stream-timeout-ms 45000
 
       - name: Smoke admin API (unauthenticated)
         run: npm run smoke:admin-api:local -- --timeout-ms 120000

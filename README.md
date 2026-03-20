@@ -25,18 +25,37 @@ The primary durable artifact is the `ArchitecturePack`, not the chat transcript.
 ## Runtime surfaces
 
 - `/wizard`: main Architect workspace
-- `/api/evaluate`: streaming architecture conversation endpoint
+- `/api/evaluate`: streaming architecture conversation endpoint (`analysis.delta`, `question`, `conflict`, `readiness.update`, `trace`, `remediation`)
 - `/api/generate`: scaffold generation endpoint, only available for a ready architecture pack
 - `/api/workspace`: optimistic-concurrency workspace envelope endpoint with revision + snapshot history
 - `/api/workspace/tasks`: task DAG execution and replay endpoint for version-scoped task runs
+- `/admin/workspaces/[ownerUserId]`: workspace revision timeline and impact diff detail page
 - `/api/payments/stripe/*`: checkout and pricing for scaffold generation
 - `/api/admin/tenants`: tenant lifecycle governance API (active, trial, suspended)
 - `/api/admin/tenants/rebind`: reassign user/workspace tenant binding with audit trail
+- `/api/admin/orgs`: organization lifecycle governance API (active, suspended)
+- `/api/admin/orgs/bind-tenant`: bind or unbind tenant to an organization
+- `/api/admin/users`: user account governance API (active, suspended)
+- `/api/admin/workspaces/[ownerUserId]`: workspace revision timeline API
+- `/api/admin/workspaces/[ownerUserId]/diff`: workspace revision diff + impact analysis API
+- `/api/admin/status`: admin identity, capability status, and runtime preflight summary API
+- `/api/admin/flags`: governance feature-flag list and mutation API
+- `/api/admin/jobs`: generation job list/search API
+- `/api/admin/jobs/[jobId]`: generation job detail API
+- `/api/admin/tasks/runs`: cross-workspace task DAG run query API
+- `/api/admin/tasks/runs/replay`: operator-triggered task DAG replay API
+- `/api/admin/webhooks/stripe`: Stripe webhook ledger query API
+- `/api/admin/webhooks/stripe/[eventId]`: Stripe webhook detail API
+- `/api/admin/webhooks/stripe/replay`: Stripe webhook replay mutation API
+- `/api/admin/billing/events`: billing event ledger query API
+- `/api/admin/billing/purchases`: purchase lifecycle query API
+- `/api/admin/billing/refund`: operator-triggered refund record API
 - `/api/admin/releases`: release publishing and release list API
 - `/api/admin/releases/[releaseId]`: release detail and rollback impact API
 - `/api/admin/releases/approve`: release approve/reject mutation API
 - `/api/admin/releases/rollback`: release rollback mutation API
 - `/api/admin/observability`: admin SLO and alert snapshot endpoint
+- `/api/admin/audit`: platform audit and governance trail API
 
 ## Tech stack
 
@@ -63,6 +82,14 @@ Core runtime:
 ```env
 APP_BASE_URL=https://your-domain.com
 AUTH_SESSION_COOKIE_NAME=__session
+```
+
+Firebase server credentials:
+
+```env
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@your-project-id.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 ```
 
 Auth and email:
@@ -124,6 +151,10 @@ Role model:
 Capability model:
 
 - `feature_flags_write`: create/enable/disable feature flags
+- `orgs_manage`: create/update organizations and bind tenant-to-org
+- `billing_manage`: execute refund operations and billing lifecycle interventions
+- `users_manage`: update user account status (`active`, `suspended`)
+- `tasks_manage`: replay workspace task DAG runs from admin operations
 - `releases_publish`: publish release tags
 - `releases_approve`: approve or reject release tags
 - `releases_rollback`: execute release rollback operations
@@ -136,6 +167,7 @@ Governance feature flags:
 - `releases.publish.enabled`: pauses release tag publishing from the admin API.
 - `releases.approval.enabled`: pauses release approve/reject actions from the admin console and admin API.
 - `releases.rollback.enabled`: pauses release rollback actions from the admin console and admin API.
+- `stripe.webhook_replay.enabled`: pauses webhook replay actions from the admin console and admin API.
 - `scope=tenant` and `scope=workspace` flags require `scopeId` (`tenantId` or workspace owner user id).
 - Runtime resolution priority is `workspace scope` > `tenant scope` > `global scope`.
 
@@ -170,10 +202,34 @@ For `spec-pack` generation changes, also run:
 npm run validate:fixtures
 ```
 
+For evaluate SSE contract fixtures, run:
+
+```bash
+npm run check:evaluate-sse-contract
+```
+
+For release-time runtime environment gating, run:
+
+```bash
+npm run gate:runtime-preflight
+```
+
+To fail on warnings as well (strict release gate), run:
+
+```bash
+npm run gate:runtime-preflight:strict
+```
+
 For a local `/api/generate` route smoke test, run:
 
 ```bash
 npm run smoke:generate-api
+```
+
+For a local `/api/evaluate` typed SSE smoke test, run:
+
+```bash
+npm run smoke:evaluate-sse-api
 ```
 
 For admin API regression smoke checks, run:

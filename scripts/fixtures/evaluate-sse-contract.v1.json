@@ -1,0 +1,102 @@
+{
+  "version": "evaluate_sse_fixture_v1",
+  "valid": [
+    {
+      "event": "analysis.delta",
+      "payload": {
+        "stage": "context",
+        "densityScore": 72,
+        "isReady": false,
+        "missing": [
+          "Clarify target users"
+        ]
+      }
+    },
+    {
+      "event": "question",
+      "payload": {
+        "question": "Which platform should we prioritize first?",
+        "questionAction": "fill_requirement",
+        "questionRequirementKey": "business_context.platforms",
+        "source": "model"
+      }
+    },
+    {
+      "event": "conflict",
+      "payload": {
+        "summary": "Data retention policy is inconsistent between requirements.",
+        "items": [
+          "One requirement says keep data for 90 days.",
+          "Another requirement says delete data after 30 days."
+        ]
+      }
+    },
+    {
+      "event": "readiness.update",
+      "payload": {
+        "raw": "Business context is complete; integration contracts still missing."
+      }
+    },
+    {
+      "event": "trace",
+      "payload": {
+        "kind": "chunk",
+        "requestId": "req-fixture-1",
+        "chunk": "<question>Which payment flow should we start with?</question>",
+        "source": "model"
+      }
+    },
+    {
+      "event": "remediation",
+      "payload": {
+        "code": "EVALUATE_PRIMARY_RETRY",
+        "severity": "warning",
+        "message": "Primary evaluate stream failed; retrying with compact payload.",
+        "retrying": true,
+        "requestId": "req-fixture-1"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "event": "analysis.delta",
+      "payload": {
+        "stage": "unknown_stage"
+      }
+    },
+    {
+      "event": "question",
+      "payload": {
+        "question": "",
+        "source": "model"
+      }
+    },
+    {
+      "event": "conflict",
+      "payload": {
+        "summary": "Missing items array"
+      }
+    },
+    {
+      "event": "readiness.update",
+      "payload": {
+        "raw": ""
+      }
+    },
+    {
+      "event": "trace",
+      "payload": {
+        "kind": "streaming",
+        "requestId": "req-fixture-2"
+      }
+    },
+    {
+      "event": "remediation",
+      "payload": {
+        "code": "EVALUATE_NO_OUTPUT",
+        "severity": "fatal",
+        "message": "Invalid severity enum"
+      }
+    }
+  ]
+}

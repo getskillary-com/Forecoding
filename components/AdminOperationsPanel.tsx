@@ -94,6 +94,27 @@ function resolveOperationLinks(event: AuditEvent): OperationLink[] {
         }
     }
 
+    if (event.resourceType === "workspace") {
+        return [
+            {
+                href: `/admin/workspaces/${encodeURIComponent(resourceId)}`,
+                label: "Open workspace diff"
+            }
+        ];
+    }
+
+    if (event.resourceType === "workspaceVersion") {
+        const ownerUserId = resourceId.split(":")[0]?.trim() || "";
+        if (ownerUserId) {
+            return [
+                {
+                    href: `/admin/workspaces/${encodeURIComponent(ownerUserId)}`,
+                    label: "Open workspace diff"
+                }
+            ];
+        }
+    }
+
     return [];
 }
 

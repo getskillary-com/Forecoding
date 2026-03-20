@@ -20,6 +20,12 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid token." }, { status: 401 });
         }
         const profile = await getUserProfileByUid(decoded.uid);
+        if (profile?.status === "suspended") {
+            return NextResponse.json(
+                { error: "This account is suspended. Contact support for reactivation." },
+                { status: 403 }
+            );
+        }
         if (profile?.legacyPasswordResetRequired) {
             return NextResponse.json(
                 { error: "Password reset required before creating a session." },

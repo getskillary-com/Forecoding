@@ -7,6 +7,10 @@ import {
 export type AdminRole = "none" | "viewer" | "operator" | "admin";
 export type AdminCapability =
     | "feature_flags_write"
+    | "orgs_manage"
+    | "billing_manage"
+    | "users_manage"
+    | "tasks_manage"
     | "releases_publish"
     | "releases_approve"
     | "releases_rollback"
@@ -50,6 +54,10 @@ export function getAdminCapabilitiesForRole(role: AdminRole): AdminCapability[] 
     if (role === "admin") {
         return [
             "feature_flags_write",
+            "orgs_manage",
+            "billing_manage",
+            "users_manage",
+            "tasks_manage",
             "releases_publish",
             "releases_approve",
             "releases_rollback",
@@ -61,6 +69,7 @@ export function getAdminCapabilitiesForRole(role: AdminRole): AdminCapability[] 
     if (role === "operator") {
         return [
             "feature_flags_write",
+            "tasks_manage",
             "releases_publish",
             "releases_approve",
             "releases_rollback",

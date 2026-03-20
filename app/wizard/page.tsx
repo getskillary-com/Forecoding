@@ -65,10 +65,12 @@ import {
 import {
     getCachedProjectSnapshot,
     prefetchWorkspaceRemote,
+    readWorkspaceEnvelopeFromLocalStorage,
     readProjectsFromLocalStorage,
     syncWorkspaceProjectsRemote,
     writeProjectsToLocalStorage
 } from "@/lib/workspace-cache";
+import { inferTemplateKindFromProjectTree } from "@/lib/generate-contract";
 import {
     buildMinimalUiDesignSpec,
     deriveUiRequirements,
@@ -1999,40 +2001,25 @@ function hasMeaningfulDiagramChange(current: string, candidate: string): boolean
     return normalizeMermaidForComparison(current) !== normalizeMermaidForComparison(candidate);
 }
 
-function inferTemplateKindHintFromTree(tree?: FileNode[]): "next_root" | "next_src" | "react_vite" | "monorepo_multiapp" | undefined {
-    if (!tree || tree.length === 0) return undefined;
+function resolveGenerationWorkspaceSnapshotId(projectId: string, versionId: string): string | undefined {
+    const envelope = readWorkspaceEnvelopeFromLocalStorage();
+    const snapshots = Array.isArray(envelope.snapshots) ? envelope.snapshots : [];
+    if (snapshots.length === 0) return undefined;
 
-    const topLevel = new Set(
-        tree
-            .map((node) => node?.name)
-            .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
-    );
+    const exactMatch = snapshots.find((snapshot) => (
+        Array.isArray(snapshot.projectIds)
+        && snapshot.projectIds.includes(projectId)
+        && Array.isArray(snapshot.activeVersionIds)
+        && snapshot.activeVersionIds.includes(versionId)
+    ));
+    if (exactMatch?.id) return exactMatch.id;
 
-    if (topLevel.has("apps") || topLevel.has("packages")) return "monorepo_multiapp";
-    const allPaths = new Set<string>();
-    const walk = (nodes: FileNode[], prefix = "") => {
-        nodes.forEach((node) => {
-            const path = prefix ? `${prefix}/${node.name}` : node.name;
-            if (node.type === "file") {
-                allPaths.add(path);
-                return;
-            }
-            if (node.children?.length) {
-                walk(node.children, path);
-            }
-        });
-    };
-    walk(tree);
-    if (
-        allPaths.has("vite.config.ts") ||
-        Array.from(allPaths).some((path) => /^src\/pages\/.+\.(ts|tsx|js|jsx)$/i.test(path)) ||
-        allPaths.has("src/main.tsx")
-    ) {
-        return "react_vite";
-    }
-    if (topLevel.has("src")) return "next_src";
-    if (topLevel.has("app")) return "next_root";
-    return undefined;
+    const projectMatch = snapshots.find((snapshot) => (
+        Array.isArray(snapshot.projectIds) && snapshot.projectIds.includes(projectId)
+    ));
+    if (projectMatch?.id) return projectMatch.id;
+
+    return snapshots[0]?.id;
 }
 
 function yieldToBrowser(): Promise<void> {
@@ -4526,7 +4513,13 @@ function buildEvaluateRequestBody(
     compactMode: boolean,
     designMemory: string | null,
     diagramPolicy: string,
-    outputLanguage: WorkspaceLanguage
+    outputLanguage: WorkspaceLanguage,
+    traceContext?: {
+        projectId?: string;
+        versionId?: string;
+        workspaceSnapshotId?: string;
+        workspaceRevision?: number;
+    }
 ) {
     const compactOptions: EvaluateMessageBuildOptions = compactMode
         ? {
@@ -4564,7 +4557,14 @@ function buildEvaluateRequestBody(
         interactionMode,
         designMemory: designMemoryText,
         diagramPolicy,
-        outputLanguage
+        outputLanguage,
+        projectId: traceContext?.projectId || undefined,
+        versionId: traceContext?.versionId || undefined,
+        workspaceSnapshotId: traceContext?.workspaceSnapshotId || undefined,
+        workspaceRevision:
+            typeof traceContext?.workspaceRevision === "number" && Number.isInteger(traceContext.workspaceRevision) && traceContext.workspaceRevision >= 0
+                ? traceContext.workspaceRevision
+                : undefined
     });
 }
 
@@ -5408,11 +5408,26 @@ function WizardContent() {
         const timer = window.setTimeout(async () => {
             setIsQuoteLoading(true);
             try {
+                const workspaceEnvelope = readWorkspaceEnvelopeFromLocalStorage();
+                const workspaceSnapshotId = currentVersion
+                    ? resolveGenerationWorkspaceSnapshotId(projectId, currentVersion.id)
+                    : undefined;
+                const expectedRevision =
+                    Number.isInteger(workspaceEnvelope.revision) && workspaceEnvelope.revision >= 0
+                        ? workspaceEnvelope.revision
+                        : undefined;
+                if (!workspaceSnapshotId || expectedRevision === undefined) {
+                    if (!cancelled) setCheckoutQuote(null);
+                    return;
+                }
+
                 const res = await fetch("/api/payments/stripe/quote", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         projectId,
+                        workspaceSnapshotId,
+                        expectedRevision,
                         projectSnapshot: buildPricingProjectSnapshot(
                             project,
                             currentVersion,
@@ -5870,6 +5885,19 @@ function WizardContent() {
             );
             controller = new AbortController();
             evaluateAbortRef.current = controller;
+            const workspaceEnvelope = readWorkspaceEnvelopeFromLocalStorage();
+            const workspaceSnapshotId = projectId && currentVersion
+                ? resolveGenerationWorkspaceSnapshotId(projectId, currentVersion.id)
+                : undefined;
+            const traceContext = {
+                projectId: projectId || undefined,
+                versionId: currentVersion?.id,
+                workspaceSnapshotId,
+                workspaceRevision:
+                    Number.isInteger(workspaceEnvelope.revision) && workspaceEnvelope.revision >= 0
+                        ? workspaceEnvelope.revision
+                        : undefined
+            };
 
             const requestBody = buildEvaluateRequestBody(
                 requestMessages,
@@ -5880,7 +5908,8 @@ function WizardContent() {
                 false,
                 designMemory,
                 DIAGRAM_POLICY,
-                workspaceLanguage
+                workspaceLanguage,
+                traceContext
             );
 
             if (requestBody.length > EVALUATE_MAX_REQUEST_CHARS) {
@@ -5920,7 +5949,8 @@ function WizardContent() {
                     true,
                     designMemory,
                     DIAGRAM_POLICY,
-                    workspaceLanguage
+                    workspaceLanguage,
+                    traceContext
                 );
 
                 if (compactRequestBody.length <= EVALUATE_MAX_REQUEST_CHARS) {
@@ -7755,14 +7785,24 @@ Do you want to start scaffold generation now?`;
                 effectiveMessages
             );
             const outputLanguage = workspaceLanguage;
-            const templateKindHint = inferTemplateKindHintFromTree(generation?.projectTree);
+            const workspaceEnvelope = readWorkspaceEnvelopeFromLocalStorage();
+            const workspaceSnapshotId = resolveGenerationWorkspaceSnapshotId(projectId, currentVersion.id);
+            const expectedRevision =
+                Number.isInteger(workspaceEnvelope.revision) && workspaceEnvelope.revision >= 0
+                    ? workspaceEnvelope.revision
+                    : undefined;
+            const inferredTemplateKind = inferTemplateKindFromProjectTree(generation?.projectTree) || "next_root";
             const requestGeneration = async (outputMode: OutputMode, currentProjectTree?: FileNode[]) => {
+                const templateKind = inferTemplateKindFromProjectTree(currentProjectTree) || inferredTemplateKind;
                 const res = await fetch("/api/generate", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         projectId,
                         versionId: currentVersion.id,
+                        workspaceSnapshotId,
+                        expectedRevision,
+                        releaseIntent: `wizard_generate:${outputMode}`,
                         summary: historyText,
                         diagram: effectiveDiagram,
                         projectName: project?.name,
@@ -7770,7 +7810,8 @@ Do you want to start scaffold generation now?`;
                         outputMode,
                         oneClickMode: GENERATE_ONE_CLICK_MODE,
                         ideProfile: GENERATE_IDE_PROFILE,
-                        templateKindHint,
+                        templateKind,
+                        templateKindHint: templateKind,
                         currentProjectTree,
                         architecturePack: effectiveArchitecturePack,
                         decisionRecords: effectiveDecisionRecords,
@@ -7908,12 +7949,23 @@ Do you want to start scaffold generation now?`;
             baseParams.set("versionId", currentVersion.id);
             const successPath = `/wizard?${baseParams.toString()}&payment=success`;
             const cancelPath = `/wizard?${baseParams.toString()}&payment=cancelled`;
+            const workspaceEnvelope = readWorkspaceEnvelopeFromLocalStorage();
+            const workspaceSnapshotId = resolveGenerationWorkspaceSnapshotId(projectId, currentVersion.id);
+            const expectedRevision =
+                Number.isInteger(workspaceEnvelope.revision) && workspaceEnvelope.revision >= 0
+                    ? workspaceEnvelope.revision
+                    : undefined;
+            if (!workspaceSnapshotId || expectedRevision === undefined) {
+                throw new Error("Workspace snapshot/revision is unavailable for checkout. Please refresh and retry.");
+            }
 
             const res = await fetch("/api/payments/stripe/checkout", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     projectId,
+                    workspaceSnapshotId,
+                    expectedRevision,
                     projectName: project?.name || uiText.projectCredit,
                     successPath,
                     cancelPath,

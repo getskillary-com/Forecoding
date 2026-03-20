@@ -31,6 +31,12 @@ export async function POST(req: Request) {
         }
 
         const existing = await getUserProfileByUid(authUser.uid);
+        if (existing?.status === "suspended") {
+            return NextResponse.json(
+                { error: "This account is suspended. Contact support for reactivation." },
+                { status: 403 }
+            );
+        }
         if (existing?.legacyPasswordResetRequired) {
             return NextResponse.json(
                 { error: "This account requires password reset before sign in." },

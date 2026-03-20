@@ -75,6 +75,11 @@ export async function getServerSessionIdentity(): Promise<ServerSessionIdentity 
     const uid = token.uid;
     if (!uid) return null;
 
+    const profile = await getUserProfileByUid(uid);
+    if (profile?.status === "suspended") {
+        return null;
+    }
+
     return {
         uid,
         email: token.email || null,

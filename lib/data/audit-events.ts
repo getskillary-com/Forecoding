@@ -129,6 +129,9 @@ export async function listGovernanceOperationEvents(limit = 12): Promise<AuditEv
         "generation.job_succeeded",
         "tenant.status_updated",
         "tenant.user_reassigned",
+        "tenant.org_rebound",
+        "org.status_updated",
+        "billing.refund_created",
         "workspace.tenant_rebound"
     ]);
 

@@ -704,7 +704,43 @@ export interface BillingEvent {
     currency: string;
     createdAt: number;
     relatedProjectId?: string | null;
+    userId?: string | null;
+    tenantId?: string | null;
+    providerEventId?: string | null;
+    paymentIntentId?: string | null;
+    invoiceId?: string | null;
+    refundId?: string | null;
+    merchantOrderId?: string | null;
+    requestId?: string | null;
+    workspaceSnapshotId?: string | null;
+    workspaceRevision?: number | null;
     metadata?: Record<string, string>;
+}
+
+export interface ProjectPurchase {
+    id: string;
+    userId: string;
+    projectId: string;
+    tenantId?: string | null;
+    provider: "stripe" | "manual";
+    status: "PENDING" | "SUCCEEDED" | "CANCELLED" | "FAILED" | "REFUNDED";
+    amount: number;
+    currency: string;
+    requestId: string;
+    merchantOrderId: string;
+    paymentIntentId?: string | null;
+    sessionId?: string | null;
+    invoiceId?: string | null;
+    refundId?: string | null;
+    customerEmail?: string | null;
+    providerEventId?: string | null;
+    providerEventType?: string | null;
+    workspaceSnapshotId?: string | null;
+    workspaceRevision?: number | null;
+    paidAt?: number | null;
+    refundedAt?: number | null;
+    createdAt: number;
+    updatedAt: number;
 }
 
 export interface WebhookEventRecord {
@@ -916,6 +952,10 @@ export interface EvaluateTraceEvent {
     chunk?: string;
     source?: "model" | "fallback" | "system";
     note?: string;
+    projectId?: string;
+    versionId?: string;
+    workspaceSnapshotId?: string;
+    workspaceRevision?: number;
 }
 
 export interface EvaluateQuestionEvent {

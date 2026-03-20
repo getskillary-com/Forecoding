@@ -3,7 +3,11 @@ import { z } from "zod";
 import { getServerUser } from "@/lib/server-auth";
 import { normalizeProjects } from "@/lib/project-language";
 import { executeTaskDag } from "@/lib/task-dag";
-import { getWorkspaceByUserId, updateProjectVersionInWorkspaceByUserId } from "@/lib/data/workspaces";
+import {
+    getWorkspaceByUserId,
+    updateProjectVersionInWorkspaceByUserId,
+    WorkspaceRevisionConflictError
+} from "@/lib/data/workspaces";
 import type { Project, TaskDefinition, TaskRun } from "@/types";
 
 export const runtime = "nodejs";
@@ -12,7 +16,9 @@ const RunTasksSchema = z.object({
     projectId: z.string().trim().min(1),
     versionId: z.string().trim().min(1),
     mode: z.enum(["strict", "retry_failed"]).default("strict"),
-    persist: z.boolean().default(true)
+    persist: z.boolean().default(true),
+    workspaceSnapshotId: z.string().trim().min(1).max(220).optional(),
+    expectedRevision: z.number().int().min(0).optional()
 });
 
 function parseProjects(raw: unknown): Project[] {
@@ -46,6 +52,53 @@ function deriveTaskStatusFromRun(run: TaskRun | undefined, fallback: TaskDefinit
     if (run.status === "succeeded") return "ready" as const;
     if (run.status === "failed" || run.status === "blocked") return "blocked" as const;
     return "pending" as const;
+}
+
+function resolveWorkspaceSnapshotForTaskRun(input: {
+    requestedSnapshotId?: string;
+    snapshotList: Array<{ id: string; projectIds?: string[]; activeVersionIds?: string[] }>;
+    projectId: string;
+}) {
+    const requestedSnapshotId = (input.requestedSnapshotId || "").trim();
+    const snapshots = input.snapshotList;
+    const preferredSnapshot = requestedSnapshotId
+        ? snapshots.find((snapshot) => snapshot.id === requestedSnapshotId) || null
+        : null;
+    if (requestedSnapshotId && !preferredSnapshot) {
+        return {
+            ok: false as const,
+            error: "Requested workspaceSnapshotId was not found in the current workspace envelope.",
+            status: 409
+        };
+    }
+
+    const selectedSnapshot = preferredSnapshot || snapshots[0] || null;
+    if (!selectedSnapshot) {
+        return {
+            ok: true as const,
+            snapshotId: null,
+            versionInSnapshot: null
+        };
+    }
+
+    if (Array.isArray(selectedSnapshot.projectIds) && selectedSnapshot.projectIds.length > 0) {
+        if (!selectedSnapshot.projectIds.includes(input.projectId)) {
+            return {
+                ok: false as const,
+                error: "Requested task run project is not part of the selected workspace snapshot.",
+                status: 409
+            };
+        }
+    }
+
+    return {
+        ok: true as const,
+        snapshotId: selectedSnapshot.id,
+        versionInSnapshot:
+            Array.isArray(selectedSnapshot.activeVersionIds) && selectedSnapshot.activeVersionIds.length > 0
+                ? selectedSnapshot.activeVersionIds
+                : null
+    };
 }
 
 export async function GET(req: Request) {
@@ -105,6 +158,32 @@ export async function POST(req: Request) {
 
         const payload = RunTasksSchema.parse(await req.json());
         const workspace = await getWorkspaceByUserId(user.uid);
+        const currentRevision = workspace?.revision ?? null;
+        if (typeof payload.expectedRevision === "number" && currentRevision !== payload.expectedRevision) {
+            return NextResponse.json(
+                {
+                    error: "Workspace revision conflict.",
+                    code: "WORKSPACE_REVISION_CONFLICT",
+                    revision: currentRevision
+                },
+                { status: 409 }
+            );
+        }
+        const snapshotResolution = resolveWorkspaceSnapshotForTaskRun({
+            requestedSnapshotId: payload.workspaceSnapshotId,
+            snapshotList: workspace?.envelope?.snapshots || [],
+            projectId: payload.projectId
+        });
+        if (!snapshotResolution.ok) {
+            return NextResponse.json(
+                {
+                    error: snapshotResolution.error,
+                    code: "WORKSPACE_SNAPSHOT_MISMATCH",
+                    revision: currentRevision
+                },
+                { status: snapshotResolution.status }
+            );
+        }
         const projects = parseProjects(workspace?.projects);
         const resolved = resolveProjectVersion(projects, payload.projectId, payload.versionId);
         if (!resolved) {
@@ -131,7 +210,9 @@ export async function POST(req: Request) {
                 ok: true,
                 persisted: false,
                 ...execution,
-                latestRunByTask: getLatestRunsByTask(execution.runs)
+                latestRunByTask: getLatestRunsByTask(execution.runs),
+                workspaceSnapshotId: snapshotResolution.snapshotId,
+                revision: currentRevision
             });
         }
 
@@ -145,9 +226,10 @@ export async function POST(req: Request) {
             tenantId: user.tenantId ?? null,
             projectId: payload.projectId,
             versionId: payload.versionId,
+            expectedRevision: payload.expectedRevision,
             actorId: user.uid,
             actorEmail: user.email,
-            summary: `Executed task DAG (${payload.mode}) for ${payload.projectId}/${payload.versionId}.`,
+            summary: `Executed task DAG (${payload.mode}) for ${payload.projectId}/${payload.versionId} on snapshot ${snapshotResolution.snapshotId || "n/a"}.`,
             kind: "project_update",
             mutateVersion: (currentVersion) => {
                 const currentTaskRuns = Array.isArray(currentVersion.data.taskRuns) ? currentVersion.data.taskRuns : [];
@@ -179,9 +261,21 @@ export async function POST(req: Request) {
             issues: execution.issues,
             runCount: execution.runs.length,
             latestRunByTask: getLatestRunsByTask(execution.runs),
+            workspaceSnapshotId: snapshotResolution.snapshotId,
             revision: persistedEnvelope?.revision ?? null
         });
     } catch (error) {
+        if (error instanceof WorkspaceRevisionConflictError) {
+            return NextResponse.json(
+                {
+                    error: "Workspace revision conflict.",
+                    code: "WORKSPACE_REVISION_CONFLICT",
+                    revision: error.currentEnvelope.revision,
+                    workspace: error.currentEnvelope
+                },
+                { status: 409 }
+            );
+        }
         const message = error instanceof Error ? error.message : "Failed to execute workspace task DAG.";
         return NextResponse.json({ error: message }, { status: 500 });
     }

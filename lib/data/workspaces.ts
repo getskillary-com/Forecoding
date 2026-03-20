@@ -8,7 +8,20 @@ import {
     createNextWorkspaceEnvelope,
     normalizeWorkspaceEnvelope
 } from "@/lib/workspace-envelope";
-import type { Project, ProjectVersion, ReleaseTag, WorkspaceChangeKind, WorkspaceEnvelope } from "@/types";
+import type {
+    AcceptanceCase,
+    AssumptionRecord,
+    ContractSpec,
+    Project,
+    ProjectVersion,
+    ProjectVersionData,
+    ReleaseTag,
+    RequirementRecord,
+    TaskDefinition,
+    TaskRun,
+    WorkspaceChangeKind,
+    WorkspaceEnvelope
+} from "@/types";
 
 export type WorkspaceReleaseTagSummary = ReleaseTag & {
     ownerUserId: string;
@@ -54,6 +67,95 @@ export type WorkspaceReleaseRollbackResult =
         message: string;
     };
 
+type TaskRunStatus = TaskRun["status"];
+
+type WorkspaceImpactDiffList = {
+    added: string[];
+    removed: string[];
+    changed: string[];
+};
+
+type WorkspaceImpactStatusDiffList = WorkspaceImpactDiffList & {
+    statusChanged: string[];
+};
+
+type TaskRunStatusCounts = Record<TaskRunStatus, number>;
+
+export type WorkspaceRevisionTimelineItem = {
+    revisionId: string;
+    revisionNumber: number;
+    snapshotId: string;
+    createdAt: number;
+    summary: string;
+    kind: WorkspaceChangeKind;
+    actorId?: string | null;
+    actorEmail?: string | null;
+    projectCount: number;
+    activeVersionCount: number;
+    hasSnapshotPayload: boolean;
+};
+
+export type WorkspaceRevisionOverview = {
+    ownerUserId: string;
+    tenantId: string | null;
+    revision: number;
+    projectCount: number;
+    updatedAt: number;
+    revisions: WorkspaceRevisionTimelineItem[];
+};
+
+export type WorkspaceRevisionDiff = {
+    ownerUserId: string;
+    tenantId: string | null;
+    source: WorkspaceRevisionTimelineItem;
+    target: WorkspaceRevisionTimelineItem;
+    impact: {
+        projectIds: WorkspaceImpactDiffList;
+        activeVersionIds: WorkspaceImpactDiffList;
+        modules: WorkspaceImpactDiffList;
+        routes: WorkspaceImpactDiffList;
+        contracts: WorkspaceImpactDiffList;
+        tests: WorkspaceImpactDiffList;
+        requirements: WorkspaceImpactStatusDiffList;
+        assumptions: WorkspaceImpactStatusDiffList;
+        acceptanceCases: WorkspaceImpactStatusDiffList;
+        taskDefinitions: WorkspaceImpactStatusDiffList;
+        taskRuns: {
+            sourceCount: number;
+            targetCount: number;
+            statusDelta: TaskRunStatusCounts;
+        };
+        billing: {
+            paymentStatusChanged: Array<{
+                projectId: string;
+                sourceStatus: "paid" | "unpaid" | "unknown";
+                targetStatus: "paid" | "unpaid" | "unknown";
+            }>;
+            sourceEventCount: number;
+            targetEventCount: number;
+            addedEvents: string[];
+            removedEvents: string[];
+        };
+    };
+};
+
+export type WorkspaceRevisionDiffResult =
+    | {
+        ok: true;
+        diff: WorkspaceRevisionDiff;
+    }
+    | {
+        ok: false;
+        code:
+            | "WORKSPACE_NOT_FOUND"
+            | "INSUFFICIENT_REVISION_HISTORY"
+            | "REVISION_NOT_FOUND"
+            | "SNAPSHOT_NOT_FOUND"
+            | "SNAPSHOT_PAYLOAD_UNAVAILABLE";
+        message: string;
+        availableRevisionIds?: string[];
+    };
+
 type WorkspaceDoc = {
     userId: string;
     tenantId: string | null;
@@ -75,7 +177,7 @@ type WorkspaceSaveSuccess = {
     envelope: WorkspaceEnvelope;
 };
 
-class WorkspaceRevisionConflictError extends Error {
+export class WorkspaceRevisionConflictError extends Error {
     currentEnvelope: WorkspaceEnvelope;
 
     constructor(currentEnvelope: WorkspaceEnvelope) {
@@ -102,6 +204,440 @@ function buildCurrentActiveVersionIds(envelope: WorkspaceEnvelope) {
         envelope.projects
             .map((project) => project.versions[project.versions.length - 1]?.id || "")
     );
+}
+
+function sortStrings(values: Iterable<string>) {
+    return Array.from(new Set(Array.from(values).filter(Boolean))).sort((left, right) => left.localeCompare(right));
+}
+
+function buildMapDiff(source: Map<string, string>, target: Map<string, string>): WorkspaceImpactDiffList {
+    const sourceKeys = new Set(source.keys());
+    const targetKeys = new Set(target.keys());
+
+    const added = sortStrings(Array.from(targetKeys).filter((key) => !sourceKeys.has(key)));
+    const removed = sortStrings(Array.from(sourceKeys).filter((key) => !targetKeys.has(key)));
+    const changed = sortStrings(
+        Array.from(sourceKeys)
+            .filter((key) => targetKeys.has(key))
+            .filter((key) => source.get(key) !== target.get(key))
+    );
+
+    return { added, removed, changed };
+}
+
+function buildStatusDiff(
+    source: Map<string, string>,
+    target: Map<string, string>,
+    sourceStatuses: Map<string, string>,
+    targetStatuses: Map<string, string>
+): WorkspaceImpactStatusDiffList {
+    const base = buildMapDiff(source, target);
+    const sharedKeys = Array.from(sourceStatuses.keys()).filter((key) => targetStatuses.has(key));
+    const statusChanged = sortStrings(
+        sharedKeys.filter((key) => sourceStatuses.get(key) !== targetStatuses.get(key))
+    );
+    return {
+        ...base,
+        statusChanged
+    };
+}
+
+function createEmptyTaskRunStatusCounts(): TaskRunStatusCounts {
+    return {
+        queued: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        blocked: 0
+    };
+}
+
+function sumTaskRunStatusCounts(source: TaskRunStatusCounts): number {
+    return source.queued + source.running + source.succeeded + source.failed + source.blocked;
+}
+
+function buildTaskRunStatusDelta(source: TaskRunStatusCounts, target: TaskRunStatusCounts): TaskRunStatusCounts {
+    return {
+        queued: target.queued - source.queued,
+        running: target.running - source.running,
+        succeeded: target.succeeded - source.succeeded,
+        failed: target.failed - source.failed,
+        blocked: target.blocked - source.blocked
+    };
+}
+
+function safeText(value: unknown) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function safeArray(value: unknown) {
+    return Array.isArray(value) ? value : [];
+}
+
+function buildFingerprint(parts: unknown[]) {
+    return parts
+        .map((part) => {
+            if (part === null || part === undefined) return "";
+            if (typeof part === "string") return part.trim();
+            if (typeof part === "number" || typeof part === "boolean") return String(part);
+            try {
+                return JSON.stringify(part);
+            } catch {
+                return String(part);
+            }
+        })
+        .join("|");
+}
+
+function getLatestProjectVersion(project: Project): ProjectVersion | null {
+    if (!Array.isArray(project.versions) || project.versions.length === 0) return null;
+    return project.versions[project.versions.length - 1] || null;
+}
+
+function withProjectPrefix(projectId: string, key: string) {
+    return `${projectId}:${key}`;
+}
+
+function pushContractSpecSignals(
+    projectId: string,
+    map: Map<string, string>,
+    contractSpecs: ContractSpec[] | undefined
+) {
+    for (const spec of contractSpecs || []) {
+        const identity = withProjectPrefix(projectId, `contract:${safeText(spec.id) || safeText(spec.name)}`);
+        const fingerprint = buildFingerprint([
+            safeText(spec.name),
+            safeText(spec.kind),
+            safeText(spec.producer),
+            safeText(spec.consumer),
+            safeText(spec.schemaSummary),
+            safeText(spec.status)
+        ]);
+        if (identity && fingerprint) {
+            map.set(identity, fingerprint);
+        }
+    }
+}
+
+function pushRequirementSignals(
+    projectId: string,
+    map: Map<string, string>,
+    statusMap: Map<string, string>,
+    requirements: RequirementRecord[] | undefined
+) {
+    for (const record of requirements || []) {
+        const id = withProjectPrefix(projectId, `requirement:${safeText(record.id) || safeText(record.title)}`);
+        const status = safeText(record.status) || "unknown";
+        const fingerprint = buildFingerprint([
+            safeText(record.title),
+            safeText(record.summary),
+            status,
+            safeArray(record.riskNotes)
+        ]);
+        if (!id || !fingerprint) continue;
+        map.set(id, fingerprint);
+        statusMap.set(id, status);
+    }
+}
+
+function pushAssumptionSignals(
+    projectId: string,
+    map: Map<string, string>,
+    statusMap: Map<string, string>,
+    assumptions: AssumptionRecord[] | undefined
+) {
+    for (const assumption of assumptions || []) {
+        const id = withProjectPrefix(projectId, `assumption:${safeText(assumption.id) || safeText(assumption.statement)}`);
+        const status = safeText(assumption.status) || "unknown";
+        const fingerprint = buildFingerprint([
+            safeText(assumption.statement),
+            status
+        ]);
+        if (!id || !fingerprint) continue;
+        map.set(id, fingerprint);
+        statusMap.set(id, status);
+    }
+}
+
+function pushAcceptanceSignals(
+    projectId: string,
+    map: Map<string, string>,
+    statusMap: Map<string, string>,
+    acceptanceCases: AcceptanceCase[] | undefined
+) {
+    for (const acceptanceCase of acceptanceCases || []) {
+        const id = withProjectPrefix(projectId, `acceptance:${safeText(acceptanceCase.id) || safeText(acceptanceCase.title)}`);
+        const status = safeText(acceptanceCase.status) || "unknown";
+        const fingerprint = buildFingerprint([
+            safeText(acceptanceCase.title),
+            safeText(acceptanceCase.scenario),
+            status
+        ]);
+        if (!id || !fingerprint) continue;
+        map.set(id, fingerprint);
+        statusMap.set(id, status);
+    }
+}
+
+function pushTaskDefinitionSignals(
+    projectId: string,
+    map: Map<string, string>,
+    statusMap: Map<string, string>,
+    taskDefinitions: TaskDefinition[] | undefined
+) {
+    for (const definition of taskDefinitions || []) {
+        const id = withProjectPrefix(projectId, `task:${safeText(definition.id) || safeText(definition.title)}`);
+        const status = safeText(definition.status) || "unknown";
+        const fingerprint = buildFingerprint([
+            safeText(definition.title),
+            safeText(definition.owner),
+            status,
+            safeArray(definition.dependsOn),
+            safeText(definition.inputSummary),
+            safeText(definition.outputSummary),
+            safeText(definition.verifyCommand),
+            safeText(definition.rollbackHint)
+        ]);
+        if (!id || !fingerprint) continue;
+        map.set(id, fingerprint);
+        statusMap.set(id, status);
+    }
+}
+
+type WorkspaceSignalSnapshot = {
+    projectIds: string[];
+    activeVersionIds: string[];
+    modules: Map<string, string>;
+    routes: Map<string, string>;
+    contracts: Map<string, string>;
+    tests: Map<string, string>;
+    requirements: Map<string, string>;
+    requirementStatuses: Map<string, string>;
+    assumptions: Map<string, string>;
+    assumptionStatuses: Map<string, string>;
+    acceptanceCases: Map<string, string>;
+    acceptanceStatuses: Map<string, string>;
+    taskDefinitions: Map<string, string>;
+    taskDefinitionStatuses: Map<string, string>;
+    taskRunCounts: TaskRunStatusCounts;
+    paymentStatuses: Map<string, "paid" | "unpaid" | "unknown">;
+    billingEventKeys: Set<string>;
+};
+
+function collectWorkspaceSignals(projects: Project[]): WorkspaceSignalSnapshot {
+    const projectIds = sortStrings(projects.map((project) => project.id));
+    const activeVersionIds: string[] = [];
+    const modules = new Map<string, string>();
+    const routes = new Map<string, string>();
+    const contracts = new Map<string, string>();
+    const tests = new Map<string, string>();
+    const requirements = new Map<string, string>();
+    const requirementStatuses = new Map<string, string>();
+    const assumptions = new Map<string, string>();
+    const assumptionStatuses = new Map<string, string>();
+    const acceptanceCases = new Map<string, string>();
+    const acceptanceStatuses = new Map<string, string>();
+    const taskDefinitions = new Map<string, string>();
+    const taskDefinitionStatuses = new Map<string, string>();
+    const taskRunCounts = createEmptyTaskRunStatusCounts();
+    const paymentStatuses = new Map<string, "paid" | "unpaid" | "unknown">();
+    const billingEventKeys = new Set<string>();
+
+    for (const project of projects) {
+        const latestVersion = getLatestProjectVersion(project);
+        if (!latestVersion) continue;
+
+        if (latestVersion.id) {
+            activeVersionIds.push(latestVersion.id);
+        }
+
+        const data: ProjectVersionData = latestVersion.data || {
+            messages: [],
+            evaluation: null,
+            generation: null,
+            currentDiagram: "",
+            tasks: []
+        };
+
+        const architecturePack = data.architecturePack;
+        for (const boundedContext of architecturePack?.boundedContexts || []) {
+            const key = withProjectPrefix(project.id, `module:bounded:${safeText(boundedContext.name)}`);
+            const fingerprint = buildFingerprint([
+                safeText(boundedContext.name),
+                safeText(boundedContext.responsibility),
+                safeArray(boundedContext.owns),
+                safeArray(boundedContext.dependencies)
+            ]);
+            if (key && fingerprint) {
+                modules.set(key, fingerprint);
+            }
+        }
+        for (const moduleResponsibility of architecturePack?.moduleResponsibilities || []) {
+            const key = withProjectPrefix(project.id, `module:responsibility:${safeText(moduleResponsibility.module)}`);
+            const fingerprint = buildFingerprint([
+                safeText(moduleResponsibility.module),
+                safeText(moduleResponsibility.responsibility),
+                safeArray(moduleResponsibility.inputs),
+                safeArray(moduleResponsibility.outputs)
+            ]);
+            if (key && fingerprint) {
+                modules.set(key, fingerprint);
+            }
+        }
+
+        for (const screen of data.uiDesignSpec?.screens || []) {
+            const route = safeText(screen.route);
+            if (!route) continue;
+            const key = withProjectPrefix(project.id, `route:${route}`);
+            const fingerprint = buildFingerprint([
+                route,
+                safeText(screen.name),
+                safeText(screen.id),
+                safeText(screen.layout?.type),
+                safeArray(screen.layout?.sections),
+                safeArray(screen.components),
+                safeText(screen.states?.loading),
+                safeText(screen.states?.empty),
+                safeText(screen.states?.error),
+                safeText(screen.states?.success),
+                safeArray(screen.interactions)
+            ]);
+            routes.set(key, fingerprint);
+        }
+
+        for (const contract of architecturePack?.integrationContracts || []) {
+            const key = withProjectPrefix(
+                project.id,
+                `contract:integration:${safeText(contract.name)}:${safeText(contract.producer)}->${safeText(contract.consumer)}`
+            );
+            const fingerprint = buildFingerprint([
+                safeText(contract.name),
+                safeText(contract.kind),
+                safeText(contract.producer),
+                safeText(contract.consumer),
+                safeText(contract.payload),
+                safeText(contract.notes)
+            ]);
+            if (key && fingerprint) {
+                contracts.set(key, fingerprint);
+            }
+        }
+        pushContractSpecSignals(project.id, contracts, data.contractSpecs);
+
+        for (const testStrategyItem of data.guardrailChecklist?.testStrategy || []) {
+            const normalized = safeText(testStrategyItem);
+            if (!normalized) continue;
+            const key = withProjectPrefix(project.id, `test:strategy:${normalized}`);
+            tests.set(key, buildFingerprint([normalized]));
+        }
+        for (const definition of data.taskDefinitions || []) {
+            const verifyCommand = safeText(definition.verifyCommand);
+            if (!verifyCommand) continue;
+            const key = withProjectPrefix(project.id, `test:verify:${verifyCommand}`);
+            const fingerprint = buildFingerprint([
+                verifyCommand,
+                safeText(definition.title),
+                safeText(definition.status)
+            ]);
+            tests.set(key, fingerprint);
+        }
+
+        pushRequirementSignals(project.id, requirements, requirementStatuses, data.requirements);
+        pushAssumptionSignals(project.id, assumptions, assumptionStatuses, data.assumptions);
+        pushAcceptanceSignals(project.id, acceptanceCases, acceptanceStatuses, data.acceptanceCases);
+        pushTaskDefinitionSignals(project.id, taskDefinitions, taskDefinitionStatuses, data.taskDefinitions);
+
+        for (const run of data.taskRuns || []) {
+            if (run.status in taskRunCounts) {
+                taskRunCounts[run.status as TaskRunStatus] += 1;
+            }
+        }
+
+        paymentStatuses.set(
+            project.id,
+            data.paymentStatus === "paid"
+                ? "paid"
+                : data.paymentStatus === "unpaid"
+                ? "unpaid"
+                : "unknown"
+        );
+
+        for (const event of data.billingEvents || []) {
+            const identity = withProjectPrefix(
+                project.id,
+                `billing:${safeText(event.id) || safeText(event.providerEventId) || safeText(event.eventType)}:${safeText(event.status)}:${safeText(event.currency)}:${event.amountCents}`
+            );
+            if (identity) {
+                billingEventKeys.add(identity);
+            }
+        }
+    }
+
+    return {
+        projectIds,
+        activeVersionIds: sortStrings(activeVersionIds),
+        modules,
+        routes,
+        contracts,
+        tests,
+        requirements,
+        requirementStatuses,
+        assumptions,
+        assumptionStatuses,
+        acceptanceCases,
+        acceptanceStatuses,
+        taskDefinitions,
+        taskDefinitionStatuses,
+        taskRunCounts,
+        paymentStatuses,
+        billingEventKeys
+    };
+}
+
+function resolveSnapshotProjects(
+    envelope: WorkspaceEnvelope,
+    snapshotId: string
+): Project[] | null {
+    const snapshot = envelope.snapshots.find((candidate) => candidate.id === snapshotId);
+    if (!snapshot) return null;
+    if (Array.isArray(snapshot.projects)) {
+        return snapshot.projects;
+    }
+    const latestSnapshotId = envelope.snapshots[0]?.id;
+    if (latestSnapshotId && latestSnapshotId === snapshotId) {
+        return envelope.projects;
+    }
+    return null;
+}
+
+function toWorkspaceRevisionTimelineItem(
+    envelope: WorkspaceEnvelope,
+    revisionId: string
+): WorkspaceRevisionTimelineItem | null {
+    const revision = envelope.revisionHistory.find((candidate) => candidate.id === revisionId);
+    if (!revision) return null;
+    const snapshot = envelope.snapshots.find((candidate) => candidate.id === revision.snapshotId);
+    return {
+        revisionId: revision.id,
+        revisionNumber: revision.number,
+        snapshotId: revision.snapshotId,
+        createdAt: revision.createdAt,
+        summary: revision.changeSet.summary,
+        kind: revision.changeSet.kind,
+        actorId: revision.changeSet.actorId ?? null,
+        actorEmail: revision.changeSet.actorEmail ?? null,
+        projectCount: snapshot?.projectIds.length || 0,
+        activeVersionCount: snapshot?.activeVersionIds.length || 0,
+        hasSnapshotPayload: Array.isArray(snapshot?.projects)
+    };
+}
+
+function listWorkspaceRevisionTimeline(envelope: WorkspaceEnvelope): WorkspaceRevisionTimelineItem[] {
+    return envelope.revisionHistory
+        .slice()
+        .sort((left, right) => right.number - left.number)
+        .map((revision) => toWorkspaceRevisionTimelineItem(envelope, revision.id))
+        .filter((item): item is WorkspaceRevisionTimelineItem => Boolean(item));
 }
 
 function toWorkspaceDocument(envelope: WorkspaceEnvelope) {
@@ -160,6 +696,176 @@ export async function getWorkspaceByUserId(userId: string): Promise<WorkspaceDoc
         envelope,
         createdAt: toDateOrNull(envelope.createdAt),
         updatedAt: toDateOrNull(envelope.updatedAt)
+    };
+}
+
+export async function getWorkspaceRevisionOverviewByUserId(userId: string): Promise<WorkspaceRevisionOverview | null> {
+    const envelope = await readWorkspaceEnvelope(userId);
+    if (!envelope) return null;
+
+    return {
+        ownerUserId: envelope.ownerUserId,
+        tenantId: envelope.tenantId ?? null,
+        revision: envelope.revision,
+        projectCount: envelope.projects.length,
+        updatedAt: envelope.updatedAt,
+        revisions: listWorkspaceRevisionTimeline(envelope)
+    };
+}
+
+export async function diffWorkspaceRevisionsByUserId(input: {
+    userId: string;
+    fromRevisionId?: string | null;
+    toRevisionId?: string | null;
+}): Promise<WorkspaceRevisionDiffResult> {
+    const envelope = await readWorkspaceEnvelope(input.userId);
+    if (!envelope) {
+        return {
+            ok: false,
+            code: "WORKSPACE_NOT_FOUND",
+            message: "Workspace not found."
+        };
+    }
+
+    const timeline = listWorkspaceRevisionTimeline(envelope);
+    const availableRevisionIds = timeline.map((item) => item.revisionId);
+    if (timeline.length < 2) {
+        return {
+            ok: false,
+            code: "INSUFFICIENT_REVISION_HISTORY",
+            message: "At least two workspace revisions are required to compute a diff.",
+            availableRevisionIds
+        };
+    }
+
+    const targetRevisionId = safeText(input.toRevisionId) || timeline[0]?.revisionId || "";
+    const sourceRevisionId = safeText(input.fromRevisionId)
+        || timeline.find((item) => item.revisionId !== targetRevisionId)?.revisionId
+        || "";
+
+    if (!sourceRevisionId || !targetRevisionId) {
+        return {
+            ok: false,
+            code: "INSUFFICIENT_REVISION_HISTORY",
+            message: "Could not resolve source and target revisions for diff.",
+            availableRevisionIds
+        };
+    }
+
+    const source = toWorkspaceRevisionTimelineItem(envelope, sourceRevisionId);
+    const target = toWorkspaceRevisionTimelineItem(envelope, targetRevisionId);
+    if (!source || !target) {
+        return {
+            ok: false,
+            code: "REVISION_NOT_FOUND",
+            message: "Requested revision was not found in this workspace envelope.",
+            availableRevisionIds
+        };
+    }
+
+    const sourceSnapshot = envelope.snapshots.find((snapshot) => snapshot.id === source.snapshotId);
+    const targetSnapshot = envelope.snapshots.find((snapshot) => snapshot.id === target.snapshotId);
+    if (!sourceSnapshot || !targetSnapshot) {
+        return {
+            ok: false,
+            code: "SNAPSHOT_NOT_FOUND",
+            message: "One or more revision snapshots are missing from this workspace envelope.",
+            availableRevisionIds
+        };
+    }
+
+    const sourceProjects = resolveSnapshotProjects(envelope, source.snapshotId);
+    const targetProjects = resolveSnapshotProjects(envelope, target.snapshotId);
+    if (!sourceProjects || !targetProjects) {
+        return {
+            ok: false,
+            code: "SNAPSHOT_PAYLOAD_UNAVAILABLE",
+            message: "One or more revisions were created before snapshot payload persistence and cannot be compared automatically.",
+            availableRevisionIds
+        };
+    }
+
+    const sourceSignals = collectWorkspaceSignals(sourceProjects);
+    const targetSignals = collectWorkspaceSignals(targetProjects);
+    const toIdentityMap = (values: string[]) => new Map(values.map((value) => [value, value]));
+    const projectIds = buildMapDiff(toIdentityMap(sourceSignals.projectIds), toIdentityMap(targetSignals.projectIds));
+    const activeVersionIds = buildMapDiff(
+        toIdentityMap(sourceSignals.activeVersionIds),
+        toIdentityMap(targetSignals.activeVersionIds)
+    );
+
+    const paymentStatusChanged = sortStrings(
+        Array.from(new Set([
+            ...Array.from(sourceSignals.paymentStatuses.keys()),
+            ...Array.from(targetSignals.paymentStatuses.keys())
+        ]))
+    )
+        .map((projectId) => ({
+            projectId,
+            sourceStatus: sourceSignals.paymentStatuses.get(projectId) || "unknown",
+            targetStatus: targetSignals.paymentStatuses.get(projectId) || "unknown"
+        }))
+        .filter((item) => item.sourceStatus !== item.targetStatus);
+
+    const addedBillingEvents = sortStrings(
+        Array.from(targetSignals.billingEventKeys).filter((identity) => !sourceSignals.billingEventKeys.has(identity))
+    );
+    const removedBillingEvents = sortStrings(
+        Array.from(sourceSignals.billingEventKeys).filter((identity) => !targetSignals.billingEventKeys.has(identity))
+    );
+
+    return {
+        ok: true,
+        diff: {
+            ownerUserId: envelope.ownerUserId,
+            tenantId: envelope.tenantId ?? null,
+            source,
+            target,
+            impact: {
+                projectIds,
+                activeVersionIds,
+                modules: buildMapDiff(sourceSignals.modules, targetSignals.modules),
+                routes: buildMapDiff(sourceSignals.routes, targetSignals.routes),
+                contracts: buildMapDiff(sourceSignals.contracts, targetSignals.contracts),
+                tests: buildMapDiff(sourceSignals.tests, targetSignals.tests),
+                requirements: buildStatusDiff(
+                    sourceSignals.requirements,
+                    targetSignals.requirements,
+                    sourceSignals.requirementStatuses,
+                    targetSignals.requirementStatuses
+                ),
+                assumptions: buildStatusDiff(
+                    sourceSignals.assumptions,
+                    targetSignals.assumptions,
+                    sourceSignals.assumptionStatuses,
+                    targetSignals.assumptionStatuses
+                ),
+                acceptanceCases: buildStatusDiff(
+                    sourceSignals.acceptanceCases,
+                    targetSignals.acceptanceCases,
+                    sourceSignals.acceptanceStatuses,
+                    targetSignals.acceptanceStatuses
+                ),
+                taskDefinitions: buildStatusDiff(
+                    sourceSignals.taskDefinitions,
+                    targetSignals.taskDefinitions,
+                    sourceSignals.taskDefinitionStatuses,
+                    targetSignals.taskDefinitionStatuses
+                ),
+                taskRuns: {
+                    sourceCount: sumTaskRunStatusCounts(sourceSignals.taskRunCounts),
+                    targetCount: sumTaskRunStatusCounts(targetSignals.taskRunCounts),
+                    statusDelta: buildTaskRunStatusDelta(sourceSignals.taskRunCounts, targetSignals.taskRunCounts)
+                },
+                billing: {
+                    paymentStatusChanged,
+                    sourceEventCount: sourceSignals.billingEventKeys.size,
+                    targetEventCount: targetSignals.billingEventKeys.size,
+                    addedEvents: addedBillingEvents,
+                    removedEvents: removedBillingEvents
+                }
+            }
+        }
     };
 }
 
@@ -395,6 +1101,7 @@ export async function updateProjectVersionInWorkspaceByUserId(input: {
     tenantId?: string | null;
     projectId: string;
     versionId: string;
+    expectedRevision?: number;
     actorId?: string | null;
     actorEmail?: string | null;
     summary: string;
@@ -410,6 +1117,14 @@ export async function updateProjectVersionInWorkspaceByUserId(input: {
         if (!snap.exists) return;
 
         const currentEnvelope = fromWorkspaceSnapshot(input.userId, snap.data() || {});
+        if (
+            typeof input.expectedRevision === "number"
+            && Number.isFinite(input.expectedRevision)
+            && input.expectedRevision >= 0
+            && currentEnvelope.revision !== input.expectedRevision
+        ) {
+            throw new WorkspaceRevisionConflictError(currentEnvelope);
+        }
         const updatedProjects = currentEnvelope.projects.map((project) => {
             if (project.id !== input.projectId) return project;
 

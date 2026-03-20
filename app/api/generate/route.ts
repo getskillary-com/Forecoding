@@ -10,10 +10,19 @@ import {
 } from "@/lib/architecture";
 import { deriveArchitectureDiagramMermaid } from "@/lib/architecture-diagram";
 import { generateProjectResources } from "@/lib/gemini";
+import {
+    inferTemplateKindFromProjectTree,
+    resolveGenerateJobContract,
+    type GenerateJobContractIssue
+} from "@/lib/generate-contract";
 import { isAdminUser } from "@/lib/admin";
 import { createGenerationJob, updateGenerationJob } from "@/lib/data/generation-jobs";
 import { isFeatureFlagEnabledForContext } from "@/lib/data/feature-flags";
-import { getWorkspaceByUserId, updateProjectVersionInWorkspaceByUserId } from "@/lib/data/workspaces";
+import {
+    getWorkspaceByUserId,
+    updateProjectVersionInWorkspaceByUserId,
+    WorkspaceRevisionConflictError
+} from "@/lib/data/workspaces";
 import { getServerUser } from "@/lib/server-auth";
 import {
     buildScaffoldEligibilityErrorMessage,
@@ -40,7 +49,6 @@ export const runtime = "nodejs";
 type OutputLanguage = "zh" | "en";
 type OneClickMode = "strict_build_v1";
 type IdeProfile = "generic";
-type TemplateKindHint = "next_root" | "next_src" | "react_vite" | "monorepo_multiapp";
 
 type GenerateRequestBody = {
     summary?: unknown;
@@ -51,10 +59,12 @@ type GenerateRequestBody = {
     outputMode?: unknown;
     oneClickMode?: unknown;
     ideProfile?: unknown;
+    templateKind?: unknown;
     templateKindHint?: unknown;
     projectId?: unknown;
     versionId?: unknown;
     workspaceSnapshotId?: unknown;
+    expectedRevision?: unknown;
     releaseIntent?: unknown;
     architecturePack?: unknown;
     decisionRecords?: unknown;
@@ -92,11 +102,6 @@ function parseOutputLanguage(value: unknown): OutputLanguage | undefined {
     return undefined;
 }
 
-function parseOutputMode(value: unknown): OutputMode | undefined {
-    if (value === "virtual_spec") return value;
-    return undefined;
-}
-
 function parseOneClickMode(value: unknown): OneClickMode | undefined {
     if (value === "strict_build_v1") return value;
     return undefined;
@@ -107,11 +112,6 @@ function parseIdeProfile(value: unknown): IdeProfile | undefined {
     return undefined;
 }
 
-function parseTemplateKindHint(value: unknown): TemplateKindHint | undefined {
-    if (value === "next_root" || value === "next_src" || value === "react_vite" || value === "monorepo_multiapp") return value;
-    return undefined;
-}
-
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return `${text.slice(0, maxChars)}\n... [truncated]`;
@@ -119,6 +119,21 @@ function clipText(text: string, maxChars: number) {
 
 function sanitizeText(value: unknown) {
     return typeof value === "string" ? value.trim().slice(0, 160) : "";
+}
+
+function parseExpectedRevision(value: unknown): number | null {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+        return value;
+    }
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const parsed = Number.parseInt(trimmed, 10);
+        if (Number.isInteger(parsed) && parsed >= 0) {
+            return parsed;
+        }
+    }
+    return null;
 }
 
 function flattenProjectTree(nodes: FileNode[], parentPath = ""): ArtifactManifestEntry[] {
@@ -246,6 +261,18 @@ function buildPreflightRemediationHints(
     }));
 }
 
+function buildContractRemediationHints(issues: GenerateJobContractIssue[]): RemediationHint[] {
+    return issues.map((issue) => ({
+        code: issue.code,
+        severity: issue.severity,
+        message: issue.message,
+        action: issue.severity === "error"
+            ? "Update the request payload so all required generation contract fields are present."
+            : "Prefer sending explicit workspaceSnapshotId, outputMode, templateKind, and releaseIntent in the request payload.",
+        autoFixable: false
+    }));
+}
+
 function buildFailureRemediationHints(failure: GenerateErrorPayload): RemediationHint[] {
     return [
         {
@@ -254,6 +281,8 @@ function buildFailureRemediationHints(failure: GenerateErrorPayload): Remediatio
             message: failure.details || failure.error,
             action: failure.code === "SCAFFOLD_PREFLIGHT_FAILED"
                 ? "Review the preflight findings and retry after fixing the blocking issues."
+                : failure.code === "WORKSPACE_REVISION_CONFLICT"
+                ? "Refresh workspace state, reconcile the latest revision, and retry generation with an updated expectedRevision."
                 : "Retry generation after checking the latest architecture pack and environment configuration.",
             autoFixable: false
         }
@@ -276,27 +305,165 @@ function resolveProjectVersion(projects: Project[], projectId: string, versionId
     return null;
 }
 
+function pickLatestVersionId(project: Project): string | null {
+    if (!Array.isArray(project.versions) || project.versions.length === 0) {
+        return null;
+    }
+    const sorted = [...project.versions].sort((left, right) => right.createdAt - left.createdAt);
+    return sorted[0]?.id || null;
+}
+
+function pickVersionIdForProject(project: Project, preferredVersionIds: string[]): string | null {
+    const preferredMatches = project.versions
+        .filter((version) => preferredVersionIds.includes(version.id))
+        .sort((left, right) => right.createdAt - left.createdAt);
+
+    if (preferredMatches.length > 0) {
+        return preferredMatches[0]?.id || null;
+    }
+
+    return pickLatestVersionId(project);
+}
+
+type ProjectVersionReferenceResolution =
+    | { ok: true; projectId: string; versionId: string }
+    | { ok: false; status: number; error: string };
+
+function resolveProjectVersionReference(input: {
+    projects: Project[];
+    requestedProjectId: string;
+    requestedVersionId: string;
+    preferredVersionIds: string[];
+}): ProjectVersionReferenceResolution {
+    const { projects, requestedProjectId, requestedVersionId, preferredVersionIds } = input;
+
+    if (requestedProjectId && requestedVersionId) {
+        return {
+            ok: true,
+            projectId: requestedProjectId,
+            versionId: requestedVersionId
+        };
+    }
+
+    if (requestedProjectId) {
+        const project = projects.find((candidate) => candidate.id === requestedProjectId);
+        if (!project) {
+            return {
+                ok: false,
+                status: 404,
+                error: "Requested project was not found in this workspace."
+            };
+        }
+        const versionId = requestedVersionId || pickVersionIdForProject(project, preferredVersionIds);
+        if (!versionId) {
+            return {
+                ok: false,
+                status: 404,
+                error: "Requested project has no available versions for generation."
+            };
+        }
+        return {
+            ok: true,
+            projectId: project.id,
+            versionId
+        };
+    }
+
+    if (requestedVersionId) {
+        const matches = projects.filter((project) => project.versions.some((version) => version.id === requestedVersionId));
+        if (matches.length === 1) {
+            return {
+                ok: true,
+                projectId: matches[0].id,
+                versionId: requestedVersionId
+            };
+        }
+        if (matches.length > 1) {
+            return {
+                ok: false,
+                status: 409,
+                error: "The requested versionId exists in multiple projects. Provide projectId explicitly."
+            };
+        }
+        return {
+            ok: false,
+            status: 404,
+            error: "Requested versionId was not found in this workspace."
+        };
+    }
+
+    if (projects.length === 1) {
+        const project = projects[0];
+        const versionId = pickVersionIdForProject(project, preferredVersionIds);
+        if (!versionId) {
+            return {
+                ok: false,
+                status: 404,
+                error: "The only project in this workspace has no available versions."
+            };
+        }
+        return {
+            ok: true,
+            projectId: project.id,
+            versionId
+        };
+    }
+
+    if (preferredVersionIds.length === 1) {
+        const preferredVersionId = preferredVersionIds[0];
+        const project = projects.find((candidate) => candidate.versions.some((version) => version.id === preferredVersionId));
+        if (project) {
+            return {
+                ok: true,
+                projectId: project.id,
+                versionId: preferredVersionId
+            };
+        }
+    }
+
+    return {
+        ok: false,
+        status: 400,
+        error: "projectId and versionId are required when workspace resolution is ambiguous."
+    };
+}
+
 function buildGenerateFailurePayload(error: unknown): GenerateErrorPayload {
     const details = error instanceof Error ? error.message : "Unknown error";
+    const isRevisionConflict = error instanceof WorkspaceRevisionConflictError;
     const isPreflight = /Scaffold preflight failed/i.test(details);
     const isTimeout = /timeout/i.test(details);
 
     return {
-        error: isPreflight
+        error: isRevisionConflict
+            ? "Workspace revision conflict"
+            : isPreflight
             ? "Scaffold preflight failed"
             : "Failed to generate resources",
         details,
-        code: isPreflight
+        code: isRevisionConflict
+            ? "WORKSPACE_REVISION_CONFLICT"
+            : isPreflight
             ? "SCAFFOLD_PREFLIGHT_FAILED"
             : isTimeout
             ? "GENERATION_TIMEOUT"
             : "GENERATION_FAILED",
-        status: isPreflight ? 422 : isTimeout ? 504 : 500,
+        status: isRevisionConflict ? 409 : isPreflight ? 422 : isTimeout ? 504 : 500,
         remediationHints: buildFailureRemediationHints({
-            error: isPreflight ? "Scaffold preflight failed" : "Failed to generate resources",
+            error: isRevisionConflict
+                ? "Workspace revision conflict"
+                : isPreflight
+                ? "Scaffold preflight failed"
+                : "Failed to generate resources",
             details,
-            code: isPreflight ? "SCAFFOLD_PREFLIGHT_FAILED" : isTimeout ? "GENERATION_TIMEOUT" : "GENERATION_FAILED",
-            status: isPreflight ? 422 : isTimeout ? 504 : 500
+            code: isRevisionConflict
+                ? "WORKSPACE_REVISION_CONFLICT"
+                : isPreflight
+                ? "SCAFFOLD_PREFLIGHT_FAILED"
+                : isTimeout
+                ? "GENERATION_TIMEOUT"
+                : "GENERATION_FAILED",
+            status: isRevisionConflict ? 409 : isPreflight ? 422 : isTimeout ? 504 : 500
         })
     };
 }
@@ -349,19 +516,38 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
         const body = (await req.json()) as GenerateRequestBody;
-        const projectId = sanitizeText(body.projectId);
-        const versionId = sanitizeText(body.versionId);
+        const requestedProjectId = sanitizeText(body.projectId);
+        const requestedVersionId = sanitizeText(body.versionId);
         const requestedSnapshotId = sanitizeText(body.workspaceSnapshotId);
-        const releaseIntent = sanitizeText(body.releaseIntent) || null;
-        if (!projectId || !versionId) {
-            return NextResponse.json(
-                { error: "projectId and versionId are required before scaffold generation." },
-                { status: 400 }
-            );
-        }
 
         const workspace = await getWorkspaceByUserId(user.uid);
         const projects = parseProjects(workspace?.projects);
+        const preferredSnapshot =
+            (requestedSnapshotId
+                ? workspace?.envelope?.snapshots.find((snapshot) => snapshot.id === requestedSnapshotId)
+                : null)
+            || workspace?.envelope?.snapshots[0]
+            || null;
+        const preferredVersionIds = Array.isArray(preferredSnapshot?.activeVersionIds)
+            ? preferredSnapshot.activeVersionIds.filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+            : [];
+        const referenceResolution = resolveProjectVersionReference({
+            projects,
+            requestedProjectId,
+            requestedVersionId,
+            preferredVersionIds
+        });
+        if (!referenceResolution.ok) {
+            return NextResponse.json(
+                {
+                    error: referenceResolution.error,
+                    code: "GENERATE_PROJECT_REFERENCE_UNRESOLVED"
+                },
+                { status: referenceResolution.status }
+            );
+        }
+        const projectId = referenceResolution.projectId;
+        const versionId = referenceResolution.versionId;
         const resolved = resolveProjectVersion(projects, projectId, versionId);
         if (!resolved) {
             return NextResponse.json(
@@ -378,7 +564,44 @@ export async function POST(req: Request) {
             guardrailChecklist: normalizeGuardrailChecklist(body.guardrailChecklist ?? version.data.guardrailChecklist),
             readinessOverrides: normalizeReadinessOverrides(body.readinessOverrides ?? version.data.readinessOverrides)
         };
-        const parsedOutputMode = parseOutputMode(body.outputMode) || "virtual_spec";
+        const previousProjectTree = Array.isArray(version.data.generation?.projectTree)
+            ? version.data.generation.projectTree
+            : Array.isArray(version.data.generationArtifacts?.virtual_spec?.projectTree)
+            ? version.data.generationArtifacts.virtual_spec.projectTree
+            : undefined;
+        const requestProjectTree = Array.isArray(body.currentProjectTree)
+            ? body.currentProjectTree as FileNode[]
+            : previousProjectTree;
+        const fallbackSnapshotId =
+            requestedSnapshotId ||
+            preferredSnapshot?.id ||
+            workspace?.envelope?.snapshots[0]?.id ||
+            `${user.uid}:${projectId}:${versionId}:snapshotless`;
+        const expectedRevision = parseExpectedRevision(body.expectedRevision);
+        const contractResult = resolveGenerateJobContract(body, {
+            workspaceSnapshotId: fallbackSnapshotId,
+            outputMode: "virtual_spec",
+            templateKind: inferTemplateKindFromProjectTree(requestProjectTree) || "next_root",
+            releaseIntent: `generate:${projectId}:${versionId}`
+        }, {
+            strict: true
+        });
+        const contractRemediationHints = buildContractRemediationHints(contractResult.issues);
+        if (!contractResult.ok) {
+            return NextResponse.json(
+                {
+                    error: "Generate request contract validation failed.",
+                    code: "GENERATE_CONTRACT_INVALID",
+                    details: contractResult.issues.map((issue) => issue.message).join(" | "),
+                    remediationHints: contractRemediationHints
+                },
+                { status: 400 }
+            );
+        }
+        const parsedOutputMode = contractResult.contract.outputMode;
+        const parsedTemplateKind = contractResult.contract.templateKind;
+        const workspaceSnapshotId = contractResult.contract.workspaceSnapshotId;
+        const releaseIntent = contractResult.contract.releaseIntent;
         const eligibility = computeVersionScaffoldEligibility(requestVersionData, parsedOutputMode);
         if (!eligibility.canGenerate) {
             return NextResponse.json(
@@ -453,10 +676,6 @@ export async function POST(req: Request) {
         const normalizedDecisionRecords = normalizeDecisionRecords(requestVersionData.decisionRecords);
         const normalizedGuardrailChecklist = normalizeGuardrailChecklist(requestVersionData.guardrailChecklist);
         const parsedOutputLanguage = parseOutputLanguage(body.outputLanguage) || getProjectWorkspaceLanguage(project);
-        const workspaceSnapshotId =
-            requestedSnapshotId ||
-            workspace?.envelope?.snapshots[0]?.id ||
-            `${user.uid}:${projectId}:${versionId}:snapshotless`;
         const generationContext = buildStructuredGenerationContext(
             normalizedArchitecturePack,
             normalizedDecisionRecords,
@@ -487,7 +706,6 @@ export async function POST(req: Request) {
             : undefined;
         const parsedOneClickMode = parseOneClickMode(body.oneClickMode);
         const parsedIdeProfile = parseIdeProfile(body.ideProfile);
-        const parsedTemplateKindHint = parseTemplateKindHint(body.templateKindHint);
         const generationJob = await createGenerationJob({
             workspaceSnapshotId,
             projectId,
@@ -495,12 +713,12 @@ export async function POST(req: Request) {
             tenantId,
             tenantStatus,
             outputMode: parsedOutputMode,
-            templateKind: parsedTemplateKindHint ?? null,
+            templateKind: parsedTemplateKind,
             releaseIntent,
             status: "queued"
         });
         console.info(
-            `[generate] request outputMode=${parsedOutputMode} outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKindHint=${parsedTemplateKindHint || "auto"}`
+            `[generate] request outputMode=${parsedOutputMode} outputLanguage=${parsedOutputLanguage || "auto"} oneClickMode=${parsedOneClickMode || "strict_build_v1(default)"} ideProfile=${parsedIdeProfile || "generic(default)"} templateKind=${parsedTemplateKind} releaseIntent=${releaseIntent}`
         );
         const responseStream = createKeepAliveJsonStream(async () => {
             await updateGenerationJob(generationJob.id, { status: "running" });
@@ -512,7 +730,7 @@ export async function POST(req: Request) {
                     outputMode: parsedOutputMode,
                     oneClickMode: parsedOneClickMode,
                     ideProfile: parsedIdeProfile,
-                    templateKindHint: parsedTemplateKindHint,
+                    templateKindHint: parsedTemplateKind,
                     generationContext
                 });
                 const preflight = resources.preflightReport;
@@ -527,13 +745,14 @@ export async function POST(req: Request) {
                     projectId,
                     versionId,
                     outputMode: parsedOutputMode,
-                    templateKind: resources.generationManifest?.templateKind ?? parsedTemplateKindHint ?? null,
+                    templateKind: resources.generationManifest?.templateKind ?? parsedTemplateKind ?? null,
                     projectTree: Array.isArray(resources.projectTree) ? resources.projectTree : [],
                     generationManifest: resources.generationManifest
                 });
                 const contractCoverage = buildContractCoverage(normalizedArchitecturePack.integrationContracts.length);
                 const remediationHints = uniqueRemediationHints(
-                    buildPreflightRemediationHints(preflight)
+                    buildPreflightRemediationHints(preflight),
+                    contractRemediationHints
                 );
 
                 if (preflight && !preflight.pass) {
@@ -587,9 +806,10 @@ export async function POST(req: Request) {
                     tenantId,
                     projectId,
                     versionId,
+                    expectedRevision: expectedRevision ?? undefined,
                     actorId: user.uid,
                     actorEmail: user.email,
-                    summary: `Generated ${parsedOutputMode} artifact for project ${projectId}.`,
+                    summary: `Generated ${parsedOutputMode} artifact for project ${projectId} (snapshot ${workspaceSnapshotId}).`,
                     kind: "generation_update",
                     mutateVersion: (currentVersion: ProjectVersion) => ({
                         ...currentVersion,
@@ -612,15 +832,20 @@ export async function POST(req: Request) {
             } catch (error) {
                 console.error("Generation error:", error);
                 const failure = buildGenerateFailurePayload(error);
+                const mergedFailureHints = uniqueRemediationHints(
+                    failure.remediationHints,
+                    contractRemediationHints
+                );
                 const failedJob = await updateGenerationJob(generationJob.id, {
                     status: "failed",
-                    remediationHints: failure.remediationHints,
+                    remediationHints: mergedFailureHints,
                     errorCode: failure.code,
                     errorMessage: failure.details
                 });
 
                 return {
                     ...failure,
+                    remediationHints: mergedFailureHints,
                     generationJobId: generationJob.id,
                     job: failedJob
                 };

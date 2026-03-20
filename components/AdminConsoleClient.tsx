@@ -8,11 +8,16 @@ import { AdminObservabilityPanel } from "@/components/AdminObservabilityPanel";
 import { AdminOperationsPanel } from "@/components/AdminOperationsPanel";
 import { AdminStripeWebhookPanel } from "@/components/AdminStripeWebhookPanel";
 import type { AdminCapability, AdminRole } from "@/lib/admin";
+import type { RuntimePreflightResult } from "@/lib/runtime-preflight";
 import type {
     AuditEvent,
+    BillingEvent,
     FeatureFlag,
     GenerationJob,
+    Org,
     ObservabilitySnapshot,
+    ProjectPurchase,
+    TaskRun,
     Tenant,
     WebhookEventRecord
 } from "@/types";
@@ -59,16 +64,57 @@ type WorkspaceEnvelopeSummary = {
     latestSnapshotSummary: string;
 };
 
+type AdminUserSummary = {
+    uid: string;
+    email: string;
+    tenantId: string | null;
+    status: "active" | "suspended";
+    statusReason: string | null;
+    name: string | null;
+    sessionVersion: number;
+    statusUpdatedAt: number | null;
+    createdAt: number | null;
+    updatedAt: number | null;
+};
+
+type AdminTaskRunSummary = {
+    id: string;
+    ownerUserId: string;
+    tenantId: string | null;
+    projectId: string;
+    projectName: string;
+    versionId: string;
+    versionName: string;
+    taskId: string;
+    taskTitle: string;
+    taskOwner: string;
+    taskDefinitionStatus: "pending" | "ready" | "blocked" | null;
+    runStatus: TaskRun["status"];
+    attempt: number | null;
+    startedAt: number | null;
+    finishedAt: number | null;
+    resultSummary: string | null;
+    remediationHint: string | null;
+    rollbackExecuted: boolean;
+    updatedAt: number;
+};
+
 type Props = {
     email: string;
     role: AdminRole;
     capabilities: AdminCapability[];
+    runtimePreflight: RuntimePreflightResult;
     auditEvents: AuditEvent[];
     operationEvents: AuditEvent[];
     observabilitySnapshot: ObservabilitySnapshot;
     featureFlags: FeatureFlag[];
     jobs: GenerationJob[];
+    taskRuns: AdminTaskRunSummary[];
+    billingEvents: BillingEvent[];
+    purchases: ProjectPurchase[];
+    orgs: Org[];
     tenants: Tenant[];
+    users: AdminUserSummary[];
     releases: ReleaseSummary[];
     workspaces: WorkspaceEnvelopeSummary[];
     webhookEvents: WebhookEventRecord[];
@@ -76,6 +122,18 @@ type Props = {
 
 function formatTimestamp(value: number) {
     return new Date(value).toLocaleString();
+}
+
+function formatMoneyCents(amountCents: number, currency: string) {
+    const normalized = (currency || "usd").toUpperCase();
+    try {
+        return new Intl.NumberFormat(undefined, {
+            style: "currency",
+            currency: normalized
+        }).format((amountCents || 0) / 100);
+    } catch {
+        return `${(amountCents || 0) / 100} ${normalized}`;
+    }
 }
 
 function normalizeFlagValue(raw: string) {
@@ -116,6 +174,19 @@ function jobStatusClasses(status: GenerationJob["status"]) {
     return "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300";
 }
 
+function taskRunStatusClasses(status: TaskRun["status"]) {
+    if (status === "succeeded") {
+        return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+    }
+    if (status === "failed" || status === "blocked") {
+        return "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300";
+    }
+    if (status === "running") {
+        return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
+    }
+    return "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300";
+}
+
 function normalizeReleaseApprovalStatus(status?: ReleaseSummary["approvalStatus"]) {
     if (status === "pending" || status === "rejected") {
         return status;
@@ -141,6 +212,59 @@ function releaseApprovalLabel(status?: ReleaseSummary["approvalStatus"]) {
     return "Pending";
 }
 
+type GovernanceFlagControl = {
+    key: string;
+    label: string;
+    description: string;
+    fallbackEnabled: boolean;
+};
+
+const GOVERNANCE_FLAG_CONTROLS: GovernanceFlagControl[] = [
+    {
+        key: "generation.enabled",
+        label: "Generation",
+        description: "Controls scaffold generation for non-admin users.",
+        fallbackEnabled: true
+    },
+    {
+        key: "releases.publish.enabled",
+        label: "Release publish",
+        description: "Controls release tag publishing operations.",
+        fallbackEnabled: true
+    },
+    {
+        key: "releases.approval.enabled",
+        label: "Release approval",
+        description: "Controls release approve/reject operations.",
+        fallbackEnabled: true
+    },
+    {
+        key: "releases.rollback.enabled",
+        label: "Release rollback",
+        description: "Controls rollback execution for release tags.",
+        fallbackEnabled: true
+    },
+    {
+        key: "stripe.webhook_replay.enabled",
+        label: "Webhook replay",
+        description: "Controls Stripe webhook replay from admin console.",
+        fallbackEnabled: true
+    }
+];
+
+function governanceFlagActionLabel(key: string, enabled: boolean) {
+    if (key === "generation.enabled") {
+        return enabled ? "Freeze generation" : "Resume generation";
+    }
+    if (key.startsWith("releases.")) {
+        return enabled ? "Pause operation" : "Resume operation";
+    }
+    if (key === "stripe.webhook_replay.enabled") {
+        return enabled ? "Pause replay" : "Resume replay";
+    }
+    return enabled ? "Disable" : "Enable";
+}
+
 export function AdminConsoleClient(props: Props) {
     const searchParams = useSearchParams();
     const pathname = usePathname();
@@ -151,7 +275,12 @@ export function AdminConsoleClient(props: Props) {
     const [isRefreshing, startRefresh] = useTransition();
     const [featureFlags, setFeatureFlags] = useState(props.featureFlags);
     const [jobs, setJobs] = useState(props.jobs);
+    const [taskRuns, setTaskRuns] = useState(props.taskRuns);
+    const [billingEvents, setBillingEvents] = useState(props.billingEvents);
+    const [purchases, setPurchases] = useState(props.purchases);
+    const [orgs, setOrgs] = useState(props.orgs);
     const [tenants, setTenants] = useState(props.tenants);
+    const [users, setUsers] = useState(props.users);
     const [workspaces, setWorkspaces] = useState(props.workspaces);
     const [releases, setReleases] = useState(props.releases);
     const [expandedJobId, setExpandedJobId] = useState<string | null>(initialFocusedJobId);
@@ -185,27 +314,71 @@ export function AdminConsoleClient(props: Props) {
     const [busyFlagKey, setBusyFlagKey] = useState<string | null>(null);
     const [busyReleaseId, setBusyReleaseId] = useState<string | null>(null);
     const [busyReleaseApprovalId, setBusyReleaseApprovalId] = useState<string | null>(null);
+    const [busyOrgId, setBusyOrgId] = useState<string | null>(null);
     const [busyTenantId, setBusyTenantId] = useState<string | null>(null);
+    const [busyTenantOrgId, setBusyTenantOrgId] = useState<string | null>(null);
+    const [busyUserId, setBusyUserId] = useState<string | null>(null);
+    const [busyTaskReplayId, setBusyTaskReplayId] = useState<string | null>(null);
     const [busyWorkspaceOwnerId, setBusyWorkspaceOwnerId] = useState<string | null>(null);
+    const [orgStatusDrafts, setOrgStatusDrafts] = useState<Record<string, Org["status"]>>({});
     const [tenantStatusDrafts, setTenantStatusDrafts] = useState<Record<string, Tenant["status"]>>({});
+    const [tenantOrgDrafts, setTenantOrgDrafts] = useState<Record<string, string>>({});
+    const [userStatusDrafts, setUserStatusDrafts] = useState<Record<string, AdminUserSummary["status"]>>({});
+    const [userReasonDrafts, setUserReasonDrafts] = useState<Record<string, string>>({});
     const [workspaceTenantDrafts, setWorkspaceTenantDrafts] = useState<Record<string, string>>({});
     const [releaseApprovalNote, setReleaseApprovalNote] = useState("");
     const [pendingRollbackReleaseId, setPendingRollbackReleaseId] = useState<string | null>(null);
     const [isSavingFlag, setIsSavingFlag] = useState(false);
     const [isPublishingRelease, setIsPublishingRelease] = useState(false);
     const [isRefreshingJobs, setIsRefreshingJobs] = useState(false);
+    const [isRefreshingTaskRuns, setIsRefreshingTaskRuns] = useState(false);
+    const [isRefreshingBilling, setIsRefreshingBilling] = useState(false);
+    const [isSubmittingRefund, setIsSubmittingRefund] = useState(false);
     const [jobQuery, setJobQuery] = useState("");
     const [jobStatus, setJobStatus] = useState<"" | GenerationJob["status"]>("");
     const [jobOutputMode, setJobOutputMode] = useState<"" | "virtual_spec" | "runnable_scaffold">("");
+    const [taskRunQuery, setTaskRunQuery] = useState("");
+    const [taskRunStatus, setTaskRunStatus] = useState<"" | TaskRun["status"]>("");
+    const [taskRunTenantId, setTaskRunTenantId] = useState("");
+    const [taskRunOwnerUserId, setTaskRunOwnerUserId] = useState("");
+    const [billingQuery, setBillingQuery] = useState("");
+    const [billingProvider, setBillingProvider] = useState<"" | BillingEvent["provider"]>("");
+    const [billingStatus, setBillingStatus] = useState<"" | BillingEvent["status"]>("");
+    const [billingTenantId, setBillingTenantId] = useState("");
+    const [billingWorkspaceSnapshotId, setBillingWorkspaceSnapshotId] = useState("");
+    const [purchaseQuery, setPurchaseQuery] = useState("");
+    const [purchaseProvider, setPurchaseProvider] = useState<"" | ProjectPurchase["provider"]>("");
+    const [purchaseStatus, setPurchaseStatus] = useState<"" | ProjectPurchase["status"]>("");
+    const [purchaseTenantId, setPurchaseTenantId] = useState("");
+    const [purchaseWorkspaceSnapshotId, setPurchaseWorkspaceSnapshotId] = useState("");
+    const [userQuery, setUserQuery] = useState("");
+    const [userStatusFilter, setUserStatusFilter] = useState<"" | AdminUserSummary["status"]>("");
+    const [userTenantIdFilter, setUserTenantIdFilter] = useState("");
+    const [isRefreshingUsers, setIsRefreshingUsers] = useState(false);
+    const [refundForm, setRefundForm] = useState({
+        userId: "",
+        projectId: "",
+        paymentIntentId: "",
+        amountCents: "",
+        reason: "" as "" | "duplicate" | "fraudulent" | "requested_by_customer",
+        note: "",
+        manualOnly: false
+    });
     const [feedback, setFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
     const capabilitySet = useMemo(() => new Set(props.capabilities), [props.capabilities]);
     const canManageFlags = capabilitySet.has("feature_flags_write");
+    const canManageOrgs = capabilitySet.has("orgs_manage");
+    const canManageBilling = capabilitySet.has("billing_manage");
+    const canManageUsers = capabilitySet.has("users_manage");
+    const canManageTasks = capabilitySet.has("tasks_manage");
     const canPublishReleases = capabilitySet.has("releases_publish");
     const canApproveReleases = capabilitySet.has("releases_approve");
     const canRollbackReleases = capabilitySet.has("releases_rollback");
     const canReplayWebhooks = capabilitySet.has("webhooks_replay");
     const canManageTenants = capabilitySet.has("tenants_manage");
+    const runtimePreflightErrorCount = props.runtimePreflight.issues.filter((issue) => issue.severity === "error").length;
+    const runtimePreflightWarningCount = props.runtimePreflight.issues.filter((issue) => issue.severity === "warning").length;
     const statusTone = feedback?.tone === "error"
         ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300"
         : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300";
@@ -218,6 +391,46 @@ export function AdminConsoleClient(props: Props) {
         }),
         [featureFlags]
     );
+
+    const sortedBillingEvents = useMemo(
+        () => [...billingEvents].sort((left, right) => right.createdAt - left.createdAt),
+        [billingEvents]
+    );
+
+    const sortedPurchases = useMemo(
+        () => [...purchases].sort((left, right) => right.updatedAt - left.updatedAt),
+        [purchases]
+    );
+
+    const sortedUsers = useMemo(
+        () => [...users].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0)),
+        [users]
+    );
+
+    const sortedTaskRuns = useMemo(
+        () => [...taskRuns].sort((left, right) => right.updatedAt - left.updatedAt),
+        [taskRuns]
+    );
+
+    const governanceFlagStates = useMemo(() => {
+        return GOVERNANCE_FLAG_CONTROLS.map((control) => {
+            const globalFlags = featureFlags
+                .filter((flag) => flag.key === control.key && flag.scope === "global")
+                .sort((left, right) => right.updatedAt - left.updatedAt);
+            const selected = globalFlags[0] || null;
+            const enabled = selected ? selected.enabled : control.fallbackEnabled;
+            return {
+                ...control,
+                flag: selected,
+                enabled,
+                identity: buildFlagIdentity({
+                    key: control.key,
+                    scope: "global",
+                    scopeId: null
+                })
+            };
+        });
+    }, [featureFlags]);
 
     useEffect(() => {
         setReleaseApprovalNote("");
@@ -447,6 +660,388 @@ export function AdminConsoleClient(props: Props) {
         }
     };
 
+    const refreshTaskRuns = async (overrides?: {
+        query?: string;
+        status?: "" | TaskRun["status"];
+        tenantId?: string;
+        ownerUserId?: string;
+    }) => {
+        setIsRefreshingTaskRuns(true);
+        setFeedback(null);
+        try {
+            const nextQuery = (overrides?.query ?? taskRunQuery).trim();
+            const nextStatus = overrides?.status ?? taskRunStatus;
+            const nextTenantId = (overrides?.tenantId ?? taskRunTenantId).trim();
+            const nextOwnerUserId = (overrides?.ownerUserId ?? taskRunOwnerUserId).trim();
+
+            const params = new URLSearchParams();
+            if (nextQuery) params.set("query", nextQuery);
+            if (nextStatus) params.set("status", nextStatus);
+            if (nextTenantId) params.set("tenantId", nextTenantId);
+            if (nextOwnerUserId) params.set("ownerUserId", nextOwnerUserId);
+            params.set("limit", "20");
+
+            const response = await fetch(`/api/admin/tasks/runs?${params.toString()}`, {
+                cache: "no-store"
+            });
+            const payload = (await response.json()) as {
+                taskRuns?: AdminTaskRunSummary[];
+                error?: string;
+            };
+            if (!response.ok || !Array.isArray(payload.taskRuns)) {
+                throw new Error(payload.error || "Failed to refresh task runs.");
+            }
+            setTaskRuns(payload.taskRuns);
+            setFeedback({
+                tone: "success",
+                message: "Task run records refreshed."
+            });
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to refresh task runs."
+            });
+        } finally {
+            setIsRefreshingTaskRuns(false);
+        }
+    };
+
+    const handleTaskRunReplay = async (
+        taskRun: AdminTaskRunSummary,
+        mode: "strict" | "retry_failed"
+    ) => {
+        if (!canManageTasks) return;
+
+        setBusyTaskReplayId(taskRun.id);
+        setFeedback(null);
+        try {
+            const response = await fetch("/api/admin/tasks/runs/replay", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ownerUserId: taskRun.ownerUserId,
+                    projectId: taskRun.projectId,
+                    versionId: taskRun.versionId,
+                    mode
+                })
+            });
+            const payload = (await response.json()) as {
+                ok?: boolean;
+                runCount?: number;
+                revision?: number | null;
+                error?: string;
+            };
+            if (!response.ok || !payload.ok) {
+                throw new Error(payload.error || "Failed to replay task DAG.");
+            }
+
+            setFeedback({
+                tone: "success",
+                message: `Task DAG replayed for ${taskRun.projectId}/${taskRun.versionId} (${mode}), ${payload.runCount ?? 0} run(s) appended${payload.revision ? `, revision r${payload.revision}` : ""}.`
+            });
+            await refreshTaskRuns({
+                query: taskRunQuery,
+                status: taskRunStatus,
+                tenantId: taskRunTenantId,
+                ownerUserId: taskRunOwnerUserId
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to replay task DAG."
+            });
+        } finally {
+            setBusyTaskReplayId(null);
+        }
+    };
+
+    const refreshBillingData = async (overrides?: {
+        billingQuery?: string;
+        billingProvider?: "" | BillingEvent["provider"];
+        billingStatus?: "" | BillingEvent["status"];
+        billingTenantId?: string;
+        billingWorkspaceSnapshotId?: string;
+        purchaseQuery?: string;
+        purchaseProvider?: "" | ProjectPurchase["provider"];
+        purchaseStatus?: "" | ProjectPurchase["status"];
+        purchaseTenantId?: string;
+        purchaseWorkspaceSnapshotId?: string;
+    }) => {
+        setIsRefreshingBilling(true);
+        setFeedback(null);
+        try {
+            const nextBillingQuery = (overrides?.billingQuery ?? billingQuery).trim();
+            const nextBillingProvider = overrides?.billingProvider ?? billingProvider;
+            const nextBillingStatus = overrides?.billingStatus ?? billingStatus;
+            const nextBillingTenantId = (overrides?.billingTenantId ?? billingTenantId).trim();
+            const nextBillingWorkspaceSnapshotId = (overrides?.billingWorkspaceSnapshotId ?? billingWorkspaceSnapshotId).trim();
+
+            const nextPurchaseQuery = (overrides?.purchaseQuery ?? purchaseQuery).trim();
+            const nextPurchaseProvider = overrides?.purchaseProvider ?? purchaseProvider;
+            const nextPurchaseStatus = overrides?.purchaseStatus ?? purchaseStatus;
+            const nextPurchaseTenantId = (overrides?.purchaseTenantId ?? purchaseTenantId).trim();
+            const nextPurchaseWorkspaceSnapshotId = (overrides?.purchaseWorkspaceSnapshotId ?? purchaseWorkspaceSnapshotId).trim();
+
+            const billingParams = new URLSearchParams();
+            if (nextBillingQuery) billingParams.set("query", nextBillingQuery);
+            if (nextBillingProvider) billingParams.set("provider", nextBillingProvider);
+            if (nextBillingStatus) billingParams.set("status", nextBillingStatus);
+            if (nextBillingTenantId) billingParams.set("tenantId", nextBillingTenantId);
+            if (nextBillingWorkspaceSnapshotId) billingParams.set("workspaceSnapshotId", nextBillingWorkspaceSnapshotId);
+            billingParams.set("limit", "20");
+
+            const purchaseParams = new URLSearchParams();
+            if (nextPurchaseQuery) purchaseParams.set("query", nextPurchaseQuery);
+            if (nextPurchaseProvider) purchaseParams.set("provider", nextPurchaseProvider);
+            if (nextPurchaseStatus) purchaseParams.set("status", nextPurchaseStatus);
+            if (nextPurchaseTenantId) purchaseParams.set("tenantId", nextPurchaseTenantId);
+            if (nextPurchaseWorkspaceSnapshotId) purchaseParams.set("workspaceSnapshotId", nextPurchaseWorkspaceSnapshotId);
+            purchaseParams.set("limit", "20");
+
+            const [eventsResponse, purchasesResponse] = await Promise.all([
+                fetch(`/api/admin/billing/events?${billingParams.toString()}`, { cache: "no-store" }),
+                fetch(`/api/admin/billing/purchases?${purchaseParams.toString()}`, { cache: "no-store" })
+            ]);
+
+            const eventsPayload = (await eventsResponse.json()) as { events?: BillingEvent[]; error?: string };
+            const purchasesPayload = (await purchasesResponse.json()) as { purchases?: ProjectPurchase[]; error?: string };
+
+            if (!eventsResponse.ok || !Array.isArray(eventsPayload.events)) {
+                throw new Error(eventsPayload.error || "Failed to refresh billing events.");
+            }
+            if (!purchasesResponse.ok || !Array.isArray(purchasesPayload.purchases)) {
+                throw new Error(purchasesPayload.error || "Failed to refresh purchases.");
+            }
+
+            setBillingEvents(eventsPayload.events);
+            setPurchases(purchasesPayload.purchases);
+            setFeedback({ tone: "success", message: "Billing lifecycle data refreshed." });
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to refresh billing lifecycle data."
+            });
+        } finally {
+            setIsRefreshingBilling(false);
+        }
+    };
+
+    const refreshUsers = async (overrides?: {
+        query?: string;
+        status?: "" | AdminUserSummary["status"];
+        tenantId?: string;
+    }) => {
+        setIsRefreshingUsers(true);
+        setFeedback(null);
+        try {
+            const nextQuery = (overrides?.query ?? userQuery).trim();
+            const nextStatus = overrides?.status ?? userStatusFilter;
+            const nextTenantId = (overrides?.tenantId ?? userTenantIdFilter).trim();
+
+            const params = new URLSearchParams();
+            if (nextQuery) params.set("query", nextQuery);
+            if (nextStatus) params.set("status", nextStatus);
+            if (nextTenantId) params.set("tenantId", nextTenantId);
+            params.set("limit", "20");
+
+            const response = await fetch(`/api/admin/users?${params.toString()}`, {
+                cache: "no-store"
+            });
+            const payload = (await response.json()) as { users?: AdminUserSummary[]; error?: string };
+            if (!response.ok || !Array.isArray(payload.users)) {
+                throw new Error(payload.error || "Failed to refresh users.");
+            }
+            setUsers(payload.users);
+            setFeedback({
+                tone: "success",
+                message: "User governance list refreshed."
+            });
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to refresh users."
+            });
+        } finally {
+            setIsRefreshingUsers(false);
+        }
+    };
+
+    const handleUserStatusSave = async (uid: string) => {
+        if (!canManageUsers) return;
+
+        const user = users.find((item) => item.uid === uid);
+        if (!user) return;
+
+        const nextStatus = userStatusDrafts[uid] || user.status;
+        const nextReason = (userReasonDrafts[uid] ?? user.statusReason ?? "").trim();
+        if (nextStatus === user.status && nextReason === (user.statusReason || "")) {
+            setFeedback({
+                tone: "success",
+                message: `User ${user.email || user.uid} is already ${user.status}.`
+            });
+            return;
+        }
+
+        setBusyUserId(uid);
+        setFeedback(null);
+        try {
+            const response = await fetch("/api/admin/users", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    uid,
+                    status: nextStatus,
+                    reason: nextReason || undefined
+                })
+            });
+            const payload = (await response.json()) as {
+                user?: AdminUserSummary;
+                error?: string;
+            };
+            if (!response.ok || !payload.user) {
+                throw new Error(payload.error || "Failed to update user status.");
+            }
+
+            setUsers((current) => current.map((item) => item.uid === payload.user?.uid ? payload.user as AdminUserSummary : item));
+            setUserStatusDrafts((current) => {
+                const next = { ...current };
+                delete next[uid];
+                return next;
+            });
+            setUserReasonDrafts((current) => {
+                const next = { ...current };
+                delete next[uid];
+                return next;
+            });
+
+            setFeedback({
+                tone: "success",
+                message: `User ${payload.user.email || payload.user.uid} updated to ${payload.user.status}.`
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to update user status."
+            });
+        } finally {
+            setBusyUserId(null);
+        }
+    };
+
+    const prepareRefundForPurchase = (purchase: ProjectPurchase) => {
+        setRefundForm((current) => ({
+            ...current,
+            userId: purchase.userId,
+            projectId: purchase.projectId,
+            paymentIntentId: purchase.paymentIntentId || "",
+            amountCents: purchase.amount > 0 ? String(purchase.amount) : "",
+            note: current.note,
+            manualOnly: purchase.provider === "manual" ? true : current.manualOnly
+        }));
+    };
+
+    const handleRefundSubmit = async (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (!canManageBilling) return;
+
+        setIsSubmittingRefund(true);
+        setFeedback(null);
+        try {
+            const amountCentsRaw = refundForm.amountCents.trim();
+            const parsedAmountCents = amountCentsRaw ? Number.parseInt(amountCentsRaw, 10) : NaN;
+            if (amountCentsRaw && (!Number.isFinite(parsedAmountCents) || parsedAmountCents <= 0)) {
+                throw new Error("Refund amount must be a positive integer in cents.");
+            }
+
+            const userId = refundForm.userId.trim();
+            const projectId = refundForm.projectId.trim();
+            const paymentIntentId = refundForm.paymentIntentId.trim();
+            if ((!userId || !projectId) && !paymentIntentId) {
+                throw new Error("Provide (userId + projectId) or paymentIntentId for refund.");
+            }
+
+            const body: Record<string, unknown> = {
+                manualOnly: refundForm.manualOnly
+            };
+            if (userId && projectId) {
+                body.userId = userId;
+                body.projectId = projectId;
+            }
+            if (paymentIntentId) {
+                body.paymentIntentId = paymentIntentId;
+            }
+            if (amountCentsRaw) {
+                body.amountCents = parsedAmountCents;
+            }
+            if (refundForm.reason) {
+                body.reason = refundForm.reason;
+            }
+            if (refundForm.note.trim()) {
+                body.note = refundForm.note.trim();
+            }
+
+            const response = await fetch("/api/admin/billing/refund", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+            const payload = (await response.json()) as {
+                ok?: boolean;
+                alreadyRefunded?: boolean;
+                purchase?: ProjectPurchase;
+                billingEvent?: BillingEvent;
+                error?: string;
+            };
+            if (!response.ok || !payload.purchase) {
+                throw new Error(payload.error || "Failed to submit refund request.");
+            }
+
+            if (payload.billingEvent) {
+                setBillingEvents((current) => [payload.billingEvent as BillingEvent, ...current]
+                    .sort((left, right) => right.createdAt - left.createdAt)
+                    .slice(0, 20));
+            }
+            setPurchases((current) => {
+                const exists = current.some((item) => item.id === payload.purchase?.id);
+                const next = exists
+                    ? current.map((item) => item.id === payload.purchase?.id ? payload.purchase as ProjectPurchase : item)
+                    : [payload.purchase as ProjectPurchase, ...current];
+                return next
+                    .sort((left, right) => right.updatedAt - left.updatedAt)
+                    .slice(0, 20);
+            });
+
+            setFeedback({
+                tone: "success",
+                message: payload.alreadyRefunded
+                    ? `Purchase ${payload.purchase.id} was already refunded.`
+                    : `Refund recorded for ${payload.purchase.userId}:${payload.purchase.projectId}.`
+            });
+
+            if (!payload.alreadyRefunded) {
+                setRefundForm({
+                    userId: "",
+                    projectId: "",
+                    paymentIntentId: "",
+                    amountCents: "",
+                    reason: "",
+                    note: "",
+                    manualOnly: false
+                });
+            }
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to submit refund request."
+            });
+        } finally {
+            setIsSubmittingRefund(false);
+        }
+    };
+
     const upsertFlag = async (input: {
         key: string;
         description: string;
@@ -536,6 +1131,25 @@ export function AdminConsoleClient(props: Props) {
             scope: flag.scope,
             scopeId: flag.scopeId ?? null,
             value: flag.value ?? null
+        });
+    };
+
+    const handleGovernanceFlagToggle = async (
+        controlKey: string,
+        nextEnabled: boolean
+    ) => {
+        if (!canManageFlags) return;
+
+        const control = governanceFlagStates.find((item) => item.key === controlKey);
+        if (!control) return;
+
+        await upsertFlag({
+            key: control.key,
+            description: control.flag?.description || control.description,
+            enabled: nextEnabled,
+            scope: "global",
+            scopeId: null,
+            value: control.flag?.value ?? null
         });
     };
 
@@ -744,6 +1358,131 @@ export function AdminConsoleClient(props: Props) {
         }
     };
 
+    const handleOrgStatusSave = async (orgId: string) => {
+        if (!canManageOrgs) return;
+
+        const org = orgs.find((item) => item.id === orgId);
+        if (!org) return;
+
+        const nextStatus = orgStatusDrafts[orgId] || org.status;
+        if (nextStatus === org.status) {
+            setFeedback({
+                tone: "success",
+                message: `Organization ${org.slug} is already ${org.status}.`
+            });
+            return;
+        }
+
+        setBusyOrgId(orgId);
+        setFeedback(null);
+        try {
+            const response = await fetch("/api/admin/orgs", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    orgId,
+                    status: nextStatus
+                })
+            });
+            const payload = (await response.json()) as { org?: Org; error?: string };
+            if (!response.ok || !payload.org) {
+                throw new Error(payload.error || "Failed to update organization status.");
+            }
+            setOrgs((current) => current.map((item) => item.id === payload.org?.id ? payload.org : item));
+            setOrgStatusDrafts((current) => {
+                const next = { ...current };
+                delete next[orgId];
+                return next;
+            });
+            setFeedback({
+                tone: "success",
+                message: `Organization ${payload.org.slug} updated to ${payload.org.status}.`
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to update organization status."
+            });
+        } finally {
+            setBusyOrgId(null);
+        }
+    };
+
+    const handleTenantOrgSave = async (tenantId: string) => {
+        if (!canManageOrgs) return;
+
+        const tenant = tenants.find((item) => item.id === tenantId);
+        if (!tenant) return;
+
+        const nextOrgId = (tenantOrgDrafts[tenantId] ?? tenant.orgId ?? "").trim();
+        const normalizedNextOrgId = nextOrgId || null;
+        const currentOrgId = tenant.orgId ?? null;
+
+        if (normalizedNextOrgId === currentOrgId) {
+            setFeedback({
+                tone: "success",
+                message: `Tenant ${tenant.slug} is already bound to ${currentOrgId || "unassigned"}.`
+            });
+            return;
+        }
+
+        setBusyTenantOrgId(tenantId);
+        setFeedback(null);
+        try {
+            const response = await fetch("/api/admin/orgs/bind-tenant", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    tenantId,
+                    orgId: normalizedNextOrgId
+                })
+            });
+            const payload = (await response.json()) as {
+                ok?: boolean;
+                tenant?: Tenant;
+                impactedOrgs?: Org[];
+                error?: string;
+            };
+            if (!response.ok || !payload.ok || !payload.tenant) {
+                throw new Error(payload.error || "Failed to bind tenant organization.");
+            }
+
+            setTenants((current) => current.map((item) => item.id === payload.tenant?.id ? payload.tenant : item));
+            if (Array.isArray(payload.impactedOrgs) && payload.impactedOrgs.length > 0) {
+                setOrgs((current) => {
+                    const next = [...current];
+                    payload.impactedOrgs?.forEach((org) => {
+                        const index = next.findIndex((item) => item.id === org.id);
+                        if (index >= 0) {
+                            next[index] = org;
+                        } else {
+                            next.push(org);
+                        }
+                    });
+                    return next.sort((left, right) => right.updatedAt - left.updatedAt);
+                });
+            }
+            setTenantOrgDrafts((current) => {
+                const next = { ...current };
+                delete next[tenantId];
+                return next;
+            });
+            setFeedback({
+                tone: "success",
+                message: `Tenant ${payload.tenant.slug} moved to ${payload.tenant.orgId || "unassigned"}.`
+            });
+            refreshAll();
+        } catch (error) {
+            setFeedback({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Failed to bind tenant organization."
+            });
+        } finally {
+            setBusyTenantOrgId(null);
+        }
+    };
+
     const handleWorkspaceTenantSave = async (ownerUserId: string) => {
         if (!canManageTenants) return;
 
@@ -904,6 +1643,26 @@ export function AdminConsoleClient(props: Props) {
                         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Latest snapshot releases visible across workspaces.</p>
                     </article>
                     <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Billing Events</p>
+                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{sortedBillingEvents.length}</p>
+                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Provider event ledger entries visible for current filters.</p>
+                    </article>
+                    <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Purchases</p>
+                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{sortedPurchases.length}</p>
+                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Checkout-to-refund lifecycle records linked to projects.</p>
+                    </article>
+                    <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Users</p>
+                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{sortedUsers.length}</p>
+                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Identity records available for status governance.</p>
+                    </article>
+                    <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Task Runs</p>
+                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{sortedTaskRuns.length}</p>
+                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Recent workspace DAG executions across versions.</p>
+                    </article>
+                    <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5">
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Tracked Workspaces</p>
                         <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{workspaces.length}</p>
                         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Workspace envelopes with revision-aware summaries.</p>
@@ -912,6 +1671,35 @@ export function AdminConsoleClient(props: Props) {
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Stripe Webhooks</p>
                         <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">{props.webhookEvents.length}</p>
                         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Stored webhook payloads that can be replayed safely from the admin console.</p>
+                    </article>
+                    <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-5 md:col-span-2 xl:col-span-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Runtime Preflight</p>
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${props.runtimePreflight.pass ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300"}`}>
+                                {props.runtimePreflight.pass ? "Pass" : "Action required"}
+                            </span>
+                        </div>
+                        <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100">
+                            {runtimePreflightErrorCount} error(s) | {runtimePreflightWarningCount} warning(s)
+                        </p>
+                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                            Checked {formatTimestamp(props.runtimePreflight.checkedAt)}. Environment and provider prerequisites for auth, AI, Stripe, and governance.
+                        </p>
+                        {props.runtimePreflight.issues.length > 0 ? (
+                            <div className="mt-3 grid gap-2 md:grid-cols-2">
+                                {props.runtimePreflight.issues.slice(0, 6).map((issue) => (
+                                    <div
+                                        key={`${issue.code}-${issue.envKey || "none"}-${issue.message}`}
+                                        className={`rounded-xl border px-3 py-2 text-xs ${issue.severity === "error" ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300" : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300"}`}
+                                    >
+                                        <p className="font-semibold">{issue.code}{issue.envKey ? ` (${issue.envKey})` : ""}</p>
+                                        <p className="mt-1">{issue.message}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-300">All required runtime preflight checks passed.</p>
+                        )}
                     </article>
                 </section>
 
@@ -1012,6 +1800,45 @@ export function AdminConsoleClient(props: Props) {
                                 {isSavingFlag ? "Saving flag..." : "Create enabled flag"}
                             </button>
                         </form>
+
+                        <div className="mt-4 rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60">
+                            <div className="flex items-center justify-between gap-3">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">
+                                    Governance Quick Controls
+                                </p>
+                                <span className="text-xs text-slate-500 dark:text-slate-300">
+                                    {canManageFlags ? "One-click pause/resume enabled" : "Read-only"}
+                                </span>
+                            </div>
+                            <div className="mt-3 space-y-2">
+                                {governanceFlagStates.map((control) => (
+                                    <div
+                                        key={control.key}
+                                        className="rounded-xl border border-[color:var(--border)] bg-white/80 p-3 dark:bg-slate-900/60"
+                                    >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                            <div>
+                                                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{control.label}</p>
+                                                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{control.description}</p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+                                                    Key: {control.key} | Effective state: {control.enabled ? "enabled" : "disabled"}
+                                                </p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleGovernanceFlagToggle(control.key, !control.enabled)}
+                                                disabled={!canManageFlags || busyFlagKey === control.identity}
+                                                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:opacity-60 ${control.enabled ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"}`}
+                                            >
+                                                {busyFlagKey === control.identity
+                                                    ? "Saving..."
+                                                    : governanceFlagActionLabel(control.key, control.enabled)}
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
 
                         <div className="mt-4 space-y-3">
                             {sortedFlags.length > 0 ? sortedFlags.map((flag) => (
@@ -1733,10 +2560,383 @@ export function AdminConsoleClient(props: Props) {
                         </div>
                     </article>
 
+                    <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Task Runs</h2>
+                                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                                    {canManageTasks
+                                        ? "Workspace DAG execution history with operator replay controls."
+                                        : "Workspace DAG execution history across projects and versions."}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => void refreshTaskRuns()}
+                                disabled={isRefreshingTaskRuns}
+                                className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            >
+                                {isRefreshingTaskRuns ? "Refreshing..." : "Refresh task runs"}
+                            </button>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                            <input
+                                value={taskRunQuery}
+                                onChange={(event) => setTaskRunQuery(event.target.value)}
+                                placeholder="Search task/project/version"
+                                className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                            />
+                            <select
+                                value={taskRunStatus}
+                                onChange={(event) => setTaskRunStatus(event.target.value as "" | TaskRun["status"])}
+                                className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                            >
+                                <option value="">Any status</option>
+                                <option value="queued">queued</option>
+                                <option value="running">running</option>
+                                <option value="succeeded">succeeded</option>
+                                <option value="failed">failed</option>
+                                <option value="blocked">blocked</option>
+                            </select>
+                            <select
+                                value={taskRunTenantId}
+                                onChange={(event) => setTaskRunTenantId(event.target.value)}
+                                className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                            >
+                                <option value="">Any tenant</option>
+                                {tenants.map((tenant) => (
+                                    <option key={tenant.id} value={tenant.id}>
+                                        {tenant.id} ({tenant.status})
+                                    </option>
+                                ))}
+                            </select>
+                            <input
+                                value={taskRunOwnerUserId}
+                                onChange={(event) => setTaskRunOwnerUserId(event.target.value)}
+                                placeholder="ownerUserId (optional)"
+                                className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                            />
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                            {sortedTaskRuns.length > 0 ? sortedTaskRuns.map((run) => (
+                                <div
+                                    key={run.id}
+                                    className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm dark:bg-slate-900/60"
+                                >
+                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <div>
+                                            <p className="font-semibold text-slate-900 dark:text-slate-100">
+                                                {run.taskTitle} ({run.taskId})
+                                            </p>
+                                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                Owner {run.ownerUserId} | Tenant {run.tenantId || "unassigned"}
+                                            </p>
+                                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                {run.projectName} / {run.versionName}
+                                            </p>
+                                        </div>
+                                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${taskRunStatusClasses(run.runStatus)}`}>
+                                            {run.runStatus}
+                                        </span>
+                                    </div>
+                                    <p className="mt-2 text-xs text-slate-500 dark:text-slate-300">
+                                        Updated {formatTimestamp(run.updatedAt)} | Task owner {run.taskOwner} | Attempt {run.attempt ?? 1}
+                                    </p>
+                                    {canManageTasks ? (
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleTaskRunReplay(run, "retry_failed")}
+                                                disabled={busyTaskReplayId === run.id || run.runStatus === "running"}
+                                                className="fc-button-secondary px-3 py-1.5 text-[11px] font-semibold disabled:opacity-60"
+                                            >
+                                                {busyTaskReplayId === run.id ? "Running..." : "Replay failed"}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleTaskRunReplay(run, "strict")}
+                                                disabled={busyTaskReplayId === run.id || run.runStatus === "running"}
+                                                className="fc-button-secondary px-3 py-1.5 text-[11px] font-semibold disabled:opacity-60"
+                                            >
+                                                {busyTaskReplayId === run.id ? "Running..." : "Replay strict"}
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                    {run.resultSummary ? (
+                                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{run.resultSummary}</p>
+                                    ) : null}
+                                    {run.remediationHint ? (
+                                        <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{run.remediationHint}</p>
+                                    ) : null}
+                                </div>
+                            )) : (
+                                <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">No task runs matched current filters.</p>
+                            )}
+                        </div>
+                    </article>
+
                     <div className="space-y-6">
                         <AdminObservabilityPanel initialSnapshot={props.observabilitySnapshot} />
                         <AdminOperationsPanel initialEvents={props.operationEvents} />
                         <AdminAuditPanel initialEvents={props.auditEvents} />
+                        <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                    <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Billing Lifecycle</h2>
+                                    <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                                        {canManageBilling
+                                            ? "Monitor payment events, purchase states, and issue refunds."
+                                            : "Read-only billing ledger visibility for operators and viewers."}
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => void refreshBillingData()}
+                                    disabled={isRefreshingBilling}
+                                    className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                >
+                                    {isRefreshingBilling ? "Refreshing..." : "Refresh billing"}
+                                </button>
+                            </div>
+
+                            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                                <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60">
+                                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Event Filters</p>
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                        <input
+                                            value={billingQuery}
+                                            onChange={(event) => setBillingQuery(event.target.value)}
+                                            placeholder="Search events"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        />
+                                        <select
+                                            value={billingProvider}
+                                            onChange={(event) => setBillingProvider(event.target.value as "" | BillingEvent["provider"])}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        >
+                                            <option value="">Any provider</option>
+                                            <option value="stripe">stripe</option>
+                                            <option value="manual">manual</option>
+                                        </select>
+                                        <select
+                                            value={billingStatus}
+                                            onChange={(event) => setBillingStatus(event.target.value as "" | BillingEvent["status"])}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        >
+                                            <option value="">Any status</option>
+                                            <option value="pending">pending</option>
+                                            <option value="succeeded">succeeded</option>
+                                            <option value="failed">failed</option>
+                                            <option value="refunded">refunded</option>
+                                        </select>
+                                        <select
+                                            value={billingTenantId}
+                                            onChange={(event) => setBillingTenantId(event.target.value)}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        >
+                                            <option value="">Any tenant</option>
+                                            {tenants.map((tenant) => (
+                                                <option key={tenant.id} value={tenant.id}>
+                                                    {tenant.id} ({tenant.status})
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <input
+                                            value={billingWorkspaceSnapshotId}
+                                            onChange={(event) => setBillingWorkspaceSnapshotId(event.target.value)}
+                                            placeholder="workspaceSnapshotId (optional)"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60">
+                                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Purchase Filters</p>
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                        <input
+                                            value={purchaseQuery}
+                                            onChange={(event) => setPurchaseQuery(event.target.value)}
+                                            placeholder="Search purchases"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        />
+                                        <select
+                                            value={purchaseProvider}
+                                            onChange={(event) => setPurchaseProvider(event.target.value as "" | ProjectPurchase["provider"])}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        >
+                                            <option value="">Any provider</option>
+                                            <option value="stripe">stripe</option>
+                                            <option value="manual">manual</option>
+                                        </select>
+                                        <select
+                                            value={purchaseStatus}
+                                            onChange={(event) => setPurchaseStatus(event.target.value as "" | ProjectPurchase["status"])}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        >
+                                            <option value="">Any status</option>
+                                            <option value="PENDING">PENDING</option>
+                                            <option value="SUCCEEDED">SUCCEEDED</option>
+                                            <option value="FAILED">FAILED</option>
+                                            <option value="CANCELLED">CANCELLED</option>
+                                            <option value="REFUNDED">REFUNDED</option>
+                                        </select>
+                                        <select
+                                            value={purchaseTenantId}
+                                            onChange={(event) => setPurchaseTenantId(event.target.value)}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        >
+                                            <option value="">Any tenant</option>
+                                            {tenants.map((tenant) => (
+                                                <option key={tenant.id} value={tenant.id}>
+                                                    {tenant.id} ({tenant.status})
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <input
+                                            value={purchaseWorkspaceSnapshotId}
+                                            onChange={(event) => setPurchaseWorkspaceSnapshotId(event.target.value)}
+                                            placeholder="workspaceSnapshotId (optional)"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                                <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60">
+                                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Latest Events</p>
+                                    <div className="mt-3 space-y-2">
+                                        {sortedBillingEvents.length > 0 ? sortedBillingEvents.slice(0, 8).map((event) => (
+                                            <div key={event.id} className="rounded-xl border border-[color:var(--border)] bg-white/80 px-3 py-2 text-xs dark:bg-slate-900/60">
+                                                <p className="font-semibold text-slate-900 dark:text-slate-100">{event.eventType}</p>
+                                                <p className="mt-1 text-slate-600 dark:text-slate-300">
+                                                    {event.provider} | {event.status} | {formatMoneyCents(event.amountCents, event.currency)}
+                                                </p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">
+                                                    {event.userId || "unknown user"} | {event.relatedProjectId || "unknown project"} | {event.tenantId || "unassigned tenant"}
+                                                </p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">
+                                                    Snapshot {event.workspaceSnapshotId || "n/a"} | Revision {typeof event.workspaceRevision === "number" ? `r${event.workspaceRevision}` : "n/a"}
+                                                </p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">{formatTimestamp(event.createdAt)}</p>
+                                            </div>
+                                        )) : (
+                                            <p className="text-sm text-slate-500 dark:text-slate-300">No billing events for current filters.</p>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60">
+                                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Latest Purchases</p>
+                                    <div className="mt-3 space-y-2">
+                                        {sortedPurchases.length > 0 ? sortedPurchases.slice(0, 8).map((purchase) => (
+                                            <div key={purchase.id} className="rounded-xl border border-[color:var(--border)] bg-white/80 px-3 py-2 text-xs dark:bg-slate-900/60">
+                                                <p className="font-semibold text-slate-900 dark:text-slate-100">
+                                                    {purchase.userId}:{purchase.projectId}
+                                                </p>
+                                                <p className="mt-1 text-slate-600 dark:text-slate-300">
+                                                    {purchase.provider} | {purchase.status} | {formatMoneyCents(purchase.amount, purchase.currency)}
+                                                </p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">
+                                                    Tenant {purchase.tenantId || "unassigned"} | PI {purchase.paymentIntentId || "n/a"}
+                                                </p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">
+                                                    Snapshot {purchase.workspaceSnapshotId || "n/a"} | Revision {typeof purchase.workspaceRevision === "number" ? `r${purchase.workspaceRevision}` : "n/a"}
+                                                </p>
+                                                <p className="mt-1 text-slate-500 dark:text-slate-300">Updated {formatTimestamp(purchase.updatedAt)}</p>
+                                                {canManageBilling && purchase.status === "SUCCEEDED" ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => prepareRefundForPurchase(purchase)}
+                                                        className="mt-2 fc-button-secondary px-3 py-1.5 text-[11px] font-semibold"
+                                                    >
+                                                        Prepare refund
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        )) : (
+                                            <p className="text-sm text-slate-500 dark:text-slate-300">No purchases for current filters.</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {canManageBilling ? (
+                                <form
+                                    onSubmit={handleRefundSubmit}
+                                    className="mt-4 rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 dark:bg-slate-900/60"
+                                >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Refund Action</p>
+                                        <p className="text-xs text-slate-500 dark:text-slate-300">Use project pair or payment intent</p>
+                                    </div>
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                        <input
+                                            value={refundForm.userId}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, userId: event.target.value }))}
+                                            placeholder="userId"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        />
+                                        <input
+                                            value={refundForm.projectId}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, projectId: event.target.value }))}
+                                            placeholder="projectId"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        />
+                                        <input
+                                            value={refundForm.paymentIntentId}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, paymentIntentId: event.target.value }))}
+                                            placeholder="paymentIntentId (optional if user/project provided)"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        />
+                                        <input
+                                            value={refundForm.amountCents}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, amountCents: event.target.value }))}
+                                            placeholder="Amount in cents (optional)"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        />
+                                        <select
+                                            value={refundForm.reason}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, reason: event.target.value as "" | "duplicate" | "fraudulent" | "requested_by_customer" }))}
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                        >
+                                            <option value="">Reason (optional)</option>
+                                            <option value="requested_by_customer">requested_by_customer</option>
+                                            <option value="duplicate">duplicate</option>
+                                            <option value="fraudulent">fraudulent</option>
+                                        </select>
+                                        <input
+                                            value={refundForm.note}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, note: event.target.value }))}
+                                            placeholder="Operator note (optional)"
+                                            className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100 sm:col-span-2"
+                                        />
+                                    </div>
+                                    <label className="mt-3 flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={refundForm.manualOnly}
+                                            onChange={(event) => setRefundForm((current) => ({ ...current, manualOnly: event.target.checked }))}
+                                            className="h-4 w-4 rounded border-[color:var(--border)]"
+                                        />
+                                        Manual only (skip Stripe API call, record refund locally)
+                                    </label>
+                                    <button
+                                        type="submit"
+                                        disabled={isSubmittingRefund}
+                                        className="mt-3 fc-button-primary px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                                    >
+                                        {isSubmittingRefund ? "Submitting..." : "Submit refund"}
+                                    </button>
+                                </form>
+                            ) : (
+                                <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">
+                                    Refund submission requires `billing_manage` capability.
+                                </p>
+                            )}
+                        </article>
                         {expandedWebhookId ? (
                             <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
                                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1817,6 +3017,14 @@ export function AdminConsoleClient(props: Props) {
                                         </p>
                                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{workspace.latestSnapshotSummary}</p>
                                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Updated {formatTimestamp(workspace.updatedAt)}</p>
+                                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                                            <Link
+                                                href={`/admin/workspaces/${encodeURIComponent(workspace.ownerUserId)}`}
+                                                className="fc-button-secondary px-3 py-2 text-xs font-semibold"
+                                            >
+                                                Open revision diff
+                                            </Link>
+                                        </div>
                                         {canManageTenants ? (
                                             <div className="mt-3 flex flex-wrap items-center gap-2">
                                                 <select
@@ -1863,7 +3071,7 @@ export function AdminConsoleClient(props: Props) {
                             <div className="flex items-center justify-between gap-3">
                                 <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Tenants</h2>
                                 <span className="text-xs text-slate-500 dark:text-slate-300">
-                                    {canManageTenants ? "Tenant status management enabled" : "Read-only tenant view"}
+                                    {canManageTenants || canManageOrgs ? "Tenant governance controls enabled" : "Read-only tenant view"}
                                 </span>
                             </div>
                             <div className="mt-4 space-y-3">
@@ -1876,40 +3084,258 @@ export function AdminConsoleClient(props: Props) {
                                             <div>
                                                 <p className="font-semibold text-slate-900 dark:text-slate-100">{tenant.name}</p>
                                                 <p className="mt-1 text-slate-600 dark:text-slate-300">{tenant.slug} | {tenant.status}</p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Organization: {tenant.orgId || "unassigned"}</p>
                                                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Workspaces: {tenant.workspaceCount}</p>
                                             </div>
-                                            {canManageTenants ? (
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <select
-                                                        value={tenantStatusDrafts[tenant.id] || tenant.status}
-                                                        onChange={(event) => {
-                                                            const nextStatus = event.target.value as Tenant["status"];
-                                                            setTenantStatusDrafts((current) => ({
-                                                                ...current,
-                                                                [tenant.id]: nextStatus
-                                                            }));
-                                                        }}
-                                                        disabled={busyTenantId === tenant.id}
-                                                        className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
-                                                    >
-                                                        <option value="active">active</option>
-                                                        <option value="trial">trial</option>
-                                                        <option value="suspended">suspended</option>
-                                                    </select>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => void handleTenantStatusSave(tenant.id)}
-                                                        disabled={busyTenantId === tenant.id || (tenantStatusDrafts[tenant.id] || tenant.status) === tenant.status}
-                                                        className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                                                    >
-                                                        {busyTenantId === tenant.id ? "Saving..." : "Save status"}
-                                                    </button>
+                                            {canManageTenants || canManageOrgs ? (
+                                                <div className="space-y-2">
+                                                    {canManageTenants ? (
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <select
+                                                                value={tenantStatusDrafts[tenant.id] || tenant.status}
+                                                                onChange={(event) => {
+                                                                    const nextStatus = event.target.value as Tenant["status"];
+                                                                    setTenantStatusDrafts((current) => ({
+                                                                        ...current,
+                                                                        [tenant.id]: nextStatus
+                                                                    }));
+                                                                }}
+                                                                disabled={busyTenantId === tenant.id}
+                                                                className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                            >
+                                                                <option value="active">active</option>
+                                                                <option value="trial">trial</option>
+                                                                <option value="suspended">suspended</option>
+                                                            </select>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => void handleTenantStatusSave(tenant.id)}
+                                                                disabled={busyTenantId === tenant.id || (tenantStatusDrafts[tenant.id] || tenant.status) === tenant.status}
+                                                                className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                                            >
+                                                                {busyTenantId === tenant.id ? "Saving..." : "Save status"}
+                                                            </button>
+                                                        </div>
+                                                    ) : null}
+                                                    {canManageOrgs ? (
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <select
+                                                                value={tenantOrgDrafts[tenant.id] ?? tenant.orgId ?? ""}
+                                                                onChange={(event) => {
+                                                                    const nextOrgId = event.target.value;
+                                                                    setTenantOrgDrafts((current) => ({
+                                                                        ...current,
+                                                                        [tenant.id]: nextOrgId
+                                                                    }));
+                                                                }}
+                                                                disabled={busyTenantOrgId === tenant.id}
+                                                                className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                            >
+                                                                <option value="">Unassigned org</option>
+                                                                {orgs.map((org) => (
+                                                                    <option key={org.id} value={org.id}>
+                                                                        {org.id} ({org.status})
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => void handleTenantOrgSave(tenant.id)}
+                                                                disabled={busyTenantOrgId === tenant.id || (tenantOrgDrafts[tenant.id] ?? tenant.orgId ?? "") === (tenant.orgId ?? "")}
+                                                                className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                                            >
+                                                                {busyTenantOrgId === tenant.id ? "Saving..." : "Save org"}
+                                                            </button>
+                                                        </div>
+                                                    ) : null}
                                                 </div>
                                             ) : null}
                                         </div>
                                     </div>
                                 )) : (
                                     <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">No tenants provisioned yet.</p>
+                                )}
+                            </div>
+                        </article>
+
+                        <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
+                            <div className="flex items-center justify-between gap-3">
+                                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Organizations</h2>
+                                <span className="text-xs text-slate-500 dark:text-slate-300">
+                                    {canManageOrgs ? "Org lifecycle management enabled" : "Read-only org view"}
+                                </span>
+                            </div>
+                            <div className="mt-4 space-y-3">
+                                {orgs.length > 0 ? orgs.map((org) => (
+                                    <div
+                                        key={org.id}
+                                        className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm dark:bg-slate-900/60"
+                                    >
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div>
+                                                <p className="font-semibold text-slate-900 dark:text-slate-100">{org.name}</p>
+                                                <p className="mt-1 text-slate-600 dark:text-slate-300">{org.slug} | {org.status}</p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">Tenants: {org.tenantCount}</p>
+                                            </div>
+                                            {canManageOrgs ? (
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <select
+                                                        value={orgStatusDrafts[org.id] || org.status}
+                                                        onChange={(event) => {
+                                                            const nextStatus = event.target.value as Org["status"];
+                                                            setOrgStatusDrafts((current) => ({
+                                                                ...current,
+                                                                [org.id]: nextStatus
+                                                            }));
+                                                        }}
+                                                        disabled={busyOrgId === org.id}
+                                                        className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                    >
+                                                        <option value="active">active</option>
+                                                        <option value="suspended">suspended</option>
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleOrgStatusSave(org.id)}
+                                                        disabled={busyOrgId === org.id || (orgStatusDrafts[org.id] || org.status) === org.status}
+                                                        className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                                    >
+                                                        {busyOrgId === org.id ? "Saving..." : "Save status"}
+                                                    </button>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">No organizations provisioned yet.</p>
+                                )}
+                            </div>
+                        </article>
+
+                        <article className="fc-surface-strong rounded-[var(--radius-2xl)] p-6">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                    <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Users</h2>
+                                    <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                                        {canManageUsers
+                                            ? "Account status controls available (active/suspended)."
+                                            : "Read-only user status visibility."}
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => void refreshUsers()}
+                                    disabled={isRefreshingUsers}
+                                    className="fc-button-secondary px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                >
+                                    {isRefreshingUsers ? "Refreshing..." : "Refresh users"}
+                                </button>
+                            </div>
+
+                            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                                <input
+                                    value={userQuery}
+                                    onChange={(event) => setUserQuery(event.target.value)}
+                                    placeholder="Search uid/email"
+                                    className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                />
+                                <select
+                                    value={userStatusFilter}
+                                    onChange={(event) => setUserStatusFilter(event.target.value as "" | AdminUserSummary["status"])}
+                                    className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                >
+                                    <option value="">Any status</option>
+                                    <option value="active">active</option>
+                                    <option value="suspended">suspended</option>
+                                </select>
+                                <select
+                                    value={userTenantIdFilter}
+                                    onChange={(event) => setUserTenantIdFilter(event.target.value)}
+                                    className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                >
+                                    <option value="">Any tenant</option>
+                                    {tenants.map((tenant) => (
+                                        <option key={tenant.id} value={tenant.id}>
+                                            {tenant.id} ({tenant.status})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="mt-4 space-y-3">
+                                {sortedUsers.length > 0 ? sortedUsers.map((user) => (
+                                    <div
+                                        key={user.uid}
+                                        className="rounded-2xl border border-[color:var(--border)] bg-white/70 p-4 text-sm dark:bg-slate-900/60"
+                                    >
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div>
+                                                <p className="font-semibold text-slate-900 dark:text-slate-100">
+                                                    {user.email || "(no email)"} | {user.status}
+                                                </p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{user.uid}</p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+                                                    Tenant: {user.tenantId || "unassigned"} | Session version: {user.sessionVersion}
+                                                </p>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+                                                    Updated {user.updatedAt ? formatTimestamp(user.updatedAt) : "n/a"}
+                                                </p>
+                                                {user.statusReason ? (
+                                                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                                        Reason: {user.statusReason}
+                                                    </p>
+                                                ) : null}
+                                            </div>
+                                            {canManageUsers ? (
+                                                <div className="space-y-2">
+                                                    <select
+                                                        value={userStatusDrafts[user.uid] || user.status}
+                                                        onChange={(event) => {
+                                                            const nextStatus = event.target.value as AdminUserSummary["status"];
+                                                            setUserStatusDrafts((current) => ({
+                                                                ...current,
+                                                                [user.uid]: nextStatus
+                                                            }));
+                                                        }}
+                                                        disabled={busyUserId === user.uid}
+                                                        className="rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                    >
+                                                        <option value="active">active</option>
+                                                        <option value="suspended">suspended</option>
+                                                    </select>
+                                                    <input
+                                                        value={userReasonDrafts[user.uid] ?? user.statusReason ?? ""}
+                                                        onChange={(event) => {
+                                                            const nextReason = event.target.value;
+                                                            setUserReasonDrafts((current) => ({
+                                                                ...current,
+                                                                [user.uid]: nextReason
+                                                            }));
+                                                        }}
+                                                        disabled={busyUserId === user.uid}
+                                                        placeholder="Reason (optional)"
+                                                        className="w-full rounded-xl border border-[color:var(--border)] bg-white px-3 py-2 text-sm text-slate-900 outline-none dark:bg-slate-950 dark:text-slate-100"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void handleUserStatusSave(user.uid)}
+                                                        disabled={
+                                                            busyUserId === user.uid
+                                                            || (
+                                                                (userStatusDrafts[user.uid] || user.status) === user.status
+                                                                && ((userReasonDrafts[user.uid] ?? user.statusReason ?? "").trim() === (user.statusReason || ""))
+                                                            )
+                                                        }
+                                                        className="fc-button-secondary w-full px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                                    >
+                                                        {busyUserId === user.uid ? "Saving..." : "Save user status"}
+                                                    </button>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <p className="mt-4 text-sm text-slate-500 dark:text-slate-300">No users matched current filters.</p>
                                 )}
                             </div>
                         </article>

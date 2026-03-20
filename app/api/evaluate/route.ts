@@ -1,6 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
+import { validateEvaluateSseEvent } from "@/lib/evaluate-sse";
 import type {
     Attachment,
     EvaluateAnalysisDeltaEvent,
@@ -41,6 +42,10 @@ type EvaluateRequestBody = {
     designMemory?: unknown;
     diagramPolicy?: unknown;
     outputLanguage?: unknown;
+    projectId?: unknown;
+    versionId?: unknown;
+    workspaceSnapshotId?: unknown;
+    workspaceRevision?: unknown;
 };
 
 class RequestPayloadError extends Error {
@@ -100,6 +105,21 @@ function isUpstreamOverloadError(error: unknown) {
 function clipText(text: string, maxChars: number) {
     if (text.length <= maxChars) return text;
     return `${text.slice(0, maxChars)}\n... [truncated]`;
+}
+
+function sanitizeTraceText(value: unknown, max = 160) {
+    return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function parseTraceRevision(value: unknown) {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const parsed = Number.parseInt(trimmed, 10);
+        if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+    }
+    return null;
 }
 
 function extractTaggedSection(output: string, tag: string) {
@@ -642,7 +662,20 @@ export async function POST(req: Request) {
     const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).slice(0, 12);
     const requestStartedAt = Date.now();
     try {
-        const { messages, context, sourceContext, generationReady, interactionMode, designMemory, diagramPolicy, outputLanguage } = await parseEvaluateRequest(req);
+        const {
+            messages,
+            context,
+            sourceContext,
+            generationReady,
+            interactionMode,
+            designMemory,
+            diagramPolicy,
+            outputLanguage,
+            projectId,
+            versionId,
+            workspaceSnapshotId,
+            workspaceRevision
+        } = await parseEvaluateRequest(req);
         const responseLanguage = outputLanguage === "zh" ? "zh" : "en";
         const normalizedInteractionMode: EvaluateInteractionMode = interactionMode === "chat" ? "chat" : "architecture";
         const contextText = typeof context === "string" ? context : undefined;
@@ -662,13 +695,19 @@ export async function POST(req: Request) {
             incomingDiagramPolicy === DEFAULT_DIAGRAM_POLICY
                 ? incomingDiagramPolicy
                 : DEFAULT_DIAGRAM_POLICY;
+        const evaluateTraceContext = {
+            projectId: sanitizeTraceText(projectId) || undefined,
+            versionId: sanitizeTraceText(versionId) || undefined,
+            workspaceSnapshotId: sanitizeTraceText(workspaceSnapshotId, 220) || undefined,
+            workspaceRevision: parseTraceRevision(workspaceRevision) ?? undefined
+        };
         if (!Array.isArray(messages) || messages.length === 0) {
             return NextResponse.json({ error: "No messages provided" }, { status: 400 });
         }
         const provider = getActiveAiProvider();
         const messageStats = getMessageStats(messages);
         console.log(
-            `[evaluate][${requestId}] start provider=${provider} mode=${normalizedInteractionMode} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} sourceContextChars=${sourceContextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
+            `[evaluate][${requestId}] start provider=${provider} mode=${normalizedInteractionMode} messages=${messageStats.messageCount} contextChars=${contextText?.length || 0} sourceContextChars=${sourceContextText?.length || 0} designMemoryChars=${designMemoryText?.length || 0} diagramPolicy=${normalizedDiagramPolicy} generationReady=${generationReady === true} projectId=${evaluateTraceContext.projectId || "n/a"} versionId=${evaluateTraceContext.versionId || "n/a"} snapshot=${evaluateTraceContext.workspaceSnapshotId || "n/a"} revision=${typeof evaluateTraceContext.workspaceRevision === "number" ? evaluateTraceContext.workspaceRevision : "n/a"} contentChars=${messageStats.totalContentChars} attachments=${messageStats.totalAttachments} textAttachments=${messageStats.textAttachments} binaryAttachments=${messageStats.binaryAttachments}`
         );
 
         const stream = new ReadableStream({
@@ -697,11 +736,39 @@ export async function POST(req: Request) {
                 };
 
                 const emitEvent = (event: EvaluateSseEventName, payload: unknown) => {
-                    safeEnqueue(formatSseEvent(event, payload));
+                    const validated = validateEvaluateSseEvent(event, payload);
+                    if (validated.ok) {
+                        safeEnqueue(formatSseEvent(event, validated.payload));
+                        return;
+                    }
+
+                    console.warn(
+                        `[evaluate][${requestId}] invalidSseEvent event=${event} issues=${validated.issues}`
+                    );
+                    if (event === "remediation") {
+                        return;
+                    }
+
+                    const fallbackRemediation: EvaluateRemediationEvent = {
+                        code: "EVALUATE_EVENT_SCHEMA_INVALID",
+                        severity: "warning",
+                        message: `Dropped invalid ${event} SSE payload.`,
+                        requestId
+                    };
+                    const remediationValidated = validateEvaluateSseEvent("remediation", fallbackRemediation);
+                    if (remediationValidated.ok) {
+                        safeEnqueue(formatSseEvent("remediation", remediationValidated.payload));
+                    }
                 };
 
                 const emitTraceEvent = (payload: EvaluateTraceEvent) => {
-                    emitEvent("trace", payload);
+                    emitEvent("trace", {
+                        ...payload,
+                        projectId: evaluateTraceContext.projectId,
+                        versionId: evaluateTraceContext.versionId,
+                        workspaceSnapshotId: evaluateTraceContext.workspaceSnapshotId,
+                        workspaceRevision: evaluateTraceContext.workspaceRevision
+                    });
                 };
 
                 const emitRemediationEvent = (payload: EvaluateRemediationEvent) => {

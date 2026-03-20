@@ -24,6 +24,24 @@ type StripeCheckoutSessionResponse = {
     };
 };
 
+type StripeRefundInput = {
+    secretKey: string;
+    paymentIntentId: string;
+    amountCents?: number;
+    reason?: "duplicate" | "fraudulent" | "requested_by_customer";
+    metadata?: Record<string, string>;
+};
+
+type StripeRefundResponse = {
+    id?: string;
+    status?: string;
+    amount?: number;
+    currency?: string;
+    error?: {
+        message?: string;
+    };
+};
+
 export function getStripeSecretKey() {
     return (process.env.STRIPE_SECRET_KEY || "").trim();
 }
@@ -108,6 +126,46 @@ export async function createStripeCheckoutSession(
     const data = (await response.json()) as StripeCheckoutSessionResponse;
     if (!response.ok) {
         const message = data?.error?.message || "Stripe checkout session creation failed.";
+        throw new Error(message);
+    }
+
+    return data;
+}
+
+export async function createStripeRefund(
+    input: StripeRefundInput
+): Promise<StripeRefundResponse> {
+    const normalizedPaymentIntentId = (input.paymentIntentId || "").trim();
+    if (!normalizedPaymentIntentId) {
+        throw new Error("Stripe refund requires paymentIntentId.");
+    }
+
+    const body = new URLSearchParams();
+    body.set("payment_intent", normalizedPaymentIntentId);
+    if (typeof input.amountCents === "number" && Number.isFinite(input.amountCents)) {
+        body.set("amount", String(Math.max(1, Math.round(input.amountCents))));
+    }
+    if (input.reason) {
+        body.set("reason", input.reason);
+    }
+    if (input.metadata) {
+        Object.entries(input.metadata).forEach(([key, value]) => {
+            body.set(`metadata[${key}]`, value);
+        });
+    }
+
+    const response = await fetch("https://api.stripe.com/v1/refunds", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${input.secretKey}`,
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString()
+    });
+
+    const data = (await response.json()) as StripeRefundResponse;
+    if (!response.ok) {
+        const message = data?.error?.message || "Stripe refund request failed.";
         throw new Error(message);
     }
 

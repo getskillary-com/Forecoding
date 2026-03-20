@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AuthCodePurposes, AUTH_CODE_TTL_SECONDS, issueAuthCode } from "@/lib/auth-code";
 import { findAuthUserByEmail } from "@/lib/firebase-admin";
+import { getUserProfileByUid } from "@/lib/data/users";
 import { getServerUser } from "@/lib/server-auth";
 import { isValidEmail, sanitizeEmail } from "@/lib/security";
 
@@ -48,6 +49,16 @@ export async function POST(req: Request) {
 
         if ((purpose === "login" || purpose === "reset_password") && !user) {
             return NextResponse.json({ error: "Account not found." }, { status: 404 });
+        }
+
+        if ((purpose === "login" || purpose === "reset_password") && user?.uid) {
+            const profile = await getUserProfileByUid(user.uid);
+            if (profile?.status === "suspended") {
+                return NextResponse.json(
+                    { error: "This account is suspended. Contact support for reactivation." },
+                    { status: 403 }
+                );
+            }
         }
 
         if (purpose === "change_email") {

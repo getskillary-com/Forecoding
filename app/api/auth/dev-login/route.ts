@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { adminAuth, findAuthUserByEmail } from "@/lib/firebase-admin";
 import { sanitizeEmail } from "@/lib/security";
-import { upsertUserProfile } from "@/lib/data/users";
+import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 import { isDevAuthBypassEnabled } from "@/lib/env";
 
 export const runtime = "nodejs";
@@ -21,6 +21,14 @@ export async function POST(req: Request) {
                 emailVerified: true,
                 displayName: "Dev User"
             });
+        }
+
+        const existing = await getUserProfileByUid(user.uid);
+        if (existing?.status === "suspended") {
+            return NextResponse.json(
+                { error: "This account is suspended. Contact support for reactivation." },
+                { status: 403 }
+            );
         }
 
         await upsertUserProfile({

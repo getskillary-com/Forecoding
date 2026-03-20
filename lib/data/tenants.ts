@@ -1,6 +1,7 @@
 import { adminDb } from "@/lib/firebase-admin";
 import { toDateOrNull } from "./firestore-utils";
 import { recordAuditEvent } from "./audit-events";
+import { syncOrgTenantCount } from "./orgs";
 import type { Tenant } from "@/types";
 
 function tenantsCollection() {
@@ -34,6 +35,12 @@ function normalizeTenantName(value: unknown): string | null {
     return trimmed || null;
 }
 
+function normalizeOrgId(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed || null;
+}
+
 function normalizeStatus(value: unknown): Tenant["status"] {
     if (value === "trial" || value === "suspended") return value;
     return "active";
@@ -51,6 +58,7 @@ function sanitizeLocalPart(email: string) {
 function mapTenant(id: string, data: Record<string, unknown>): Tenant {
     return {
         id,
+        orgId: normalizeOrgId(data.orgId),
         name: normalizeTenantName(data.name) || id,
         slug: normalizeTenantSlug(data.slug) || buildFallbackTenantSlug(id),
         status: normalizeStatus(data.status),
@@ -77,6 +85,7 @@ export async function getTenantById(tenantId: string): Promise<Tenant | null> {
 
 export async function ensureTenantRecord(input: {
     tenantId: string;
+    orgId?: string | null;
     name?: string | null;
     slug?: string | null;
     status?: Tenant["status"];
@@ -90,6 +99,7 @@ export async function ensureTenantRecord(input: {
     const existingData = existing.exists ? (existing.data() as Record<string, unknown>) : {};
 
     await ref.set({
+        orgId: normalizeOrgId(input.orgId) ?? normalizeOrgId(existingData.orgId) ?? null,
         name: normalizeTenantName(input.name) || normalizeTenantName(existingData.name) || tenantId,
         slug:
             normalizeTenantSlug(input.slug) ||
@@ -182,6 +192,77 @@ export async function listTenants(limit = 30): Promise<Tenant[]> {
     return snap.docs
         .map((doc) => mapTenant(doc.id, doc.data() || {}))
         .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+export async function updateTenantOrgBinding(input: {
+    tenantId: string;
+    orgId?: string | null;
+    reason?: string | null;
+    actorId?: string | null;
+    actorEmail?: string | null;
+}): Promise<{
+    tenant: Tenant;
+    previousOrgId: string | null;
+    nextOrgId: string | null;
+    changed: boolean;
+}> {
+    const tenantId = input.tenantId.trim();
+    if (!tenantId) {
+        throw new Error("Tenant id is required.");
+    }
+    const normalizedOrgId = normalizeOrgId(input.orgId);
+    const ref = tenantsCollection().doc(tenantId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+        throw new Error("Tenant not found.");
+    }
+
+    const current = mapTenant(snap.id, snap.data() || {});
+    const previousOrgId = current.orgId ?? null;
+    const changed = previousOrgId !== normalizedOrgId;
+
+    if (changed) {
+        await ref.set({
+            orgId: normalizedOrgId ?? null,
+            updatedAt: new Date()
+        }, { merge: true });
+    }
+
+    if (previousOrgId && previousOrgId !== normalizedOrgId) {
+        await syncOrgTenantCount(previousOrgId);
+    }
+    if (normalizedOrgId) {
+        await syncOrgTenantCount(normalizedOrgId);
+    }
+
+    if (changed) {
+        await recordAuditEvent({
+            eventType: "tenant.org_rebound",
+            severity: "warning",
+            actorId: input.actorId ?? null,
+            actorEmail: input.actorEmail ?? null,
+            resourceType: "tenant",
+            resourceId: tenantId,
+            summary: `Tenant ${tenantId} organization binding moved to ${normalizedOrgId || "unassigned"}.`,
+            metadata: {
+                tenantId,
+                previousOrgId: previousOrgId || "",
+                nextOrgId: normalizedOrgId || "",
+                reason: input.reason || ""
+            }
+        });
+    }
+
+    return {
+        tenant: {
+            ...current,
+            orgId: normalizedOrgId,
+            updatedAt: Date.now()
+        },
+        previousOrgId,
+        nextOrgId: normalizedOrgId,
+        changed
+    };
 }
 
 export async function updateTenantStatus(input: {

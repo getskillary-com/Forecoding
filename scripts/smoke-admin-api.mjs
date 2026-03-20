@@ -350,6 +350,142 @@ function assertStatus(result, expectedStatuses, context) {
     }
 }
 
+function assertString(value, context) {
+    if (typeof value !== "string" || !value.trim()) {
+        throw new Error(`${context} must be a non-empty string.`);
+    }
+}
+
+function assertFiniteNumber(value, context) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`${context} must be a finite number.`);
+    }
+}
+
+function assertStringArray(value, context) {
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+        throw new Error(`${context} must be an array of strings.`);
+    }
+}
+
+function assertDiffList(value, context) {
+    assertJsonObject(value, context);
+    assertStringArray(value.added, `${context}.added`);
+    assertStringArray(value.removed, `${context}.removed`);
+    assertStringArray(value.changed, `${context}.changed`);
+}
+
+function assertStatusDiffList(value, context) {
+    assertDiffList(value, context);
+    assertStringArray(value.statusChanged, `${context}.statusChanged`);
+}
+
+function assertRuntimePreflightShape(value, context) {
+    assertJsonObject(value, context);
+    assertFiniteNumber(value.checkedAt, `${context}.checkedAt`);
+    if (typeof value.pass !== "boolean") {
+        throw new Error(`${context}.pass must be a boolean.`);
+    }
+    if (!Array.isArray(value.issues)) {
+        throw new Error(`${context}.issues must be an array.`);
+    }
+    value.issues.forEach((issue, index) => {
+        assertJsonObject(issue, `${context}.issues[${index}]`);
+        assertString(issue.code, `${context}.issues[${index}].code`);
+        assertString(issue.message, `${context}.issues[${index}].message`);
+        if (issue.severity !== "error" && issue.severity !== "warning") {
+            throw new Error(`${context}.issues[${index}].severity must be "error" or "warning".`);
+        }
+        if (issue.envKey !== undefined && issue.envKey !== null && typeof issue.envKey !== "string") {
+            throw new Error(`${context}.issues[${index}].envKey must be a string when provided.`);
+        }
+    });
+}
+
+function assertWorkspaceRevisionShape(value, context) {
+    assertJsonObject(value, context);
+    assertString(value.revisionId, `${context}.revisionId`);
+    assertFiniteNumber(value.revisionNumber, `${context}.revisionNumber`);
+    assertString(value.snapshotId, `${context}.snapshotId`);
+    assertFiniteNumber(value.createdAt, `${context}.createdAt`);
+    assertString(value.summary, `${context}.summary`);
+    assertString(value.kind, `${context}.kind`);
+    assertFiniteNumber(value.projectCount, `${context}.projectCount`);
+    assertFiniteNumber(value.activeVersionCount, `${context}.activeVersionCount`);
+    if (typeof value.hasSnapshotPayload !== "boolean") {
+        throw new Error(`${context}.hasSnapshotPayload must be a boolean.`);
+    }
+}
+
+function assertWorkspaceOverviewShape(value, context) {
+    assertJsonObject(value, context);
+    assertString(value.ownerUserId, `${context}.ownerUserId`);
+    if (value.tenantId !== null && value.tenantId !== undefined && typeof value.tenantId !== "string") {
+        throw new Error(`${context}.tenantId must be null or string.`);
+    }
+    assertFiniteNumber(value.revision, `${context}.revision`);
+    assertFiniteNumber(value.projectCount, `${context}.projectCount`);
+    assertFiniteNumber(value.updatedAt, `${context}.updatedAt`);
+    if (!Array.isArray(value.revisions)) {
+        throw new Error(`${context}.revisions must be an array.`);
+    }
+    value.revisions.forEach((revision, index) => {
+        assertWorkspaceRevisionShape(revision, `${context}.revisions[${index}]`);
+    });
+}
+
+function assertWorkspaceDiffShape(value, context) {
+    assertJsonObject(value, context);
+    assertString(value.ownerUserId, `${context}.ownerUserId`);
+    if (value.tenantId !== null && value.tenantId !== undefined && typeof value.tenantId !== "string") {
+        throw new Error(`${context}.tenantId must be null or string.`);
+    }
+    assertWorkspaceRevisionShape(value.source, `${context}.source`);
+    assertWorkspaceRevisionShape(value.target, `${context}.target`);
+    assertJsonObject(value.impact, `${context}.impact`);
+
+    assertDiffList(value.impact.projectIds, `${context}.impact.projectIds`);
+    assertDiffList(value.impact.activeVersionIds, `${context}.impact.activeVersionIds`);
+    assertDiffList(value.impact.modules, `${context}.impact.modules`);
+    assertDiffList(value.impact.routes, `${context}.impact.routes`);
+    assertDiffList(value.impact.contracts, `${context}.impact.contracts`);
+    assertDiffList(value.impact.tests, `${context}.impact.tests`);
+    assertStatusDiffList(value.impact.requirements, `${context}.impact.requirements`);
+    assertStatusDiffList(value.impact.assumptions, `${context}.impact.assumptions`);
+    assertStatusDiffList(value.impact.acceptanceCases, `${context}.impact.acceptanceCases`);
+    assertStatusDiffList(value.impact.taskDefinitions, `${context}.impact.taskDefinitions`);
+
+    assertJsonObject(value.impact.taskRuns, `${context}.impact.taskRuns`);
+    assertFiniteNumber(value.impact.taskRuns.sourceCount, `${context}.impact.taskRuns.sourceCount`);
+    assertFiniteNumber(value.impact.taskRuns.targetCount, `${context}.impact.taskRuns.targetCount`);
+    assertJsonObject(value.impact.taskRuns.statusDelta, `${context}.impact.taskRuns.statusDelta`);
+    ["queued", "running", "succeeded", "failed", "blocked"].forEach((statusKey) => {
+        assertFiniteNumber(
+            value.impact.taskRuns.statusDelta[statusKey],
+            `${context}.impact.taskRuns.statusDelta.${statusKey}`
+        );
+    });
+
+    assertJsonObject(value.impact.billing, `${context}.impact.billing`);
+    assertFiniteNumber(value.impact.billing.sourceEventCount, `${context}.impact.billing.sourceEventCount`);
+    assertFiniteNumber(value.impact.billing.targetEventCount, `${context}.impact.billing.targetEventCount`);
+    assertStringArray(value.impact.billing.addedEvents, `${context}.impact.billing.addedEvents`);
+    assertStringArray(value.impact.billing.removedEvents, `${context}.impact.billing.removedEvents`);
+    if (!Array.isArray(value.impact.billing.paymentStatusChanged)) {
+        throw new Error(`${context}.impact.billing.paymentStatusChanged must be an array.`);
+    }
+    value.impact.billing.paymentStatusChanged.forEach((item, index) => {
+        assertJsonObject(item, `${context}.impact.billing.paymentStatusChanged[${index}]`);
+        assertString(item.projectId, `${context}.impact.billing.paymentStatusChanged[${index}].projectId`);
+        if (!["paid", "unpaid", "unknown"].includes(item.sourceStatus)) {
+            throw new Error(`${context}.impact.billing.paymentStatusChanged[${index}].sourceStatus must be paid|unpaid|unknown.`);
+        }
+        if (!["paid", "unpaid", "unknown"].includes(item.targetStatus)) {
+            throw new Error(`${context}.impact.billing.paymentStatusChanged[${index}].targetStatus must be paid|unpaid|unknown.`);
+        }
+    });
+}
+
 function logPass(message) {
     process.stdout.write(`PASS ${message}\n`);
 }
@@ -362,6 +498,13 @@ async function runUnauthenticatedChecks(baseUrl, timeoutMs) {
     const protectedPaths = [
         "/api/admin/status",
         "/api/admin/jobs?limit=1",
+        "/api/admin/orgs",
+        "/api/admin/users?limit=1",
+        "/api/admin/workspaces/smoke-owner",
+        "/api/admin/workspaces/smoke-owner/diff",
+        "/api/admin/tasks/runs?limit=1",
+        "/api/admin/billing/events?limit=1",
+        "/api/admin/billing/purchases?limit=1",
         "/api/admin/releases",
         "/api/admin/webhooks/stripe?limit=1",
         "/api/admin/audit?limit=1"
@@ -403,6 +546,15 @@ async function runUnauthenticatedChecks(baseUrl, timeoutMs) {
             body: {
                 eventId: "evt_smoke"
             }
+        },
+        {
+            path: "/api/admin/tasks/runs/replay",
+            body: {
+                ownerUserId: "smoke-owner",
+                projectId: "smoke-project",
+                versionId: "smoke-version",
+                mode: "retry_failed"
+            }
         }
     ];
 
@@ -437,6 +589,10 @@ async function runAuthenticatedChecks(baseUrl, timeoutMs, cookie, options) {
     if (!status.payload.ok) {
         throw new Error(`GET /api/admin/status expected ok=true, received ${formatPayload(status.payload)}.`);
     }
+    if (!Array.isArray(status.payload.capabilities)) {
+        throw new Error(`GET /api/admin/status expected capabilities array, received ${formatPayload(status.payload)}.`);
+    }
+    assertRuntimePreflightShape(status.payload.runtimePreflight, "GET /api/admin/status runtimePreflight");
     logPass(`Authenticated GET /api/admin/status returned role=${status.payload.adminRole || "unknown"}.`);
 
     const jobsResult = await requestJson(baseUrl, "/api/admin/jobs?limit=5", { timeoutMs, headers });
@@ -454,6 +610,98 @@ async function runAuthenticatedChecks(baseUrl, timeoutMs, cookie, options) {
         throw new Error(`GET /api/admin/releases expected releases array, received ${formatPayload(releasesResult.payload)}.`);
     }
     logPass(`Authenticated GET /api/admin/releases returned ${releasesResult.payload.releases.length} releases.`);
+
+    const orgsResult = await requestJson(baseUrl, "/api/admin/orgs", { timeoutMs, headers });
+    assertStatus(orgsResult, [200], "GET /api/admin/orgs");
+    assertJsonObject(orgsResult.payload, "GET /api/admin/orgs");
+    if (!Array.isArray(orgsResult.payload.orgs)) {
+        throw new Error(`GET /api/admin/orgs expected orgs array, received ${formatPayload(orgsResult.payload)}.`);
+    }
+    logPass(`Authenticated GET /api/admin/orgs returned ${orgsResult.payload.orgs.length} organizations.`);
+
+    const usersResult = await requestJson(baseUrl, "/api/admin/users?limit=5", { timeoutMs, headers });
+    assertStatus(usersResult, [200], "GET /api/admin/users");
+    assertJsonObject(usersResult.payload, "GET /api/admin/users");
+    if (!Array.isArray(usersResult.payload.users)) {
+        throw new Error(`GET /api/admin/users expected users array, received ${formatPayload(usersResult.payload)}.`);
+    }
+    logPass(`Authenticated GET /api/admin/users returned ${usersResult.payload.users.length} users.`);
+
+    const workspaceOwnerUserId = releasesResult.payload.releases[0]?.ownerUserId || usersResult.payload.users[0]?.uid || "";
+    if (workspaceOwnerUserId) {
+        const workspaceOverview = await requestJson(
+            baseUrl,
+            `/api/admin/workspaces/${encodeURIComponent(workspaceOwnerUserId)}`,
+            { timeoutMs, headers }
+        );
+        assertStatus(workspaceOverview, [200, 404], `GET /api/admin/workspaces/${workspaceOwnerUserId}`);
+        if (workspaceOverview.status === 404) {
+            logSkip(`Workspace overview not found for ${workspaceOwnerUserId}, skipped workspace diff checks.`);
+        } else {
+            assertJsonObject(workspaceOverview.payload, `GET /api/admin/workspaces/${workspaceOwnerUserId}`);
+            if (!workspaceOverview.payload.workspace) {
+                throw new Error(`GET /api/admin/workspaces/${workspaceOwnerUserId} expected workspace.revisions array, received ${formatPayload(workspaceOverview.payload)}.`);
+            }
+            assertWorkspaceOverviewShape(
+                workspaceOverview.payload.workspace,
+                `GET /api/admin/workspaces/${workspaceOwnerUserId} workspace`
+            );
+            logPass(`Authenticated workspace overview check succeeded for ${workspaceOwnerUserId}.`);
+
+            const revisions = workspaceOverview.payload.workspace.revisions;
+            if (revisions.length >= 2) {
+                const toRevisionId = revisions[0]?.revisionId || "";
+                const fromRevisionId = revisions[1]?.revisionId || "";
+                if (toRevisionId && fromRevisionId) {
+                    const workspaceDiff = await requestJson(
+                        baseUrl,
+                        `/api/admin/workspaces/${encodeURIComponent(workspaceOwnerUserId)}/diff?fromRevisionId=${encodeURIComponent(fromRevisionId)}&toRevisionId=${encodeURIComponent(toRevisionId)}`,
+                        { timeoutMs, headers }
+                    );
+                    assertStatus(workspaceDiff, [200], `GET /api/admin/workspaces/${workspaceOwnerUserId}/diff`);
+                    assertJsonObject(workspaceDiff.payload, `GET /api/admin/workspaces/${workspaceOwnerUserId}/diff`);
+                    if (!workspaceDiff.payload.diff) {
+                        throw new Error(`GET /api/admin/workspaces/${workspaceOwnerUserId}/diff expected diff payload, received ${formatPayload(workspaceDiff.payload)}.`);
+                    }
+                    assertWorkspaceDiffShape(
+                        workspaceDiff.payload.diff,
+                        `GET /api/admin/workspaces/${workspaceOwnerUserId}/diff diff`
+                    );
+                    logPass(`Authenticated workspace diff check succeeded for ${workspaceOwnerUserId}.`);
+                } else {
+                    logSkip(`Workspace ${workspaceOwnerUserId} revision ids were incomplete, skipped diff check.`);
+                }
+            } else {
+                logSkip(`Workspace ${workspaceOwnerUserId} has fewer than 2 revisions, skipped diff check.`);
+            }
+        }
+    } else {
+        logSkip("No workspace owner was discoverable, skipped workspace overview/diff checks.");
+    }
+
+    const taskRunsResult = await requestJson(baseUrl, "/api/admin/tasks/runs?limit=5", { timeoutMs, headers });
+    assertStatus(taskRunsResult, [200], "GET /api/admin/tasks/runs");
+    assertJsonObject(taskRunsResult.payload, "GET /api/admin/tasks/runs");
+    if (!Array.isArray(taskRunsResult.payload.taskRuns)) {
+        throw new Error(`GET /api/admin/tasks/runs expected taskRuns array, received ${formatPayload(taskRunsResult.payload)}.`);
+    }
+    logPass(`Authenticated GET /api/admin/tasks/runs returned ${taskRunsResult.payload.taskRuns.length} task runs.`);
+
+    const billingEventsResult = await requestJson(baseUrl, "/api/admin/billing/events?limit=5", { timeoutMs, headers });
+    assertStatus(billingEventsResult, [200], "GET /api/admin/billing/events");
+    assertJsonObject(billingEventsResult.payload, "GET /api/admin/billing/events");
+    if (!Array.isArray(billingEventsResult.payload.events)) {
+        throw new Error(`GET /api/admin/billing/events expected events array, received ${formatPayload(billingEventsResult.payload)}.`);
+    }
+    logPass(`Authenticated GET /api/admin/billing/events returned ${billingEventsResult.payload.events.length} events.`);
+
+    const purchasesResult = await requestJson(baseUrl, "/api/admin/billing/purchases?limit=5", { timeoutMs, headers });
+    assertStatus(purchasesResult, [200], "GET /api/admin/billing/purchases");
+    assertJsonObject(purchasesResult.payload, "GET /api/admin/billing/purchases");
+    if (!Array.isArray(purchasesResult.payload.purchases)) {
+        throw new Error(`GET /api/admin/billing/purchases expected purchases array, received ${formatPayload(purchasesResult.payload)}.`);
+    }
+    logPass(`Authenticated GET /api/admin/billing/purchases returned ${purchasesResult.payload.purchases.length} purchases.`);
 
     const webhooksResult = await requestJson(baseUrl, "/api/admin/webhooks/stripe?limit=5", { timeoutMs, headers });
     assertStatus(webhooksResult, [200], "GET /api/admin/webhooks/stripe");
