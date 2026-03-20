@@ -63,6 +63,7 @@ const LOCAL_OWNER_USER_ID = "__local__";
 
 const remoteFetchPromises = new Map<string, Promise<Project[] | null>>();
 const lastRemoteFetchAtByKey = new Map<string, number>();
+let workspaceSyncQueue: Promise<void> = Promise.resolve();
 
 type WorkspaceWindow = Window & {
     [CACHE_KEY]?: WorkspaceCache;
@@ -405,7 +406,7 @@ export async function prefetchWorkspaceRemote(input?: PrefetchWorkspaceRemoteOpt
     return remoteFetchPromise;
 }
 
-export async function syncWorkspaceProjectsRemote(
+async function performWorkspaceProjectsSync(
     projects: Project[],
     input?: { changeSummary?: string }
 ): Promise<WorkspaceSyncResult> {
@@ -455,20 +456,33 @@ export async function syncWorkspaceProjectsRemote(
                 };
             }
             if (retryRes.status === 409 && retryPayload?.workspace) {
+                const retryWorkspace = retryPayload.workspace as WorkspaceEnvelope;
+                const mergedConflictProjects = mergeProjectsForConflictRetry(retryWorkspace.projects, rebasedProjects);
+                const mergedConflictWorkspace: WorkspaceEnvelope = {
+                    ...retryWorkspace,
+                    projects: mergedConflictProjects
+                };
+                writeWorkspaceEnvelopeToLocalStorage(mergedConflictWorkspace);
                 return {
                     ok: false,
                     conflict: true,
                     message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
-                    revision: typeof retryPayload.revision === "number" ? retryPayload.revision : serverWorkspace.revision,
-                    workspace: retryPayload.workspace as WorkspaceEnvelope
+                    revision: typeof retryPayload.revision === "number" ? retryPayload.revision : retryWorkspace.revision,
+                    workspace: mergedConflictWorkspace
                 };
             }
+            const mergedFallbackProjects = mergeProjectsForConflictRetry(serverWorkspace.projects, rebasedProjects);
+            const mergedFallbackWorkspace: WorkspaceEnvelope = {
+                ...serverWorkspace,
+                projects: mergedFallbackProjects
+            };
+            writeWorkspaceEnvelopeToLocalStorage(mergedFallbackWorkspace);
             return {
                 ok: false,
                 conflict: true,
                 message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
-                revision: typeof payload.revision === "number" ? payload.revision : current.revision,
-                workspace: serverWorkspace
+                revision: typeof payload.revision === "number" ? payload.revision : serverWorkspace.revision,
+                workspace: mergedFallbackWorkspace
             };
         }
 
@@ -498,4 +512,13 @@ export async function syncWorkspaceProjectsRemote(
             message: error instanceof Error ? error.message : "Failed to sync workspace."
         };
     }
+}
+
+export async function syncWorkspaceProjectsRemote(
+    projects: Project[],
+    input?: { changeSummary?: string }
+): Promise<WorkspaceSyncResult> {
+    const queuedSync = workspaceSyncQueue.then(() => performWorkspaceProjectsSync(projects, input));
+    workspaceSyncQueue = queuedSync.then(() => undefined, () => undefined);
+    return queuedSync;
 }

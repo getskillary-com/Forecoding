@@ -99,23 +99,24 @@ export async function PUT(req: Request) {
         });
 
         if (!result.ok) {
+            const conflictWorkspace = stripSnapshotProjects(result.currentEnvelope);
             return NextResponse.json(
                 {
                     error: "Workspace revision conflict.",
                     code: "WORKSPACE_REVISION_CONFLICT",
-                    revision: result.currentEnvelope.revision,
-                    workspace: result.currentEnvelope,
-                    projects: result.currentEnvelope.projects
+                    revision: conflictWorkspace.revision,
+                    workspace: conflictWorkspace
                 },
                 { status: 409 }
             );
         }
 
+        const successWorkspace = stripSnapshotProjects(result.envelope);
         return NextResponse.json({
             ok: true,
-            revision: result.envelope.revision,
-            workspace: result.envelope,
-            projects: result.envelope.projects
+            revision: successWorkspace.revision,
+            workspace: successWorkspace,
+            projects: successWorkspace.projects
         });
     } catch (error) {
         if (error instanceof z.ZodError) {
