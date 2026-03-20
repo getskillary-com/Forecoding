@@ -157,7 +157,10 @@ export default function DashboardPage() {
 
         const loadRemoteWorkspace = async (localProjects: Project[], background = false) => {
             try {
-                const remoteProjects = await prefetchWorkspaceRemote();
+                const remoteProjects = await prefetchWorkspaceRemote({
+                    includeWorkspace: false,
+                    includeSnapshotProjects: false
+                });
                 const nextProjects = remoteProjects ?? readProjectsFromLocalStorage();
 
                 if (nextProjects.length > 0 || localProjects.length === 0) {
@@ -218,7 +221,12 @@ export default function DashboardPage() {
 
     const prefetchWizard = (projectId: string, versionId: string) => {
         primeWorkspaceCache(projectId);
-        void prefetchWorkspaceRemote();
+        void prefetchWorkspaceRemote({
+            projectId,
+            includeWorkspace: false,
+            includeSnapshotProjects: false,
+            mergeProjectScopedResult: true
+        });
         scheduleWizardWarmup();
         router.prefetch(`/wizard?projectId=${projectId}&versionId=${versionId}`);
     };

@@ -1,4 +1,5 @@
 import { adminDb } from "@/lib/firebase-admin";
+import type { DocumentData, DocumentReference, Transaction } from "firebase-admin/firestore";
 import { toDateOrNull } from "./firestore-utils";
 import { recordAuditEvent } from "./audit-events";
 import { syncTenantWorkspaceCount } from "./tenants";
@@ -177,12 +178,27 @@ type WorkspaceSaveSuccess = {
     envelope: WorkspaceEnvelope;
 };
 
+const WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES = 1_000_000;
+const WORKSPACE_MIN_REVISION_HISTORY_FOR_COMPACTION = 8;
+const WORKSPACE_MIN_SNAPSHOTS_FOR_COMPACTION = 4;
+
 export class WorkspaceRevisionConflictError extends Error {
     currentEnvelope: WorkspaceEnvelope;
 
     constructor(currentEnvelope: WorkspaceEnvelope) {
         super("Workspace revision conflict.");
         this.currentEnvelope = currentEnvelope;
+    }
+}
+
+export class WorkspaceDocumentTooLargeError extends Error {
+    estimatedBytes: number;
+    limitBytes: number;
+
+    constructor(estimatedBytes: number, limitBytes: number) {
+        super("Workspace document exceeds storage size limits.");
+        this.estimatedBytes = estimatedBytes;
+        this.limitBytes = limitBytes;
     }
 }
 
@@ -640,7 +656,7 @@ function listWorkspaceRevisionTimeline(envelope: WorkspaceEnvelope): WorkspaceRe
         .filter((item): item is WorkspaceRevisionTimelineItem => Boolean(item));
 }
 
-function toWorkspaceDocument(envelope: WorkspaceEnvelope) {
+function serializeWorkspaceDocument(envelope: WorkspaceEnvelope) {
     return {
         version: envelope.version,
         ownerUserId: envelope.ownerUserId,
@@ -668,6 +684,131 @@ function toWorkspaceDocument(envelope: WorkspaceEnvelope) {
         createdAt: new Date(envelope.createdAt),
         updatedAt: new Date(envelope.updatedAt)
     };
+}
+
+function estimateWorkspaceDocumentBytes(envelope: WorkspaceEnvelope) {
+    try {
+        return Buffer.byteLength(JSON.stringify(serializeWorkspaceDocument(envelope)), "utf8");
+    } catch {
+        return Number.POSITIVE_INFINITY;
+    }
+}
+
+function dropSnapshotProjects(snapshot: WorkspaceEnvelope["snapshots"][number]) {
+    if (!Array.isArray(snapshot.projects)) return snapshot;
+    const nextSnapshot = { ...snapshot };
+    delete nextSnapshot.projects;
+    return nextSnapshot;
+}
+
+function compactWorkspaceEnvelopeForStorage(envelope: WorkspaceEnvelope): WorkspaceEnvelope {
+    let candidate = envelope;
+    let estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
+    if (estimatedBytes <= WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+        return candidate;
+    }
+
+    const latestSnapshotId = candidate.snapshots[0]?.id ?? null;
+    const releaseSnapshotIds = new Set(
+        candidate.releaseTags
+            .map((tag) => tag.snapshotId)
+            .filter((snapshotId): snapshotId is string => typeof snapshotId === "string" && snapshotId.trim().length > 0)
+    );
+
+    const applySnapshotCompaction = (
+        shouldDrop: (snapshotId: string, index: number) => boolean
+    ) => {
+        let changed = false;
+        const snapshots = candidate.snapshots.map((snapshot, index) => {
+            if (!Array.isArray(snapshot.projects)) return snapshot;
+            if (!shouldDrop(snapshot.id, index)) return snapshot;
+            changed = true;
+            return dropSnapshotProjects(snapshot);
+        });
+        if (!changed) return false;
+        candidate = {
+            ...candidate,
+            snapshots
+        };
+        estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
+        return true;
+    };
+
+    // First drop payloads that are neither latest nor release-tagged snapshots.
+    applySnapshotCompaction((snapshotId) => snapshotId !== latestSnapshotId && !releaseSnapshotIds.has(snapshotId));
+    if (estimatedBytes <= WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+        return candidate;
+    }
+
+    // If still too large, drop latest snapshot payload unless it's release-tagged.
+    if (latestSnapshotId && !releaseSnapshotIds.has(latestSnapshotId)) {
+        applySnapshotCompaction((snapshotId) => snapshotId === latestSnapshotId);
+    }
+    if (estimatedBytes <= WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+        return candidate;
+    }
+
+    // As a last resort, drop payloads from release snapshots starting from the oldest.
+    const releaseSnapshotsByAge = candidate.snapshots
+        .map((snapshot, index) => ({ id: snapshot.id, index }))
+        .filter((snapshot) => releaseSnapshotIds.has(snapshot.id))
+        .sort((left, right) => right.index - left.index);
+
+    for (const releaseSnapshot of releaseSnapshotsByAge) {
+        applySnapshotCompaction((snapshotId) => snapshotId === releaseSnapshot.id);
+        if (estimatedBytes <= WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+            return candidate;
+        }
+    }
+
+    // Trim old revision metadata if payload is still close to the write ceiling.
+    while (
+        estimatedBytes > WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES
+        && (
+            candidate.revisionHistory.length > WORKSPACE_MIN_REVISION_HISTORY_FOR_COMPACTION
+            || candidate.snapshots.length > WORKSPACE_MIN_SNAPSHOTS_FOR_COMPACTION
+        )
+    ) {
+        const nextRevisionHistory = candidate.revisionHistory.length > WORKSPACE_MIN_REVISION_HISTORY_FOR_COMPACTION
+            ? candidate.revisionHistory.slice(0, candidate.revisionHistory.length - 1)
+            : candidate.revisionHistory;
+        const nextSnapshots = candidate.snapshots.length > WORKSPACE_MIN_SNAPSHOTS_FOR_COMPACTION
+            ? candidate.snapshots.slice(0, candidate.snapshots.length - 1)
+            : candidate.snapshots;
+
+        if (
+            nextRevisionHistory.length === candidate.revisionHistory.length
+            && nextSnapshots.length === candidate.snapshots.length
+        ) {
+            break;
+        }
+
+        candidate = {
+            ...candidate,
+            revisionHistory: nextRevisionHistory,
+            snapshots: nextSnapshots
+        };
+        estimatedBytes = estimateWorkspaceDocumentBytes(candidate);
+    }
+
+    if (estimatedBytes > WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES) {
+        throw new WorkspaceDocumentTooLargeError(estimatedBytes, WORKSPACE_DOCUMENT_WRITE_LIMIT_BYTES);
+    }
+    return candidate;
+}
+
+function toWorkspaceDocument(envelope: WorkspaceEnvelope) {
+    return serializeWorkspaceDocument(envelope);
+}
+
+function persistWorkspaceEnvelopeSnapshot(
+    transaction: Transaction,
+    docRef: DocumentReference<DocumentData>,
+    envelope: WorkspaceEnvelope
+) {
+    const compactedEnvelope = compactWorkspaceEnvelopeForStorage(envelope);
+    transaction.set(docRef, toWorkspaceDocument(compactedEnvelope), { merge: false });
+    return compactedEnvelope;
 }
 
 function fromWorkspaceSnapshot(userId: string, raw: unknown) {
@@ -900,8 +1041,8 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
                 actorEmail: input.actorEmail
             });
 
-            transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
-            committedEnvelope = nextEnvelope;
+            const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
+            committedEnvelope = persistedEnvelope;
         });
     } catch (error) {
         if (error instanceof WorkspaceRevisionConflictError) {
@@ -955,8 +1096,8 @@ export async function saveWorkspaceByUserId(userId: string, projects: Project[])
             projects,
             summary: "Workspace synchronized from a trusted server mutation."
         });
-        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
-        committedEnvelope = nextEnvelope;
+        const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
+        committedEnvelope = persistedEnvelope;
     });
 
     return committedEnvelope;
@@ -998,8 +1139,8 @@ export async function setWorkspaceTenantByUserId(input: {
             actorId: input.actorId,
             actorEmail: input.actorEmail
         });
-        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
-        committedEnvelope = nextEnvelope;
+        const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
+        committedEnvelope = persistedEnvelope;
         changed = true;
     });
 
@@ -1076,7 +1217,7 @@ export async function markProjectPaidInWorkspace(userId: string, projectId: stri
             summary: `Marked project ${projectId} as paid.`,
             kind: "payment_update"
         });
-        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
+        persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
     });
 
     if (touched) {
@@ -1154,8 +1295,8 @@ export async function updateProjectVersionInWorkspaceByUserId(input: {
             actorId: input.actorId,
             actorEmail: input.actorEmail
         });
-        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
-        committedEnvelope = nextEnvelope;
+        const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
+        committedEnvelope = persistedEnvelope;
     });
 
     if (!touched) return null;
@@ -1208,7 +1349,7 @@ export async function createWorkspaceReleaseTagByUserId(input: {
             approvedAt: null
         });
         nextRelease = taggedEnvelope.releaseTags[0] ?? null;
-        transaction.set(docRef, toWorkspaceDocument(taggedEnvelope), { merge: false });
+        persistWorkspaceEnvelopeSnapshot(transaction, docRef, taggedEnvelope);
     });
 
     const createdRelease = nextRelease as ReleaseTag | null;
@@ -1274,8 +1415,8 @@ export async function updateWorkspaceReleaseApprovalByUserId(input: {
             releaseTags: nextReleaseTags,
             updatedAt: now
         };
-        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
-        updatedEnvelope = nextEnvelope;
+        const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
+        updatedEnvelope = persistedEnvelope;
     });
 
     if (!updatedRelease || !updatedEnvelope) return null;
@@ -1378,14 +1519,14 @@ export async function rollbackWorkspaceReleaseTagByUserId(input: {
             actorEmail: input.actorEmail
         });
 
-        transaction.set(docRef, toWorkspaceDocument(nextEnvelope), { merge: false });
+        const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
         rollbackResult = {
             ok: true,
             release,
-            envelope: nextEnvelope,
-            restoredRevision: nextEnvelope.revision,
-            restoredSnapshotId: nextEnvelope.snapshots[0]?.id || "",
-            projectCount: nextEnvelope.projects.length
+            envelope: persistedEnvelope,
+            restoredRevision: persistedEnvelope.revision,
+            restoredSnapshotId: persistedEnvelope.snapshots[0]?.id || "",
+            projectCount: persistedEnvelope.projects.length
         };
     });
 

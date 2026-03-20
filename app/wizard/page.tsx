@@ -5214,7 +5214,12 @@ function WizardContent() {
 
         const refreshProjectFromRemote = async (localProjects: Project[], background = false) => {
             try {
-                const remoteProjects = await prefetchWorkspaceRemote();
+                const remoteProjects = await prefetchWorkspaceRemote({
+                    projectId,
+                    includeWorkspace: false,
+                    includeSnapshotProjects: false,
+                    mergeProjectScopedResult: true
+                });
                 const nextProjects = remoteProjects ?? readProjectsFromLocalStorage();
                 const localProject = localProjects.find((candidate) => candidate.id === projectId) ?? null;
                 const localVersion = localProject ? resolveProjectVersionForWizard(localProject, versionId) : null;

@@ -33,6 +33,20 @@ export type WorkspaceSyncResult =
         message: string;
     };
 
+export type PrefetchWorkspaceRemoteOptions = {
+    projectId?: string | null;
+    includeWorkspace?: boolean;
+    includeSnapshotProjects?: boolean;
+    mergeProjectScopedResult?: boolean;
+};
+
+type NormalizedPrefetchWorkspaceRemoteOptions = {
+    projectId: string | null;
+    includeWorkspace: boolean;
+    includeSnapshotProjects: boolean;
+    mergeProjectScopedResult: boolean;
+};
+
 const CACHE_KEY = "__fc_workspace_cache";
 const PERSISTED_LOCAL_KEY = "__fc_workspace_envelope_v1";
 const LEGACY_PROJECTS_KEY = "__fc_workspace_projects_v1";
@@ -40,8 +54,8 @@ const LEGACY_FOUNDERS_KEY = "fl_projects_v2";
 const REMOTE_FETCH_TTL_MS = 30_000;
 const LOCAL_OWNER_USER_ID = "__local__";
 
-let remoteFetchPromise: Promise<Project[] | null> | null = null;
-let lastRemoteFetchAt = 0;
+const remoteFetchPromises = new Map<string, Promise<Project[] | null>>();
+const lastRemoteFetchAtByKey = new Map<string, number>();
 
 type WorkspaceWindow = Window & {
     [CACHE_KEY]?: WorkspaceCache;
@@ -50,6 +64,67 @@ type WorkspaceWindow = Window & {
 function getWorkspaceWindow(): WorkspaceWindow | null {
     if (typeof window === "undefined") return null;
     return window as WorkspaceWindow;
+}
+
+function normalizePrefetchWorkspaceOptions(
+    input?: PrefetchWorkspaceRemoteOptions
+): NormalizedPrefetchWorkspaceRemoteOptions {
+    const projectId = typeof input?.projectId === "string" && input.projectId.trim()
+        ? input.projectId.trim()
+        : null;
+    return {
+        projectId,
+        includeWorkspace: input?.includeWorkspace !== false,
+        includeSnapshotProjects: input?.includeSnapshotProjects !== false,
+        mergeProjectScopedResult: input?.mergeProjectScopedResult !== false
+    };
+}
+
+function buildRemoteFetchKey(options: NormalizedPrefetchWorkspaceRemoteOptions) {
+    return [
+        options.projectId || "*",
+        options.includeWorkspace ? "workspace:1" : "workspace:0",
+        options.includeSnapshotProjects ? "snapshot:1" : "snapshot:0",
+        options.mergeProjectScopedResult ? "merge:1" : "merge:0"
+    ].join("|");
+}
+
+function buildRemoteFetchUrl(options: NormalizedPrefetchWorkspaceRemoteOptions) {
+    const searchParams = new URLSearchParams();
+    if (options.projectId) {
+        searchParams.set("projectId", options.projectId);
+    }
+    if (!options.includeWorkspace) {
+        searchParams.set("includeWorkspace", "0");
+    }
+    if (!options.includeSnapshotProjects) {
+        searchParams.set("includeSnapshotProjects", "0");
+    }
+    const query = searchParams.toString();
+    return query ? `/api/workspace?${query}` : "/api/workspace";
+}
+
+function mergeProjectScopedProjects(currentProjects: Project[], remoteProjects: Project[], projectId: string): Project[] {
+    const remoteProject = remoteProjects.find((project) => project.id === projectId);
+    const merged: Project[] = [];
+    let replaced = false;
+
+    for (const project of currentProjects) {
+        if (project.id === projectId) {
+            replaced = true;
+            if (remoteProject) {
+                merged.push(remoteProject);
+            }
+            continue;
+        }
+        merged.push(project);
+    }
+
+    if (!replaced && remoteProject) {
+        merged.unshift(remoteProject);
+    }
+
+    return merged;
 }
 
 function getCache(): WorkspaceCache | null {
@@ -186,16 +261,20 @@ export function primeWorkspaceCache(projectId?: string | null): Project | null {
     return getCachedProject(projectId);
 }
 
-export async function prefetchWorkspaceRemote(): Promise<Project[] | null> {
+export async function prefetchWorkspaceRemote(input?: PrefetchWorkspaceRemoteOptions): Promise<Project[] | null> {
     if (typeof window === "undefined") return null;
+    const options = normalizePrefetchWorkspaceOptions(input);
+    const fetchKey = buildRemoteFetchKey(options);
 
     const now = Date.now();
-    if (remoteFetchPromise) return remoteFetchPromise;
+    const existingPromise = remoteFetchPromises.get(fetchKey);
+    if (existingPromise) return existingPromise;
+    const lastRemoteFetchAt = lastRemoteFetchAtByKey.get(fetchKey) ?? 0;
     if (now - lastRemoteFetchAt < REMOTE_FETCH_TTL_MS) return null;
 
-    remoteFetchPromise = (async () => {
+    const remoteFetchPromise = (async () => {
         try {
-            const res = await fetch("/api/workspace", { cache: "no-store" });
+            const res = await fetch(buildRemoteFetchUrl(options), { cache: "no-store" });
             if (!res.ok) return null;
             const data = (await res.json()) as {
                 projects?: Project[];
@@ -203,20 +282,31 @@ export async function prefetchWorkspaceRemote(): Promise<Project[] | null> {
             };
             if (data.workspace) {
                 writeWorkspaceEnvelopeToLocalStorage(data.workspace);
-                lastRemoteFetchAt = Date.now();
+                lastRemoteFetchAtByKey.set(fetchKey, Date.now());
                 return data.workspace.projects;
             }
             if (!Array.isArray(data.projects)) return null;
+            if (options.projectId && options.mergeProjectScopedResult) {
+                const mergedProjects = mergeProjectScopedProjects(
+                    readProjectsFromLocalStorage(),
+                    data.projects,
+                    options.projectId
+                );
+                writeProjectsToLocalStorage(mergedProjects);
+                lastRemoteFetchAtByKey.set(fetchKey, Date.now());
+                return mergedProjects;
+            }
             writeProjectsToLocalStorage(data.projects);
-            lastRemoteFetchAt = Date.now();
+            lastRemoteFetchAtByKey.set(fetchKey, Date.now());
             return data.projects;
         } catch {
             return null;
         } finally {
-            remoteFetchPromise = null;
+            remoteFetchPromises.delete(fetchKey);
         }
     })();
 
+    remoteFetchPromises.set(fetchKey, remoteFetchPromise);
     return remoteFetchPromise;
 }
 
@@ -257,10 +347,24 @@ export async function syncWorkspaceProjectsRemote(
             };
         }
 
+        const payloadError = typeof payload?.error === "string" ? payload.error : null;
+        const payloadDetails = typeof payload?.details === "string" ? payload.details : null;
+        if (res.status === 413 && payload?.code === "WORKSPACE_PAYLOAD_TOO_LARGE") {
+            return {
+                ok: false,
+                conflict: false,
+                message: payloadDetails
+                    ? `${payloadError || "Workspace payload too large."} ${payloadDetails}`
+                    : payloadError || "Workspace payload too large."
+            };
+        }
+
         return {
             ok: false,
             conflict: false,
-            message: typeof payload?.error === "string" ? payload.error : "Failed to sync workspace."
+            message: payloadDetails
+                ? `${payloadError || "Failed to sync workspace."} ${payloadDetails}`
+                : payloadError || "Failed to sync workspace."
         };
     } catch (error) {
         return {
