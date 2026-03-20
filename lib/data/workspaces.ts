@@ -9,6 +9,7 @@ import {
     createNextWorkspaceEnvelope,
     normalizeWorkspaceEnvelope
 } from "@/lib/workspace-envelope";
+import { normalizeProjects } from "@/lib/project-language";
 import type {
     AcceptanceCase,
     Attachment,
@@ -216,6 +217,14 @@ function workspacesCollection() {
 
 function uniqueIds(values: string[]) {
     return Array.from(new Set(values.filter(Boolean)));
+}
+
+function areProjectListsEquivalent(left: Project[], right: Project[]) {
+    try {
+        return JSON.stringify(normalizeProjects(left)) === JSON.stringify(normalizeProjects(right));
+    } catch {
+        return false;
+    }
 }
 
 function diffIds(source: string[], compareTo: string[]) {
@@ -1201,6 +1210,7 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
 }): Promise<WorkspaceSaveConflict | WorkspaceSaveSuccess> {
     const docRef = workspacesCollection().doc(input.userId);
     let committedEnvelope: WorkspaceEnvelope | null = null;
+    let didPersistMutation = false;
 
     try {
         await adminDb.runTransaction(async (transaction) => {
@@ -1210,6 +1220,10 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
                 : createEmptyWorkspaceEnvelope(input.userId, input.tenantId ?? null);
 
             if (currentEnvelope.revision !== input.expectedRevision) {
+                if (areProjectListsEquivalent(currentEnvelope.projects, input.projects)) {
+                    committedEnvelope = currentEnvelope;
+                    return;
+                }
                 throw new WorkspaceRevisionConflictError(currentEnvelope);
             }
 
@@ -1223,6 +1237,7 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
 
             const persistedEnvelope = persistWorkspaceEnvelopeSnapshot(transaction, docRef, nextEnvelope);
             committedEnvelope = persistedEnvelope;
+            didPersistMutation = true;
         });
     } catch (error) {
         if (error instanceof WorkspaceRevisionConflictError) {
@@ -1239,6 +1254,13 @@ export async function saveWorkspaceEnvelopeByUserId(input: {
         throw new Error("Workspace save completed without a committed envelope.");
     }
     const savedEnvelope = committedEnvelope as WorkspaceEnvelope;
+
+    if (!didPersistMutation) {
+        return {
+            ok: true,
+            envelope: savedEnvelope
+        };
+    }
 
     await recordAuditEvent({
         eventType: "workspace.saved",

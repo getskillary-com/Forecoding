@@ -59,6 +59,8 @@ const PERSISTED_LOCAL_KEY = "__fc_workspace_envelope_v1";
 const LEGACY_PROJECTS_KEY = "__fc_workspace_projects_v1";
 const LEGACY_FOUNDERS_KEY = "fl_projects_v2";
 const REMOTE_FETCH_TTL_MS = 30_000;
+const WORKSPACE_CONFLICT_MAX_RETRIES = 4;
+const WORKSPACE_CONFLICT_RETRY_BASE_DELAY_MS = 120;
 const LOCAL_OWNER_USER_ID = "__local__";
 
 const remoteFetchPromises = new Map<string, Promise<Project[] | null>>();
@@ -157,6 +159,20 @@ function normalizeUpdatedAt(value: unknown, fallback: number): number {
 
 function mergeProjectsPreservingLocalProgress(remoteProjects: Project[], localProjects: Project[]): Project[] {
     return mergeProjectsForConflictRetry(remoteProjects, localProjects);
+}
+
+function areProjectsEquivalent(left: Project[], right: Project[]): boolean {
+    try {
+        return JSON.stringify(normalizeProjects(left)) === JSON.stringify(normalizeProjects(right));
+    } catch {
+        return false;
+    }
+}
+
+function delay(ms: number) {
+    return new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
 }
 
 function writeProjectsEnvelopeFromRemote(
@@ -412,98 +428,103 @@ async function performWorkspaceProjectsSync(
 ): Promise<WorkspaceSyncResult> {
     const current = readWorkspaceEnvelopeFromLocalStorage();
     const changeSummary = input?.changeSummary || "Workspace update";
+    let nextExpectedRevision = current.revision;
+    let nextProjects = normalizeProjects(projects);
+    let lastConflictWorkspace: WorkspaceEnvelope | null = null;
 
     try {
-        const res = await fetch("/api/workspace", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                projects,
-                expectedRevision: current.revision,
-                changeSummary
-            })
-        });
-
-        const payload = await res.json().catch(() => null);
-        if (res.ok && payload?.workspace) {
-            writeWorkspaceEnvelopeToLocalStorage(payload.workspace as WorkspaceEnvelope);
-            return {
-                ok: true,
-                revision: typeof payload.revision === "number" ? payload.revision : current.revision,
-                workspace: payload.workspace as WorkspaceEnvelope
-            };
-        }
-
-        if (res.status === 409 && payload?.workspace) {
-            const serverWorkspace = payload.workspace as WorkspaceEnvelope;
-            const rebasedProjects = mergeProjectsForConflictRetry(serverWorkspace.projects, projects);
-            const retryRes = await fetch("/api/workspace", {
+        for (let attempt = 0; attempt <= WORKSPACE_CONFLICT_MAX_RETRIES; attempt += 1) {
+            const res = await fetch("/api/workspace", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    projects: rebasedProjects,
-                    expectedRevision: serverWorkspace.revision,
+                    projects: nextProjects,
+                    expectedRevision: nextExpectedRevision,
                     changeSummary
                 })
             });
-            const retryPayload = await retryRes.json().catch(() => null);
-            if (retryRes.ok && retryPayload?.workspace) {
-                writeWorkspaceEnvelopeToLocalStorage(retryPayload.workspace as WorkspaceEnvelope);
+            const payload = await res.json().catch(() => null);
+
+            if (res.ok && payload?.workspace) {
+                writeWorkspaceEnvelopeToLocalStorage(payload.workspace as WorkspaceEnvelope);
                 return {
                     ok: true,
-                    revision: typeof retryPayload.revision === "number" ? retryPayload.revision : serverWorkspace.revision,
-                    workspace: retryPayload.workspace as WorkspaceEnvelope
+                    revision: typeof payload.revision === "number" ? payload.revision : nextExpectedRevision,
+                    workspace: payload.workspace as WorkspaceEnvelope
                 };
             }
-            if (retryRes.status === 409 && retryPayload?.workspace) {
-                const retryWorkspace = retryPayload.workspace as WorkspaceEnvelope;
-                const mergedConflictProjects = mergeProjectsForConflictRetry(retryWorkspace.projects, rebasedProjects);
+
+            if (res.status === 409 && payload?.workspace) {
+                const serverWorkspace = payload.workspace as WorkspaceEnvelope;
+
+                if (areProjectsEquivalent(serverWorkspace.projects, nextProjects)) {
+                    writeWorkspaceEnvelopeToLocalStorage(serverWorkspace);
+                    return {
+                        ok: true,
+                        revision: typeof payload.revision === "number" ? payload.revision : serverWorkspace.revision,
+                        workspace: serverWorkspace
+                    };
+                }
+
+                const rebasedProjects = mergeProjectsForConflictRetry(serverWorkspace.projects, nextProjects);
                 const mergedConflictWorkspace: WorkspaceEnvelope = {
-                    ...retryWorkspace,
-                    projects: mergedConflictProjects
+                    ...serverWorkspace,
+                    projects: rebasedProjects
                 };
                 writeWorkspaceEnvelopeToLocalStorage(mergedConflictWorkspace);
+                lastConflictWorkspace = mergedConflictWorkspace;
+                nextProjects = rebasedProjects;
+                nextExpectedRevision = serverWorkspace.revision;
+
+                if (attempt < WORKSPACE_CONFLICT_MAX_RETRIES) {
+                    await delay(WORKSPACE_CONFLICT_RETRY_BASE_DELAY_MS * (attempt + 1));
+                    continue;
+                }
+
                 return {
                     ok: false,
                     conflict: true,
                     message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
-                    revision: typeof retryPayload.revision === "number" ? retryPayload.revision : retryWorkspace.revision,
+                    revision: typeof payload.revision === "number" ? payload.revision : serverWorkspace.revision,
                     workspace: mergedConflictWorkspace
                 };
             }
-            const mergedFallbackProjects = mergeProjectsForConflictRetry(serverWorkspace.projects, rebasedProjects);
-            const mergedFallbackWorkspace: WorkspaceEnvelope = {
-                ...serverWorkspace,
-                projects: mergedFallbackProjects
-            };
-            writeWorkspaceEnvelopeToLocalStorage(mergedFallbackWorkspace);
-            return {
-                ok: false,
-                conflict: true,
-                message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
-                revision: typeof payload.revision === "number" ? payload.revision : serverWorkspace.revision,
-                workspace: mergedFallbackWorkspace
-            };
-        }
 
-        const payloadError = typeof payload?.error === "string" ? payload.error : null;
-        const payloadDetails = typeof payload?.details === "string" ? payload.details : null;
-        if (res.status === 413 && payload?.code === "WORKSPACE_PAYLOAD_TOO_LARGE") {
+            const payloadError = typeof payload?.error === "string" ? payload.error : null;
+            const payloadDetails = typeof payload?.details === "string" ? payload.details : null;
+            if (res.status === 413 && payload?.code === "WORKSPACE_PAYLOAD_TOO_LARGE") {
+                return {
+                    ok: false,
+                    conflict: false,
+                    message: payloadDetails
+                        ? `${payloadError || "Workspace payload too large."} ${payloadDetails}`
+                        : payloadError || "Workspace payload too large."
+                };
+            }
+
             return {
                 ok: false,
                 conflict: false,
                 message: payloadDetails
-                    ? `${payloadError || "Workspace payload too large."} ${payloadDetails}`
-                    : payloadError || "Workspace payload too large."
+                    ? `${payloadError || "Failed to sync workspace."} ${payloadDetails}`
+                    : payloadError || "Failed to sync workspace."
+            };
+        }
+
+        if (lastConflictWorkspace) {
+            return {
+                ok: false,
+                conflict: true,
+                message: "Workspace save blocked by a newer revision. Refresh and reconcile before retrying.",
+                revision: lastConflictWorkspace.revision,
+                workspace: lastConflictWorkspace
             };
         }
 
         return {
             ok: false,
             conflict: false,
-            message: payloadDetails
-                ? `${payloadError || "Failed to sync workspace."} ${payloadDetails}`
-                : payloadError || "Failed to sync workspace."
+            message: "Failed to sync workspace."
         };
     } catch (error) {
         return {
