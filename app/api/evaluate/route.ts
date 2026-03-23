@@ -1,7 +1,9 @@
 
 import { NextResponse } from "next/server";
-import { getActiveAiProvider, streamEvaluateInput } from "@/lib/gemini";
+import { getActiveAiProvider, streamEvaluateInput, generateExtractionResult, buildMandatoryCaptureBlock } from "@/lib/gemini";
+import { QUESTIONER_SYSTEM_PROMPT } from "@/lib/prompts";
 import { validateEvaluateSseEvent } from "@/lib/evaluate-sse";
+import { createReadinessChecklist, normalizeArchitecturePack, normalizeDecisionRecords, normalizeGuardrailChecklist } from "@/lib/architecture";
 import type {
     Attachment,
     EvaluateAnalysisDeltaEvent,
@@ -605,6 +607,7 @@ async function* streamWithTimeGuards(
         diagramPolicy?: string;
         outputLanguage?: "zh" | "en";
         interactionMode?: EvaluateInteractionMode;
+        baseSystemPrompt?: string;
     }
 ) {
     const iterator = streamEvaluateInput(messages, contextText, {
@@ -614,7 +617,8 @@ async function* streamWithTimeGuards(
         designMemory: options?.designMemory,
         diagramPolicy: options?.diagramPolicy,
         outputLanguage: options?.outputLanguage,
-        interactionMode: options?.interactionMode
+        interactionMode: options?.interactionMode,
+        baseSystemPrompt: options?.baseSystemPrompt
     })[Symbol.asyncIterator]();
     try {
         while (true) {
@@ -878,6 +882,49 @@ export async function POST(req: Request) {
                     safeEnqueue(": ping\n\n");
                 }, EVALUATE_STREAM_HEARTBEAT_MS);
 
+                // Dual-LLM: Phase 1 extraction for architecture mode
+                let questionerBaseSystemPrompt: string | undefined;
+                if (normalizedInteractionMode === "architecture") {
+                    try {
+                        emitTraceEvent({ kind: "start", requestId, source: "system", note: "Extractor phase started." });
+                        const extraction = await generateExtractionResult({
+                            messages: messages as Message[],
+                            designMemory: designMemoryText,
+                            context: contextText,
+                            outputLanguage: responseLanguage
+                        });
+                        if (extraction && (extraction.architecturePackRaw || extraction.decisionRecordsRaw || extraction.guardrailsRaw)) {
+                            // Emit architecture data immediately to client
+                            const syntheticOutput = [
+                                extraction.architecturePackRaw ? `<architecture_pack>${extraction.architecturePackRaw}</architecture_pack>` : "",
+                                extraction.decisionRecordsRaw ? `<decision_records>${extraction.decisionRecordsRaw}</decision_records>` : "",
+                                extraction.guardrailsRaw ? `<guardrails>${extraction.guardrailsRaw}</guardrails>` : ""
+                            ].join("");
+                            if (syntheticOutput) {
+                                emitTraceChunk(syntheticOutput, "model");
+                            }
+                            // Run code-side readiness evaluation
+                            try {
+                                const tryParseJson = (raw: string) => { try { return JSON.parse(raw); } catch { return null; } };
+                                const pack = normalizeArchitecturePack(tryParseJson(extraction.architecturePackRaw));
+                                const decisions = normalizeDecisionRecords(tryParseJson(extraction.decisionRecordsRaw));
+                                const guardrails = normalizeGuardrailChecklist(tryParseJson(extraction.guardrailsRaw));
+                                const readiness = createReadinessChecklist(pack, decisions, guardrails, []);
+                                const mandatoryCapture = buildMandatoryCaptureBlock(readiness, responseLanguage);
+                                questionerBaseSystemPrompt = mandatoryCapture
+                                    ? `${QUESTIONER_SYSTEM_PROMPT}${mandatoryCapture}`
+                                    : undefined;
+                                console.log(`[evaluate][${requestId}] extractionPhase ok pendingCount=${readiness.criteria.flatMap(c => c.requirements).filter(r => r.status === "missing" || r.status === "partial").length} hasMandate=${Boolean(mandatoryCapture)}`);
+                            } catch (readinessError) {
+                                console.warn(`[evaluate][${requestId}] readiness eval failed after extraction:`, readinessError);
+                            }
+                        }
+                        emitTraceEvent({ kind: "start", requestId, source: "system", note: "Questioner phase started." });
+                    } catch (extractionError) {
+                        console.warn(`[evaluate][${requestId}] extraction phase error (continuing single-LLM):`, extractionError);
+                    }
+                }
+
                 try {
                     for await (const chunk of streamWithTimeGuards(
                         messages as Message[],
@@ -888,7 +935,8 @@ export async function POST(req: Request) {
                             designMemory: designMemoryText,
                             diagramPolicy: normalizedDiagramPolicy,
                             outputLanguage: responseLanguage,
-                            interactionMode: normalizedInteractionMode
+                            interactionMode: normalizedInteractionMode,
+                            baseSystemPrompt: questionerBaseSystemPrompt
                         }
                     )) {
                         emitTraceChunk(chunk, "model");

@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { CTO_SYSTEM_PROMPT, GENERAL_CHAT_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
+import { CTO_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, GENERAL_CHAT_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, MAINTENANCE_PROMPT_ADDITION } from "./prompts";
 import type {
     ExportContentKind,
     GenerationManifest,
@@ -12,6 +12,7 @@ import type {
     PhasePlan,
     PreflightIssue,
     PreflightReport,
+    ReadinessChecklist,
     RuntimeReadiness,
     SpecPackProfile,
     StructuredGenerationContext,
@@ -90,6 +91,9 @@ const GEMINI_API_KEY = readEnvString("GEMINI_API_KEY");
 const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 const GEMINI_MODEL = readEnvString("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
 const GEMINI_BACKUP_MODEL = readEnvString("GEMINI_BACKUP_MODEL", GEMINI_MODEL).trim() || GEMINI_MODEL;
+const DEFAULT_GEMINI_EXTRACTOR_MODEL = "gemini-2.0-flash-001";
+const GEMINI_EXTRACTOR_MODEL = readEnvString("GEMINI_EXTRACTOR_MODEL", DEFAULT_GEMINI_EXTRACTOR_MODEL).trim() || DEFAULT_GEMINI_EXTRACTOR_MODEL;
+const EXTRACTION_TIMEOUT_MS = 10_000;
 const GEMINI_CORE_COOLDOWN_MS = readEnvNumber("GEMINI_CORE_COOLDOWN_MS", 180000);
 const GEMINI_STREAM_OPEN_MAX_ATTEMPTS = Math.min(
     4,
@@ -1260,6 +1264,74 @@ async function generateModelText(prompt: string, isJsonMode: boolean = false) {
     return result.response.text();
 }
 
+function extractXmlSection(output: string, tag: string): string {
+    const regex = new RegExp(`<${tag}>([\\s\\S]*?)(?:<\\/${tag}>|$)`, "i");
+    return output.match(regex)?.[1]?.trim() ?? "";
+}
+
+/**
+ * Build the MANDATORY CAPTURE block injected into the Questioner's system prompt.
+ * Returns an empty string when all requirements are satisfied (canGenerate = true).
+ */
+export function buildMandatoryCaptureBlock(readiness: ReadinessChecklist, outputLanguage: OutputLanguage = "en"): string {
+    for (const criterion of readiness.criteria) {
+        for (const req of criterion.requirements) {
+            if (req.status !== "missing" && req.status !== "partial") continue;
+            const missingDesc = req.missing[0] ?? `Collect: ${req.label}`;
+            if (outputLanguage === "zh") {
+                return `\n\n# 必须收集的需求项（MANDATORY CAPTURE）\n需求键: ${req.key}\n名称: ${req.label}\n当前: ${req.satisfiedCount} / ${req.requiredCount}\n缺失描述: ${missingDesc}\n状态: ${req.status}\n你必须围绕这一项提问。不得偏离到其他主题。`;
+            }
+            return `\n\n# MANDATORY CAPTURE\nRequirement: ${req.key}\nLabel: ${req.label}\nCurrent: ${req.satisfiedCount} / ${req.requiredCount}\nWhat to collect: ${missingDesc}\nStatus: ${req.status}\nYou MUST ask about this requirement. Do not move to any other topic.`;
+        }
+    }
+    return "";
+}
+
+/**
+ * Call the fast extractor model to extract/update architecture data from the conversation.
+ * Returns raw XML section strings for architecture_pack, decision_records, and guardrails.
+ * Returns null if Gemini is not configured or extraction fails (caller falls back to single-LLM).
+ */
+export async function generateExtractionResult(input: {
+    messages: Message[];
+    designMemory?: string;
+    context?: string;
+    outputLanguage?: OutputLanguage;
+}): Promise<{ architecturePackRaw: string; decisionRecordsRaw: string; guardrailsRaw: string } | null> {
+    const client = getGeminiClient();
+    if (!client) return null;
+
+    const recentMessages = (input.messages as Message[]).slice(-12);
+    const designBlock = input.designMemory
+        ? `\n\n# Current Architecture State\n${input.designMemory.slice(0, 8000)}`
+        : "";
+    const languageBlock = input.outputLanguage === "zh"
+        ? "\n\n# Language\nKeep all JSON field names in English. Values may be in the user's language."
+        : "\n\n# Language\nKeep all JSON field names and values in English.";
+    const systemInstruction = `${EXTRACTOR_SYSTEM_PROMPT}${designBlock}${languageBlock}\n\nExtract from the conversation above.`;
+
+    const contents = buildGeminiContents(recentMessages);
+    const model = client.getGenerativeModel({ model: GEMINI_EXTRACTOR_MODEL, systemInstruction });
+
+    try {
+        const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("extraction timeout")), EXTRACTION_TIMEOUT_MS)
+        );
+        const resultPromise = model.generateContent({ contents });
+        const result = await Promise.race([resultPromise, timeoutPromise]) as Awaited<typeof resultPromise>;
+        const output = result.response.text() ?? "";
+        console.log(`[AI][Extractor] extraction complete chars=${output.length}`);
+        return {
+            architecturePackRaw: extractXmlSection(output, "architecture_pack"),
+            decisionRecordsRaw: extractXmlSection(output, "decision_records"),
+            guardrailsRaw: extractXmlSection(output, "guardrails")
+        };
+    } catch (error) {
+        console.warn("[AI][Extractor] extraction failed:", error instanceof Error ? error.message : String(error));
+        return null;
+    }
+}
+
 /**
  * 1. Evaluate Input (Chat) - Streaming Version
  * Used for the real-time chat interface.
@@ -1272,6 +1344,7 @@ type EvaluateRuntimeOptions = {
     diagramPolicy?: string;
     outputLanguage?: OutputLanguage;
     interactionMode?: "chat" | "architecture";
+    baseSystemPrompt?: string;
 };
 
 export async function* streamEvaluateInput(
@@ -1320,9 +1393,8 @@ export async function* streamEvaluateInput(
             : `\n\n# Output Contract Enforcement\nYou are using a streaming channel with strict XML parsing. You MUST always include one complete <question> block and one complete <options> block before ending the response.\n- Start <question> early in the stream. Do not wait for hidden sync blocks or later JSON sections before opening it.\n- Inside <question>, emit short complete lines and let the visible answer grow progressively line by line.\n- Never omit <question>, even if architecture is already clear.\n- If no clarification is strictly required, use <question> to state the recommended next step and ask the user for a light confirmation.\n- Open <options> immediately after the visible <question> text is complete. Do not wait for hidden sync blocks or readiness sections.\n- In <options>, each line may use either "Label::Reply" or "Label::Reply::action_name". Use explicit actions whenever a button should directly trigger a known workflow such as generate_scaffold, open_prd, fill_requirement, focus_requirement, or show_blockers.\n- If options are uncertain, still include 3-4 concise options in the required format.\n- Hidden analysis blocks may continue after <options>, but the response is incomplete until both <question> and <options> are present.`
         : "";
 
-    const basePrompt = interactionMode === "chat"
-        ? GENERAL_CHAT_SYSTEM_PROMPT
-        : CTO_SYSTEM_PROMPT;
+    const basePrompt = options?.baseSystemPrompt
+        || (interactionMode === "chat" ? GENERAL_CHAT_SYSTEM_PROMPT : CTO_SYSTEM_PROMPT);
     const systemInstructionText = `${basePrompt}${structureBlock}${sourceEvidenceBlock}${designMemoryBlock}${diagramStabilityBlock}${coachModeBlock}${responseLanguageBlock}${providerOutputContractBlock}\n\nAnalyze the latest user message and conversation history. Respond in the required XML format.`;
 
     try {

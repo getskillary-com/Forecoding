@@ -121,7 +121,7 @@ function countPendingRequirements(statuses: Partial<Record<ReadinessRequirementK
     return pending;
 }
 
-function getPrimaryPendingRequirementKey(readiness: ReadinessChecklist): ReadinessRequirementKey | null {
+export function getPrimaryPendingRequirementKey(readiness: ReadinessChecklist): ReadinessRequirementKey | null {
     for (const criterion of readiness.criteria) {
         for (const requirement of criterion.requirements) {
             if (requirement.status === "missing" || requirement.status === "partial") {
