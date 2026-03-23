@@ -5045,15 +5045,15 @@ function WizardContent() {
         guardrailChecklist: workingArchitectureState.guardrailChecklist,
         readinessOverrides
     });
-    const activeUnifiedProgress = normalizeUnifiedProgressState(currentVersion?.data.unifiedProgressState)
-        || buildProgressProjectionFromReadiness({
-            readiness: workingScaffoldEligibility.readiness,
-            prdDeltas,
-            currentFocus: workingScaffoldEligibility.readiness.nextMilestone,
-            stage: workingArchitectureState.stage,
-            progressEvents: progressEventsRef.current,
-            templateVersion: currentVersion?.data.progressTemplateVersion
-        }).unifiedProgressState;
+    const activeUnifiedProgress = buildProgressProjectionFromReadiness({
+        readiness: workingScaffoldEligibility.readiness,
+        prdDeltas,
+        currentFocus: normalizeUnifiedProgressState(currentVersion?.data.unifiedProgressState)?.currentFocus
+            || workingScaffoldEligibility.readiness.nextMilestone,
+        stage: workingArchitectureState.stage,
+        progressEvents: progressEventsRef.current,
+        templateVersion: currentVersion?.data.progressTemplateVersion
+    }).unifiedProgressState;
     const computedReadinessBlockers = buildReadinessBlockingReasons(workingScaffoldEligibility.readiness);
     const generationReady = activeUnifiedProgress.canGenerate;
     const activeScaffoldEligibility = workingScaffoldEligibility;
