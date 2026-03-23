@@ -56,12 +56,16 @@ env:
     value: "gemini"
     availability:
       - RUNTIME
-  - variable: GEMINI_MODEL
+  - variable: GEMINI_QUESTIONER_MODEL
     value: "gemini-3.1-pro-preview"
     availability:
       - RUNTIME
-  - variable: GEMINI_BACKUP_MODEL
+  - variable: GEMINI_QUESTIONER_BACKUP_MODEL
     value: "gemini-3.1-pro-preview"
+    availability:
+      - RUNTIME
+  - variable: GEMINI_EXTRACTOR_MODEL
+    value: "gemini-2.5-flash-preview-05-20"
     availability:
       - RUNTIME
   - variable: OPENAI_MODEL
