@@ -50,6 +50,7 @@ export default function AccountPage() {
 
     const [isSigningOutAll, setIsSigningOutAll] = useState(false);
     const [securityError, setSecurityError] = useState<string | null>(null);
+    const loginRedirect = "/login?callbackUrl=/account";
 
     useEffect(() => {
         let ignore = false;
@@ -141,14 +142,22 @@ export default function AccountPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ newPassword, confirmNewPassword })
             });
-            const data = (await res.json()) as { error?: string };
+            const data = (await res.json()) as { error?: string; reauthRequired?: boolean };
             if (!res.ok) {
+                if (res.status === 401) {
+                    await signOutUser(`${loginRedirect}&notice=session-expired`);
+                    return;
+                }
                 setPasswordError(data.error || "Failed to change password.");
                 return;
             }
             setNewPassword("");
             setConfirmNewPassword("");
-            setPasswordMessage("Password updated.");
+            setPasswordMessage("Password updated. Redirecting to sign in...");
+            if (data.reauthRequired) {
+                await signOutUser(`${loginRedirect}&notice=password-updated`);
+                return;
+            }
         } catch {
             setPasswordError("Failed to change password.");
         } finally {
@@ -237,6 +246,10 @@ export default function AccountPage() {
             const res = await fetch("/api/account/logout-all", { method: "POST" });
             const data = (await res.json()) as { error?: string };
             if (!res.ok) {
+                if (res.status === 401) {
+                    await signOutUser(`${loginRedirect}&notice=session-expired`);
+                    return;
+                }
                 setSecurityError(data.error || "Failed to sign out all devices.");
                 return;
             }

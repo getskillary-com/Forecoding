@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebase-admin";
-import { getServerUser } from "@/lib/server-auth";
+import { clearSessionCookie, getServerUser } from "@/lib/server-auth";
 import { isValidPassword } from "@/lib/security";
 import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 
@@ -40,6 +40,7 @@ export async function POST(req: Request) {
             password: newPassword,
             emailVerified: true
         });
+        await adminAuth.revokeRefreshTokens(userId);
 
         const existing = await getUserProfileByUid(userId);
         await upsertUserProfile({
@@ -49,10 +50,12 @@ export async function POST(req: Request) {
             image: existing?.image ?? authUser.photoURL ?? null,
             emailVerified: existing?.emailVerified ?? new Date(),
             legacyPasswordResetRequired: false,
-            sessionVersion: existing?.sessionVersion ?? 0
+            sessionVersion: (existing?.sessionVersion ?? 0) + 1
         });
 
-        return NextResponse.json({ ok: true });
+        const res = NextResponse.json({ ok: true, reauthRequired: true });
+        clearSessionCookie(res);
+        return res;
     } catch {
         return NextResponse.json({ error: "Failed to change password." }, { status: 500 });
     }

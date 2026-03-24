@@ -35,6 +35,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     const { beginNavigation } = useNavigationFeedback();
 
     const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+    const notice = searchParams.get("notice");
     const queryFlow = readFlow(searchParams.get("mode"));
     const flow: AuthFlow = initialMode === "register" ? "register" : queryFlow;
     const showDevLogin =
@@ -60,6 +61,19 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         }, 1000);
         return () => window.clearInterval(timer);
     }, [codeCountdown]);
+
+    useEffect(() => {
+        if (notice === "password-updated") {
+            setMessage("Password updated. Sign in again to continue.");
+            setError(null);
+            return;
+        }
+        if (notice === "session-expired") {
+            setMessage("Your session expired. Sign in again to continue.");
+            setError(null);
+            return;
+        }
+    }, [notice]);
 
     const requiresCode = useMemo(() => {
         return flow === "register" || flow === "forgot" || (flow === "login" && loginMethod === "code");

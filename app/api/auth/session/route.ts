@@ -15,7 +15,7 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Missing idToken." }, { status: 400 });
         }
 
-        const decoded = await adminAuth.verifyIdToken(idToken);
+        const decoded = await adminAuth.verifyIdToken(idToken, true);
         if (!decoded.uid) {
             return NextResponse.json({ error: "Invalid token." }, { status: 401 });
         }
