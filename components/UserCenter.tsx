@@ -27,6 +27,7 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
     const displayName = user?.displayName || user?.email || "User";
     const displayEmail = user?.email ?? "";
     const initials = useMemo(() => getInitials(displayName), [displayName]);
+    const avatarStyle = user?.photoURL ? { backgroundImage: `url("${user.photoURL}")` } : undefined;
     const isAuthed = !loading && Boolean(user);
 
     useEffect(() => {
@@ -88,9 +89,17 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
                 aria-haspopup="menu"
                 aria-expanded={isOpen}
             >
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
-                    {initials}
-                </span>
+                {avatarStyle ? (
+                    <span
+                        className="flex h-7 w-7 rounded-full bg-slate-200 bg-cover bg-center bg-no-repeat"
+                        style={avatarStyle}
+                        aria-hidden="true"
+                    />
+                ) : (
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
+                        {initials}
+                    </span>
+                )}
                 <span className="hidden sm:inline font-medium text-gray-800 dark:text-gray-200">User Center</span>
                 <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${isOpen ? "rotate-180" : ""}`} />
             </button>
@@ -101,8 +110,23 @@ export function UserCenter({ className, signOutCallbackUrl = "/" }: UserCenterPr
                     role="menu"
                 >
                     <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-                        <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{displayEmail || "Not signed in"}</p>
+                        <div className="flex items-center gap-3">
+                            {avatarStyle ? (
+                                <span
+                                    className="flex h-10 w-10 shrink-0 rounded-full bg-slate-200 bg-cover bg-center bg-no-repeat"
+                                    style={avatarStyle}
+                                    aria-hidden="true"
+                                />
+                            ) : (
+                                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-semibold text-white">
+                                    {initials}
+                                </span>
+                            )}
+                            <div className="min-w-0">
+                                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{displayEmail || "Not signed in"}</p>
+                            </div>
+                        </div>
                     </div>
 
                     {isAuthed ? (

@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+    GoogleAuthProvider,
     signInWithCustomToken,
-    signInWithEmailAndPassword
+    signInWithEmailAndPassword,
+    signInWithPopup
 } from "firebase/auth";
 import { ArrowLeft, Loader2, Mail, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -15,6 +17,7 @@ import { getFirebaseAuth } from "@/lib/firebase-client";
 type AuthFlow = "login" | "register" | "forgot";
 type LoginMethod = "password" | "code";
 type SendCodePurpose = "register" | "login" | "reset_password";
+type PendingAction = "form" | "google" | "dev";
 const CODE_TTL_SECONDS = 120;
 
 function readFlow(mode: string | null): AuthFlow {
@@ -28,6 +31,54 @@ const inputClassName =
 
 const segmentedButtonBase =
     "rounded-lg px-3 py-2 text-sm text-center transition-colors";
+
+function GoogleIcon({ className = "w-4 h-4" }: { className?: string }) {
+    return (
+        <svg
+            className={className}
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+        >
+            <path
+                fill="#4285F4"
+                d="M21.6 12.23c0-.72-.06-1.25-.2-1.8H12v3.39h5.52c-.11.84-.73 2.1-2.12 2.95l-.02.11 3.05 2.36.21.02c1.92-1.77 3.04-4.37 3.04-7.03Z"
+            />
+            <path
+                fill="#34A853"
+                d="M12 22c2.7 0 4.97-.89 6.63-2.42l-3.16-2.45c-.84.59-1.96 1-3.47 1a6.02 6.02 0 0 1-5.71-4.16l-.1.01-3.17 2.45-.04.09A9.99 9.99 0 0 0 12 22Z"
+            />
+            <path
+                fill="#FBBC05"
+                d="M6.29 13.97A5.97 5.97 0 0 1 5.96 12c0-.68.12-1.34.31-1.97l-.01-.13-3.2-2.49-.1.05A9.98 9.98 0 0 0 2 12c0 1.6.38 3.11 1.06 4.46l3.23-2.49Z"
+            />
+            <path
+                fill="#EA4335"
+                d="M12 5.87c1.9 0 3.18.82 3.91 1.51l2.86-2.79C16.96 2.99 14.7 2 12 2a9.99 9.99 0 0 0-8.94 5.54l3.31 2.57A6.02 6.02 0 0 1 12 5.87Z"
+            />
+        </svg>
+    );
+}
+
+function getGoogleAuthErrorMessage(error: unknown) {
+    const code =
+        typeof error === "object" && error && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "";
+
+    switch (code) {
+        case "auth/popup-closed-by-user":
+        case "auth/cancelled-popup-request":
+            return "Google sign-in was cancelled.";
+        case "auth/popup-blocked":
+            return "Popup was blocked. Allow popups for this site and try again.";
+        case "auth/network-request-failed":
+            return "Network error while signing in with Google.";
+        case "auth/account-exists-with-different-credential":
+            return "This email already exists with another sign-in method.";
+        default:
+            return "Failed to sign in with Google.";
+    }
+}
 
 export default function LoginClient({ initialMode }: { initialMode?: "login" | "register" }) {
     const searchParams = useSearchParams();
@@ -50,9 +101,10 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     const [code, setCode] = useState("");
     const [codeCountdown, setCodeCountdown] = useState(0);
     const [isSendingCode, setIsSendingCode] = useState(false);
-    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [message, setMessage] = useState<string | null>(null);
+    const isBusy = pendingAction !== null;
 
     useEffect(() => {
         if (codeCountdown <= 0) return;
@@ -178,6 +230,27 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         }
     };
 
+    const loginWithGoogle = async () => {
+        setError(null);
+        setMessage(null);
+        setPendingAction("google");
+
+        try {
+            const auth = getFirebaseAuth();
+            const provider = new GoogleAuthProvider();
+            provider.setCustomParameters({ prompt: "select_account" });
+
+            await signInWithPopup(auth, provider);
+            await establishSessionFromCurrentUser();
+            beginNavigation(callbackUrl);
+            router.push(callbackUrl);
+        } catch (nextError) {
+            setError(getGoogleAuthErrorMessage(nextError));
+        } finally {
+            setPendingAction(null);
+        }
+    };
+
     const registerWithCode = async () => {
         const res = await fetch("/api/auth/register", {
             method: "POST",
@@ -218,6 +291,10 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     };
 
     const loginWithDevBypass = async () => {
+        setError(null);
+        setMessage(null);
+        setPendingAction("dev");
+
         try {
             const auth = getFirebaseAuth();
             const res = await fetch("/api/auth/dev-login", {
@@ -237,6 +314,8 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
             router.push(callbackUrl);
         } catch {
             setError("Dev login is unavailable.");
+        } finally {
+            setPendingAction(null);
         }
     };
 
@@ -244,7 +323,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         event.preventDefault();
         setError(null);
         setMessage(null);
-        setIsSubmitting(true);
+        setPendingAction("form");
 
         try {
             if (flow === "login" && loginMethod === "password") {
@@ -261,7 +340,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
             }
             await resetPassword();
         } finally {
-            setIsSubmitting(false);
+            setPendingAction(null);
         }
     };
 
@@ -327,11 +406,31 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                 </h1>
                 <p className="mb-6 text-sm text-slate-500 dark:text-slate-300">
                     {flow === "login"
-                        ? "Use email and password, or switch to email verification code."
+                        ? "Use Google, email and password, or switch to email verification code."
                         : flow === "register"
-                            ? "Enter email, password, and verification code to create your account."
+                            ? "Create your account with Google, or enter email, password, and verification code."
                             : "Use email verification code to set a new password."}
                 </p>
+
+                {flow !== "forgot" && (
+                    <>
+                        <button
+                            type="button"
+                            onClick={() => void loginWithGoogle()}
+                            disabled={isBusy}
+                            className="fc-button-secondary mb-4 flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            {pendingAction === "google" ? <Loader2 className="w-4 h-4 animate-spin" /> : <GoogleIcon />}
+                            {flow === "register" ? "Create account with Google" : "Continue with Google"}
+                        </button>
+
+                        <div className="mb-4 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
+                            <div className="h-px flex-1 bg-[color:var(--border)]" />
+                            <span>Or continue with email</span>
+                            <div className="h-px flex-1 bg-[color:var(--border)]" />
+                        </div>
+                    </>
+                )}
 
                 {flow === "login" && (
                     <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-[color:var(--border)] bg-slate-100/90 p-1 dark:bg-slate-800/80">
@@ -462,19 +561,21 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
 
                     <button
                         type="submit"
-                        disabled={isSubmitting}
+                        disabled={isBusy}
                         className="fc-button-primary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                        {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                        {pendingAction === "form" ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                         {flow === "register" ? "Create account" : flow === "forgot" ? "Reset password" : "Sign in"}
                     </button>
 
                     {showDevLogin && (
                         <button
                             type="button"
+                            disabled={isBusy}
                             onClick={() => void loginWithDevBypass()}
-                            className="fc-button-secondary w-full px-4 py-2.5 text-sm font-semibold"
+                            className="fc-button-secondary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                         >
+                            {pendingAction === "dev" ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                             Dev Login
                         </button>
                     )}

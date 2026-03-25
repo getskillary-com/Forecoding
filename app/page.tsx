@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { UserCenter } from "@/components/UserCenter";
 import { BrandLogo } from "@/components/BrandLogo";
+import { getServerSessionIdentity } from "@/lib/server-auth";
 
 export const metadata: Metadata = {
     title: "Requirements to Architecture Studio"
@@ -57,7 +58,33 @@ const flowSteps = [
 
 const stackTags = ["Requirements Progress", "Architecture Graph", "Spec Pack", "Generation Gate"];
 
-export default function Home() {
+function GoogleIcon({ className = "h-4 w-4" }: { className?: string }) {
+    return (
+        <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+            <path
+                fill="#4285F4"
+                d="M21.6 12.23c0-.72-.06-1.25-.2-1.8H12v3.39h5.52c-.11.84-.73 2.1-2.12 2.95l-.02.11 3.05 2.36.21.02c1.92-1.77 3.04-4.37 3.04-7.03Z"
+            />
+            <path
+                fill="#34A853"
+                d="M12 22c2.7 0 4.97-.89 6.63-2.42l-3.16-2.45c-.84.59-1.96 1-3.47 1a6.02 6.02 0 0 1-5.71-4.16l-.1.01-3.17 2.45-.04.09A9.99 9.99 0 0 0 12 22Z"
+            />
+            <path
+                fill="#FBBC05"
+                d="M6.29 13.97A5.97 5.97 0 0 1 5.96 12c0-.68.12-1.34.31-1.97l-.01-.13-3.2-2.49-.1.05A9.98 9.98 0 0 0 2 12c0 1.6.38 3.11 1.06 4.46l3.23-2.49Z"
+            />
+            <path
+                fill="#EA4335"
+                d="M12 5.87c1.9 0 3.18.82 3.91 1.51l2.86-2.79C16.96 2.99 14.7 2 12 2a9.99 9.99 0 0 0-8.94 5.54l3.31 2.57A6.02 6.02 0 0 1 12 5.87Z"
+            />
+        </svg>
+    );
+}
+
+export default async function Home() {
+    const user = await getServerSessionIdentity();
+    const isAuthed = Boolean(user?.uid);
+
     return (
         <div className="relative min-h-screen overflow-hidden px-4 pb-14 pt-6 sm:px-8">
             <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -69,12 +96,22 @@ export default function Home() {
                 <header className="flex items-center justify-between">
                     <BrandLogo />
                     <div className="flex items-center gap-3">
-                        <Link
-                            href="/dashboard"
-                            className="hidden rounded-xl border border-[color:var(--border)] bg-white/70 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900 md:inline-flex"
-                        >
-                            Dashboard
-                        </Link>
+                        {isAuthed ? (
+                            <Link
+                                href="/dashboard"
+                                className="hidden rounded-xl border border-[color:var(--border)] bg-white/70 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-900 md:inline-flex"
+                            >
+                                Dashboard
+                            </Link>
+                        ) : (
+                            <Link
+                                href="/login?callbackUrl=/dashboard"
+                                className="hidden items-center gap-2 rounded-xl border border-[color:var(--border)] bg-white/85 px-4 py-2 text-sm font-semibold text-slate-800 transition hover:bg-white dark:bg-slate-900/80 dark:text-slate-100 dark:hover:bg-slate-900 md:inline-flex"
+                            >
+                                <GoogleIcon />
+                                Google Sign-In
+                            </Link>
+                        )}
                         <UserCenter />
                     </div>
                 </header>
@@ -94,20 +131,46 @@ export default function Home() {
                         </p>
 
                         <div className="mt-7 flex flex-wrap gap-3">
-                            <Link
-                                href="/dashboard"
-                                className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
-                            >
-                                Start Requirement Session
-                                <ArrowRight className="h-4 w-4" />
-                            </Link>
-                            <Link
-                                href="/demo"
-                                className="fc-button-secondary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
-                            >
-                                View Example Workspace
-                            </Link>
+                            {isAuthed ? (
+                                <>
+                                    <Link
+                                        href="/dashboard"
+                                        className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
+                                    >
+                                        Start Requirement Session
+                                        <ArrowRight className="h-4 w-4" />
+                                    </Link>
+                                    <Link
+                                        href="/demo"
+                                        className="fc-button-secondary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
+                                    >
+                                        View Example Workspace
+                                    </Link>
+                                </>
+                            ) : (
+                                <>
+                                    <Link
+                                        href="/login?callbackUrl=/dashboard"
+                                        className="fc-button-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
+                                    >
+                                        <GoogleIcon />
+                                        Continue with Google
+                                        <ArrowRight className="h-4 w-4" />
+                                    </Link>
+                                    <Link
+                                        href="/demo"
+                                        className="fc-button-secondary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold"
+                                    >
+                                        View Example Workspace
+                                    </Link>
+                                </>
+                            )}
                         </div>
+                        {!isAuthed ? (
+                            <p className="mt-3 text-xs text-slate-500 dark:text-slate-300">
+                                Email, password, and verification-code sign-in are still available on the auth page.
+                            </p>
+                        ) : null}
 
                         <div className="mt-6 flex flex-wrap gap-2">
                             {stackTags.map((tag) => (

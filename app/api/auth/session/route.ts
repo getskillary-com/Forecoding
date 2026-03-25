@@ -1,7 +1,7 @@
 import { adminAuth } from "@/lib/firebase-admin";
 import { attachSessionCookieFromIdToken, clearSessionCookie } from "@/lib/server-auth";
 import { NextResponse } from "next/server";
-import { getUserProfileByUid } from "@/lib/data/users";
+import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 
 const SESSION_EXPIRES_MS = 1000 * 60 * 60 * 24 * 5;
 
@@ -31,6 +31,17 @@ export async function POST(req: Request) {
                 { error: "Password reset required before creating a session." },
                 { status: 403 }
             );
+        }
+        if (!profile && decoded.email) {
+            await upsertUserProfile({
+                uid: decoded.uid,
+                email: decoded.email,
+                name: typeof decoded.name === "string" ? decoded.name : null,
+                image: typeof decoded.picture === "string" ? decoded.picture : null,
+                emailVerified: decoded.email_verified ? new Date() : null,
+                legacyPasswordResetRequired: false,
+                sessionVersion: 0
+            });
         }
 
         const res = NextResponse.json({ ok: true });
