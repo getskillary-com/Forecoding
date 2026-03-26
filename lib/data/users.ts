@@ -27,6 +27,7 @@ export type UserProfile = {
     emailVerified: Date | null;
     legacyPasswordResetRequired: boolean;
     sessionVersion: number;
+    sessionInvalidAfter: Date | null;
     statusUpdatedAt: Date | null;
     createdAt: Date | null;
     updatedAt: Date | null;
@@ -43,6 +44,7 @@ type UpsertUserInput = {
     emailVerified?: Date | null;
     legacyPasswordResetRequired?: boolean;
     sessionVersion?: number;
+    sessionInvalidAfter?: Date | null;
 };
 
 function usersCollection() {
@@ -70,6 +72,7 @@ function mapUser(uid: string, data: Record<string, unknown>): UserProfile {
         emailVerified: toDateOrNull(data.emailVerified),
         legacyPasswordResetRequired: data.legacyPasswordResetRequired === true,
         sessionVersion,
+        sessionInvalidAfter: toDateOrNull(data.sessionInvalidAfter),
         statusUpdatedAt: toDateOrNull(data.statusUpdatedAt),
         createdAt: toDateOrNull(data.createdAt),
         updatedAt: toDateOrNull(data.updatedAt)
@@ -129,6 +132,10 @@ export async function upsertUserProfile(input: UpsertUserInput): Promise<UserPro
                 : typeof existingData.sessionVersion === "number"
                 ? existingData.sessionVersion
                 : 0,
+        sessionInvalidAfter:
+            input.sessionInvalidAfter !== undefined
+                ? input.sessionInvalidAfter
+                : (existingData.sessionInvalidAfter ?? null),
         statusUpdatedAt: input.status !== undefined
             ? now
             : (existingData.statusUpdatedAt || null),
@@ -158,6 +165,25 @@ export async function bumpUserSessionVersion(uid: string): Promise<number> {
     const snap = await ref.get();
     const data = snap.data() || {};
     return typeof data.sessionVersion === "number" ? data.sessionVersion : 0;
+}
+
+export async function invalidateUserSessions(uid: string): Promise<UserProfile | null> {
+    const ref = usersCollection().doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+
+    const now = new Date();
+    await ref.set(
+        {
+            sessionVersion: FieldValue.increment(1),
+            sessionInvalidAfter: now,
+            updatedAt: now
+        },
+        { merge: true }
+    );
+
+    const updated = await ref.get();
+    return mapUser(uid, updated.data() || {});
 }
 
 export async function setUserTenantByUid(input: {

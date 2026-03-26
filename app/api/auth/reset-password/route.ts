@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { AuthCodePurposes, consumeAuthCode } from "@/lib/auth-code";
 import { isValidEmail, isValidPassword, sanitizeEmail } from "@/lib/security";
 import { findAuthUserByEmail, getAuthClientForIdentityTenant } from "@/lib/firebase-admin";
-import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
+import { getUserProfileByUid, invalidateUserSessions, upsertUserProfile } from "@/lib/data/users";
 import { resolveEnterpriseAuthContext } from "@/lib/enterprise-auth";
 
 export async function POST(req: Request) {
@@ -64,6 +64,7 @@ export async function POST(req: Request) {
         await authClient.revokeRefreshTokens(authUser.uid);
 
         const existing = await getUserProfileByUid(authUser.uid);
+        const invalidatedProfile = await invalidateUserSessions(authUser.uid);
         await upsertUserProfile({
             uid: authUser.uid,
             email,
@@ -71,7 +72,8 @@ export async function POST(req: Request) {
             image: existing?.image ?? authUser.photoURL ?? null,
             emailVerified: existing?.emailVerified ?? new Date(),
             legacyPasswordResetRequired: false,
-            sessionVersion: (existing?.sessionVersion ?? 0) + 1
+            sessionVersion: invalidatedProfile?.sessionVersion ?? ((existing?.sessionVersion ?? 0) + 1),
+            sessionInvalidAfter: invalidatedProfile?.sessionInvalidAfter ?? new Date()
         });
 
         return NextResponse.json({ ok: true });

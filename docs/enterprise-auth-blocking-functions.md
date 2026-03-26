@@ -45,10 +45,24 @@ Firebase Auth blocking functions so unsupported users are rejected before Fireba
 
 `identityPlatformTenantId` is optional. Keep it only if you later enable Identity Platform multi-tenancy.
 
+## Repository workspace
+
+This repository now includes a deployable Functions workspace at `functions/` with:
+
+- `functions/src/auth-blocking.ts`
+- `functions/src/index.ts`
+- `firebase.json` predeploy wiring for `npm --prefix functions run build`
+
+Install and deploy it with:
+
+```bash
+npm install --prefix functions
+firebase deploy --only functions
+```
+
 ## Blocking function example
 
-This example assumes a separate Firebase Functions workspace with `firebase-functions` and
-`firebase-admin` installed.
+The live implementation in `functions/src/auth-blocking.ts` follows this policy shape.
 
 ```ts
 import { beforeUserSignedIn } from "firebase-functions/v2/identity";
@@ -100,3 +114,4 @@ export const enforceEnterpriseLogin = beforeUserSignedIn(async (event) => {
 - Blocking functions require Firebase Authentication with Identity Platform.
 - OIDC and SAML providers also require an upgraded project.
 - If you set custom claims or session claims in blocking functions, force a token refresh on the client before calling your app session endpoint.
+- Firebase Auth blocking functions do not run for custom authentication flows, so `signInWithCustomToken` should remain a deliberate fallback only.

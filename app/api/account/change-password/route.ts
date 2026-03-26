@@ -1,20 +1,18 @@
 import { NextResponse } from "next/server";
-import { adminAuth } from "@/lib/firebase-admin";
-import { clearSessionCookie, getServerUser } from "@/lib/server-auth";
+import { getAuthClientForIdentityTenant } from "@/lib/firebase-admin";
+import { clearSessionCookie, getServerUser, getIdentityPlatformTenantIdFromToken } from "@/lib/server-auth";
 import { isValidPassword } from "@/lib/security";
-import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
-
-async function getUserId() {
-    const user = await getServerUser();
-    return user?.uid ?? null;
-}
+import { getUserProfileByUid, invalidateUserSessions, upsertUserProfile } from "@/lib/data/users";
 
 export async function POST(req: Request) {
     try {
-        const userId = await getUserId();
-        if (!userId) {
+        const user = await getServerUser();
+        if (!user) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
+        const userId = user.uid;
+        const identityPlatformTenantId = getIdentityPlatformTenantIdFromToken(user.token);
+        const authClient = getAuthClientForIdentityTenant(identityPlatformTenantId);
 
         const body = (await req.json()) as {
             newPassword?: string;
@@ -31,18 +29,19 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Two passwords do not match." }, { status: 400 });
         }
 
-        const authUser = await adminAuth.getUser(userId);
+        const authUser = await authClient.getUser(userId);
         if (!authUser.email) {
             return NextResponse.json({ error: "User not found." }, { status: 404 });
         }
 
-        await adminAuth.updateUser(userId, {
+        await authClient.updateUser(userId, {
             password: newPassword,
             emailVerified: true
         });
-        await adminAuth.revokeRefreshTokens(userId);
+        await authClient.revokeRefreshTokens(userId);
 
         const existing = await getUserProfileByUid(userId);
+        const invalidatedProfile = await invalidateUserSessions(userId);
         await upsertUserProfile({
             uid: userId,
             email: authUser.email,
@@ -50,7 +49,8 @@ export async function POST(req: Request) {
             image: existing?.image ?? authUser.photoURL ?? null,
             emailVerified: existing?.emailVerified ?? new Date(),
             legacyPasswordResetRequired: false,
-            sessionVersion: (existing?.sessionVersion ?? 0) + 1
+            sessionVersion: invalidatedProfile?.sessionVersion ?? ((existing?.sessionVersion ?? 0) + 1),
+            sessionInvalidAfter: invalidatedProfile?.sessionInvalidAfter ?? new Date()
         });
 
         const res = NextResponse.json({ ok: true, reauthRequired: true });

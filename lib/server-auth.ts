@@ -28,6 +28,23 @@ export type ServerSessionIdentity = {
     token: DecodedIdToken;
 };
 
+function getIdentityPlatformTenantIdFromToken(token: DecodedIdToken): string | null {
+    if (typeof token.firebase?.tenant === "string" && token.firebase.tenant.trim()) {
+        return token.firebase.tenant.trim();
+    }
+    if (typeof token.tenant_id === "string" && token.tenant_id.trim()) {
+        return token.tenant_id.trim();
+    }
+    return null;
+}
+
+function isSessionInvalidated(token: DecodedIdToken, invalidAfter: Date | null | undefined) {
+    if (!invalidAfter) return false;
+    const authTimeSeconds = typeof token.auth_time === "number" ? token.auth_time : 0;
+    if (!authTimeSeconds) return false;
+    return authTimeSeconds * 1000 <= invalidAfter.getTime();
+}
+
 function buildCookieOptions(maxAgeSeconds: number) {
     return {
         name: AUTH_SESSION_COOKIE_NAME,
@@ -80,6 +97,9 @@ export async function getServerSessionIdentity(): Promise<ServerSessionIdentity 
     if (profile?.status === "suspended") {
         return null;
     }
+    if (isSessionInvalidated(token, profile?.sessionInvalidAfter)) {
+        return null;
+    }
 
     return {
         uid,
@@ -105,12 +125,7 @@ export async function getServerUser(): Promise<ServerUser | null> {
         });
     }
 
-    const identityPlatformTenantId =
-        typeof session.token.firebase?.tenant === "string" && session.token.firebase.tenant.trim()
-            ? session.token.firebase.tenant.trim()
-            : typeof session.token.tenant_id === "string" && session.token.tenant_id.trim()
-            ? session.token.tenant_id.trim()
-            : null;
+    const identityPlatformTenantId = getIdentityPlatformTenantIdFromToken(session.token);
 
     const enterpriseAuth = await resolveEnterpriseAuthContext({
         email: profile?.email || session.email,
@@ -132,7 +147,8 @@ export async function getServerUser(): Promise<ServerUser | null> {
             image: profile?.image ?? null,
             emailVerified: profile?.emailVerified ?? (session.token.email_verified ? new Date() : null),
             legacyPasswordResetRequired: profile?.legacyPasswordResetRequired ?? false,
-            sessionVersion: profile?.sessionVersion ?? 0
+            sessionVersion: profile?.sessionVersion ?? 0,
+            sessionInvalidAfter: profile?.sessionInvalidAfter ?? null
         });
     }
 
@@ -147,3 +163,5 @@ export async function getServerUser(): Promise<ServerUser | null> {
         token: session.token
     };
 }
+
+export { getIdentityPlatformTenantIdFromToken };

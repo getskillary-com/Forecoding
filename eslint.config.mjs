@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     ".gcloud/**",
     ".tmp/**",
     ".vscode/**",
+    "functions/lib/**",
     "__release_flash_fix/**",
     "__review_scaffold/**",
   ]),

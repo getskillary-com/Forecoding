@@ -11,6 +11,19 @@
     ],
     "alwaysDeployFromSource": true
   },
+  "functions": {
+    "source": "functions",
+    "ignore": [
+      "node_modules",
+      ".git",
+      "firebase-debug.log",
+      "firebase-debug.*.log",
+      "*.local"
+    ],
+    "predeploy": [
+      "npm --prefix functions run build"
+    ]
+  },
   "firestore": {
     "indexes": "firestore.indexes.json"
   }
