@@ -46,6 +46,19 @@ function normalizeStatus(value: unknown): Tenant["status"] {
     return "active";
 }
 
+function normalizeAuthMode(value: unknown): Tenant["authMode"] {
+    return value === "enterprise" ? "enterprise" : "personal";
+}
+
+function normalizeEnterpriseProviderType(value: unknown): Tenant["enterpriseProviderType"] {
+    if (value === "oidc" || value === "saml" || value === "google") return value;
+    return null;
+}
+
+function normalizeOptionalBoolean(value: unknown) {
+    return typeof value === "boolean" ? value : undefined;
+}
+
 function buildFallbackTenantSlug(tenantId: string) {
     return normalizeTenantSlug(tenantId) || tenantId.toLowerCase().replace(/[^a-z0-9]+/g, "-") || tenantId;
 }
@@ -62,6 +75,16 @@ function mapTenant(id: string, data: Record<string, unknown>): Tenant {
         name: normalizeTenantName(data.name) || id,
         slug: normalizeTenantSlug(data.slug) || buildFallbackTenantSlug(id),
         status: normalizeStatus(data.status),
+        authMode: normalizeAuthMode(data.authMode),
+        identityPlatformTenantId: normalizeTenantId(data.identityPlatformTenantId),
+        enterpriseProviderType: normalizeEnterpriseProviderType(data.enterpriseProviderType),
+        enterpriseProviderId: normalizeTenantId(data.enterpriseProviderId),
+        allowPersonalFallback: normalizeOptionalBoolean(data.allowPersonalFallback),
+        allowPasswordLogin: normalizeOptionalBoolean(data.allowPasswordLogin),
+        allowCodeLogin: normalizeOptionalBoolean(data.allowCodeLogin),
+        allowGoogleLogin: normalizeOptionalBoolean(data.allowGoogleLogin),
+        allowRegistration: normalizeOptionalBoolean(data.allowRegistration),
+        loginHint: normalizeTenantName(data.loginHint),
         workspaceCount: typeof data.workspaceCount === "number" ? data.workspaceCount : 0,
         createdAt: toDateOrNull(data.createdAt)?.getTime() || Date.now(),
         updatedAt: toDateOrNull(data.updatedAt)?.getTime() || Date.now()
@@ -83,12 +106,54 @@ export async function getTenantById(tenantId: string): Promise<Tenant | null> {
     return mapTenant(snap.id, snap.data() || {});
 }
 
+export async function findTenantBySlug(slug: string): Promise<Tenant | null> {
+    const normalizedSlug = normalizeTenantSlug(slug);
+    if (!normalizedSlug) return null;
+
+    const query = await tenantsCollection()
+        .where("slug", "==", normalizedSlug)
+        .limit(1)
+        .get();
+    if (query.empty) return null;
+    const doc = query.docs[0];
+    return mapTenant(doc.id, doc.data() || {});
+}
+
+export async function findTenantBySlugOrId(value: string): Promise<Tenant | null> {
+    const direct = await getTenantById(value);
+    if (direct) return direct;
+    return findTenantBySlug(value);
+}
+
+export async function findTenantByIdentityPlatformTenantId(identityPlatformTenantId: string): Promise<Tenant | null> {
+    const normalizedTenantId = normalizeTenantId(identityPlatformTenantId);
+    if (!normalizedTenantId) return null;
+
+    const query = await tenantsCollection()
+        .where("identityPlatformTenantId", "==", normalizedTenantId)
+        .limit(1)
+        .get();
+    if (query.empty) return null;
+    const doc = query.docs[0];
+    return mapTenant(doc.id, doc.data() || {});
+}
+
 export async function ensureTenantRecord(input: {
     tenantId: string;
     orgId?: string | null;
     name?: string | null;
     slug?: string | null;
     status?: Tenant["status"];
+    authMode?: Tenant["authMode"];
+    identityPlatformTenantId?: string | null;
+    enterpriseProviderType?: Tenant["enterpriseProviderType"];
+    enterpriseProviderId?: string | null;
+    allowPersonalFallback?: boolean;
+    allowPasswordLogin?: boolean;
+    allowCodeLogin?: boolean;
+    allowGoogleLogin?: boolean;
+    allowRegistration?: boolean;
+    loginHint?: string | null;
 }): Promise<Tenant | null> {
     const tenantId = normalizeTenantId(input.tenantId);
     if (!tenantId) return null;
@@ -106,6 +171,43 @@ export async function ensureTenantRecord(input: {
             normalizeTenantSlug(existingData.slug) ||
             buildFallbackTenantSlug(tenantId),
         status: normalizeStatus(input.status ?? existingData.status),
+        authMode: normalizeAuthMode(input.authMode ?? existingData.authMode),
+        identityPlatformTenantId:
+            input.identityPlatformTenantId !== undefined
+                ? normalizeTenantId(input.identityPlatformTenantId)
+                : normalizeTenantId(existingData.identityPlatformTenantId),
+        enterpriseProviderType:
+            input.enterpriseProviderType !== undefined
+                ? normalizeEnterpriseProviderType(input.enterpriseProviderType)
+                : normalizeEnterpriseProviderType(existingData.enterpriseProviderType),
+        enterpriseProviderId:
+            input.enterpriseProviderId !== undefined
+                ? normalizeTenantId(input.enterpriseProviderId)
+                : normalizeTenantId(existingData.enterpriseProviderId),
+        allowPersonalFallback:
+            input.allowPersonalFallback !== undefined
+                ? input.allowPersonalFallback
+                : normalizeOptionalBoolean(existingData.allowPersonalFallback),
+        allowPasswordLogin:
+            input.allowPasswordLogin !== undefined
+                ? input.allowPasswordLogin
+                : normalizeOptionalBoolean(existingData.allowPasswordLogin),
+        allowCodeLogin:
+            input.allowCodeLogin !== undefined
+                ? input.allowCodeLogin
+                : normalizeOptionalBoolean(existingData.allowCodeLogin),
+        allowGoogleLogin:
+            input.allowGoogleLogin !== undefined
+                ? input.allowGoogleLogin
+                : normalizeOptionalBoolean(existingData.allowGoogleLogin),
+        allowRegistration:
+            input.allowRegistration !== undefined
+                ? input.allowRegistration
+                : normalizeOptionalBoolean(existingData.allowRegistration),
+        loginHint:
+            input.loginHint !== undefined
+                ? normalizeTenantName(input.loginHint)
+                : normalizeTenantName(existingData.loginHint),
         workspaceCount:
             typeof existingData.workspaceCount === "number" ? existingData.workspaceCount : 0,
         createdAt: existingData.createdAt ?? new Date(now),

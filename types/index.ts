@@ -1130,6 +1130,16 @@ export interface Tenant {
     name: string;
     slug: string;
     status: "active" | "trial" | "suspended";
+    authMode?: "personal" | "enterprise";
+    identityPlatformTenantId?: string | null;
+    enterpriseProviderType?: "oidc" | "saml" | "google" | null;
+    enterpriseProviderId?: string | null;
+    allowPersonalFallback?: boolean;
+    allowPasswordLogin?: boolean;
+    allowCodeLogin?: boolean;
+    allowGoogleLogin?: boolean;
+    allowRegistration?: boolean;
+    loginHint?: string | null;
     workspaceCount: number;
     createdAt: number;
     updatedAt: number;

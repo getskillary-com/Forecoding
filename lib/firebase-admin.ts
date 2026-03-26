@@ -1,5 +1,5 @@
 import { App, cert, getApps, initializeApp } from "firebase-admin/app";
-import { Auth, UserRecord, getAuth } from "firebase-admin/auth";
+import { Auth, BaseAuth, UserRecord, getAuth } from "firebase-admin/auth";
 import { Firestore, getFirestore } from "firebase-admin/firestore";
 
 function readPrivateKey() {
@@ -36,9 +36,21 @@ export const firebaseAdminApp = app;
 export const adminAuth: Auth = getAuth(app);
 export const adminDb: Firestore = getFirestore(app);
 
-export async function findAuthUserByEmail(email: string): Promise<UserRecord | null> {
+export function getAuthClientForIdentityTenant(identityPlatformTenantId?: string | null): BaseAuth {
+    const normalizedTenantId = (identityPlatformTenantId || "").trim();
+    if (!normalizedTenantId) {
+        return adminAuth;
+    }
+    return adminAuth.tenantManager().authForTenant(normalizedTenantId);
+}
+
+export async function findAuthUserByEmail(
+    email: string,
+    identityPlatformTenantId?: string | null
+): Promise<UserRecord | null> {
+    const authClient = getAuthClientForIdentityTenant(identityPlatformTenantId);
     try {
-        return await adminAuth.getUserByEmail(email);
+        return await authClient.getUserByEmail(email);
     } catch (error) {
         const code = (error as { code?: string } | null)?.code;
         if (code === "auth/user-not-found") {
@@ -48,9 +60,13 @@ export async function findAuthUserByEmail(email: string): Promise<UserRecord | n
     }
 }
 
-export async function findAuthUserByUid(uid: string): Promise<UserRecord | null> {
+export async function findAuthUserByUid(
+    uid: string,
+    identityPlatformTenantId?: string | null
+): Promise<UserRecord | null> {
+    const authClient = getAuthClientForIdentityTenant(identityPlatformTenantId);
     try {
-        return await adminAuth.getUser(uid);
+        return await authClient.getUser(uid);
     } catch (error) {
         const code = (error as { code?: string } | null)?.code;
         if (code === "auth/user-not-found") {
@@ -59,4 +75,3 @@ export async function findAuthUserByUid(uid: string): Promise<UserRecord | null>
         throw error;
     }
 }
-

@@ -4,21 +4,92 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+    getRedirectResult,
     GoogleAuthProvider,
+    OAuthProvider,
+    SAMLAuthProvider,
+    signOut,
     signInWithCustomToken,
     signInWithEmailAndPassword,
-    signInWithPopup
+    signInWithPopup,
+    signInWithRedirect
 } from "firebase/auth";
 import { ArrowLeft, Loader2, Mail, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useNavigationFeedback } from "@/components/NavigationFeedback";
 import { getFirebaseAuth } from "@/lib/firebase-client";
+import {
+    createDefaultEnterpriseAuthBootstrap,
+    type EnterpriseAuthBootstrap
+} from "@/lib/auth-enterprise-shared";
 
 type AuthFlow = "login" | "register" | "forgot";
 type LoginMethod = "password" | "code";
 type SendCodePurpose = "register" | "login" | "reset_password";
-type PendingAction = "form" | "google" | "dev";
+type PendingAction = "form" | "google" | "enterprise" | "dev";
 const CODE_TTL_SECONDS = 120;
+const ENTERPRISE_REDIRECT_STORAGE_KEY = "fc.enterprise-auth.redirect";
+
+function createRedirectBootstrapSnapshot(bootstrap: EnterpriseAuthBootstrap) {
+    return {
+        identityPlatformTenantId: bootstrap.identityPlatformTenantId,
+        providerType: bootstrap.providerType,
+        providerId: bootstrap.providerId,
+        tenantId: bootstrap.tenantId
+    };
+}
+
+function persistRedirectBootstrap(bootstrap: EnterpriseAuthBootstrap) {
+    if (typeof window === "undefined") return;
+    window.sessionStorage.setItem(
+        ENTERPRISE_REDIRECT_STORAGE_KEY,
+        JSON.stringify(createRedirectBootstrapSnapshot(bootstrap))
+    );
+}
+
+function readPersistedRedirectBootstrap() {
+    if (typeof window === "undefined") return null;
+    const raw = window.sessionStorage.getItem(ENTERPRISE_REDIRECT_STORAGE_KEY);
+    if (!raw) return null;
+
+    try {
+        const parsed = JSON.parse(raw) as Partial<EnterpriseAuthBootstrap> | null;
+        if (!parsed || typeof parsed !== "object") return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function clearPersistedRedirectBootstrap() {
+    if (typeof window === "undefined") return;
+    window.sessionStorage.removeItem(ENTERPRISE_REDIRECT_STORAGE_KEY);
+}
+
+async function fetchEnterpriseAuthBootstrap(input: { email?: string; tenantHint?: string }) {
+    const params = new URLSearchParams();
+    const email = (input.email || "").trim();
+    const tenantHint = (input.tenantHint || "").trim();
+
+    if (email) {
+        params.set("email", email);
+    }
+    if (tenantHint) {
+        params.set("tenant", tenantHint);
+    }
+
+    const res = await fetch(`/api/auth/bootstrap?${params.toString()}`, {
+        cache: "no-store"
+    });
+    const payload = (await res.json().catch(() => ({}))) as {
+        auth?: EnterpriseAuthBootstrap;
+        error?: string;
+    };
+    if (!res.ok || !payload.auth) {
+        throw new Error(payload.error || "Failed to load enterprise sign-in settings.");
+    }
+    return payload.auth;
+}
 
 function readFlow(mode: string | null): AuthFlow {
     if (mode === "register") return "register";
@@ -59,11 +130,19 @@ function GoogleIcon({ className = "w-4 h-4" }: { className?: string }) {
     );
 }
 
-function getGoogleAuthErrorMessage(error: unknown) {
+function getFederatedAuthErrorMessage(error: unknown) {
+    const message =
+        error instanceof Error && typeof error.message === "string"
+            ? error.message.trim()
+            : "";
     const code =
         typeof error === "object" && error && "code" in error && typeof error.code === "string"
             ? error.code
             : "";
+
+    if (/Firebase client is not configured/i.test(message)) {
+        return "Firebase client configuration is missing. Set the NEXT_PUBLIC_FIREBASE_* variables and try again.";
+    }
 
     switch (code) {
         case "auth/popup-closed-by-user":
@@ -73,11 +152,115 @@ function getGoogleAuthErrorMessage(error: unknown) {
             return "Popup was blocked. Allow popups for this site and try again.";
         case "auth/network-request-failed":
             return "Network error while signing in with Google.";
+        case "auth/unauthorized-domain":
+            return "This domain is not authorized for Firebase Google sign-in. Add it in Firebase Authentication > Settings > Authorized domains.";
+        case "auth/operation-not-allowed":
+            return "Google sign-in is not enabled for this Firebase project.";
+        case "auth/invalid-api-key":
+        case "auth/app-not-authorized":
+            return "Firebase client credentials are invalid for Google sign-in.";
+        case "auth/invalid-tenant-id":
+        case "auth/tenant-id-mismatch":
+            return "The enterprise tenant configuration does not match this sign-in request.";
         case "auth/account-exists-with-different-credential":
             return "This email already exists with another sign-in method.";
         default:
-            return "Failed to sign in with Google.";
+            return message || "Failed to sign in with the identity provider.";
     }
+}
+
+function getPasswordAuthErrorMessage(error: unknown) {
+    const message =
+        error instanceof Error && typeof error.message === "string"
+            ? error.message.trim()
+            : "";
+    const code =
+        typeof error === "object" && error && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "";
+
+    switch (code) {
+        case "auth/user-not-found":
+        case "auth/wrong-password":
+        case "auth/invalid-credential":
+        case "auth/invalid-login-credentials":
+            return "Invalid email or password.";
+        case "auth/invalid-tenant-id":
+        case "auth/tenant-id-mismatch":
+            return "The enterprise tenant configuration does not match this sign-in request.";
+        default:
+            return message || "Invalid email or password.";
+    }
+}
+
+function getSessionEstablishErrorMessage(error: unknown) {
+    const message =
+        error instanceof Error && typeof error.message === "string"
+            ? error.message.trim()
+            : "";
+
+    if (!message) {
+        return "Signed in successfully, but failed to establish the app session.";
+    }
+
+    if (/Missing idToken/i.test(message) || /Invalid token/i.test(message)) {
+        return "Sign-in completed, but the Firebase token could not be verified by the server.";
+    }
+
+    if (/credential/i.test(message) || /private key/i.test(message) || /project id/i.test(message)) {
+        return "Sign-in completed, but the server-side Firebase Admin configuration is incomplete.";
+    }
+
+    if (/session/i.test(message)) {
+        return message;
+    }
+
+    return `Sign-in completed, but the app session could not be created: ${message}`;
+}
+
+function getFederatedButtonLabel(flow: AuthFlow, bootstrap: EnterpriseAuthBootstrap) {
+    if (bootstrap.mode === "enterprise") {
+        if (bootstrap.providerType === "saml" || bootstrap.providerType === "oidc") {
+            return "Continue with company SSO";
+        }
+        if (bootstrap.providerType === "google") {
+            return "Continue with company Google";
+        }
+        return "Continue with company sign-in";
+    }
+    return flow === "register" ? "Create account with Google" : "Continue with Google";
+}
+
+function getEnterpriseMethodMessage(flow: AuthFlow, loginMethod: LoginMethod, bootstrap: EnterpriseAuthBootstrap) {
+    if (bootstrap.mode !== "enterprise") return null;
+    if (!bootstrap.ready) {
+        return bootstrap.message || "Enterprise sign-in is not fully configured for this tenant.";
+    }
+    if (flow === "register" && !bootstrap.allowRegistration) {
+        return "Self-service registration is disabled for this company. Use company SSO instead.";
+    }
+    if (flow === "forgot" && !bootstrap.allowPasswordLogin) {
+        return "Password reset is disabled for this company because password sign-in is not enabled.";
+    }
+    if (flow === "login" && loginMethod === "password" && !bootstrap.allowPasswordLogin) {
+        return "Password sign-in is disabled for this company. Use company SSO instead.";
+    }
+    if (flow === "login" && loginMethod === "code" && !bootstrap.allowCodeLogin) {
+        return "Verification-code sign-in is disabled for this company. Use company SSO instead.";
+    }
+    return null;
+}
+
+function getEnterpriseBanner(bootstrap: EnterpriseAuthBootstrap) {
+    if (bootstrap.mode !== "enterprise") return null;
+    if (bootstrap.message) return bootstrap.message;
+    if (bootstrap.providerType === "saml" || bootstrap.providerType === "oidc") {
+        return "This workspace uses company SSO through Identity Platform.";
+    }
+    if (bootstrap.providerType === "google") {
+        return "This workspace uses company Google sign-in through Identity Platform.";
+    }
+    return "This workspace uses managed company access policies.";
 }
 
 export default function LoginClient({ initialMode }: { initialMode?: "login" | "register" }) {
@@ -86,6 +269,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     const { beginNavigation } = useNavigationFeedback();
 
     const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+    const tenantHint = searchParams.get("tenant") || "";
     const notice = searchParams.get("notice");
     const queryFlow = readFlow(searchParams.get("mode"));
     const flow: AuthFlow = initialMode === "register" ? "register" : queryFlow;
@@ -102,6 +286,8 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     const [codeCountdown, setCodeCountdown] = useState(0);
     const [isSendingCode, setIsSendingCode] = useState(false);
     const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+    const [authBootstrap, setAuthBootstrap] = useState<EnterpriseAuthBootstrap>(() => createDefaultEnterpriseAuthBootstrap());
+    const [isAuthBootstrapLoading, setIsAuthBootstrapLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [message, setMessage] = useState<string | null>(null);
     const isBusy = pendingAction !== null;
@@ -127,6 +313,79 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         }
     }, [notice]);
 
+    useEffect(() => {
+        let isActive = true;
+        const timer = window.setTimeout(async () => {
+            try {
+                const nextBootstrap = await fetchEnterpriseAuthBootstrap({
+                    email,
+                    tenantHint
+                });
+                if (!isActive) return;
+                setAuthBootstrap(nextBootstrap);
+            } catch {
+                if (!isActive) return;
+                setAuthBootstrap(createDefaultEnterpriseAuthBootstrap());
+            } finally {
+                if (isActive) {
+                    setIsAuthBootstrapLoading(false);
+                }
+            }
+        }, email.trim().includes("@") ? 300 : 0);
+
+        return () => {
+            isActive = false;
+            window.clearTimeout(timer);
+        };
+    }, [email, tenantHint]);
+
+    useEffect(() => {
+        let isActive = true;
+
+        async function resumeRedirectSignIn() {
+            const persisted = readPersistedRedirectBootstrap();
+            if (!persisted) return;
+
+            setPendingAction("enterprise");
+            try {
+                const auth = getFirebaseAuth();
+                auth.tenantId = persisted.identityPlatformTenantId || null;
+                const result = await getRedirectResult(auth);
+                clearPersistedRedirectBootstrap();
+
+                if (!result?.user || !isActive) return;
+
+                try {
+                    await establishSessionFromCurrentUser();
+                } catch (sessionError) {
+                    await signOut(auth).catch(() => undefined);
+                    if (isActive) {
+                        setError(getSessionEstablishErrorMessage(sessionError));
+                    }
+                    return;
+                }
+
+                beginNavigation(callbackUrl);
+                router.push(callbackUrl);
+            } catch (nextError) {
+                clearPersistedRedirectBootstrap();
+                if (isActive) {
+                    setError(getFederatedAuthErrorMessage(nextError));
+                }
+            } finally {
+                if (isActive) {
+                    setPendingAction(null);
+                }
+            }
+        }
+
+        void resumeRedirectSignIn();
+
+        return () => {
+            isActive = false;
+        };
+    }, [beginNavigation, callbackUrl, router]);
+
     const requiresCode = useMemo(() => {
         return flow === "register" || flow === "forgot" || (flow === "login" && loginMethod === "code");
     }, [flow, loginMethod]);
@@ -138,6 +397,45 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         return null;
     }, [flow, loginMethod]);
 
+    const enterpriseBanner = useMemo(() => getEnterpriseBanner(authBootstrap), [authBootstrap]);
+    const emailMethodMessage = useMemo(
+        () => getEnterpriseMethodMessage(flow, loginMethod, authBootstrap),
+        [authBootstrap, flow, loginMethod]
+    );
+    const isFederatedActionBusy = pendingAction === "google" || pendingAction === "enterprise";
+    const showFederatedButton =
+        authBootstrap.mode !== "enterprise"
+            || Boolean(authBootstrap.providerType && authBootstrap.providerId);
+    const showEmailDivider =
+        flow !== "forgot"
+        && showFederatedButton
+        && (
+            authBootstrap.mode !== "enterprise"
+            || authBootstrap.allowPasswordLogin
+            || authBootstrap.allowCodeLogin
+            || authBootstrap.allowRegistration
+        );
+
+    const loadAuthBootstrap = async (emailOverride?: string) => {
+        const nextBootstrap = await fetchEnterpriseAuthBootstrap({
+            email: emailOverride ?? email,
+            tenantHint
+        });
+        setAuthBootstrap(nextBootstrap);
+        setIsAuthBootstrapLoading(false);
+        return nextBootstrap;
+    };
+
+    const configureAuthTenant = async (emailOverride?: string) => {
+        const nextBootstrap = await loadAuthBootstrap(emailOverride);
+        const auth = getFirebaseAuth();
+        auth.tenantId =
+            nextBootstrap.mode === "enterprise"
+                ? nextBootstrap.identityPlatformTenantId || null
+                : null;
+        return { auth, bootstrap: nextBootstrap };
+    };
+
     const sendCode = async () => {
         if (!email.trim() || !codePurpose || codeCountdown > 0) return;
         setError(null);
@@ -145,6 +443,13 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         setIsSendingCode(true);
 
         try {
+            const bootstrap = await loadAuthBootstrap(email);
+            const blockedMessage = getEnterpriseMethodMessage(flow, loginMethod, bootstrap);
+            if (blockedMessage) {
+                setError(blockedMessage);
+                return;
+            }
+
             const res = await fetch("/api/auth/send-code", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -196,20 +501,30 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     };
 
     const loginWithPassword = async () => {
-        const auth = getFirebaseAuth();
         try {
+            const { auth, bootstrap } = await configureAuthTenant(email);
+            const blockedMessage = getEnterpriseMethodMessage(flow, loginMethod, bootstrap);
+            if (blockedMessage) {
+                setError(blockedMessage);
+                return;
+            }
             await signInWithEmailAndPassword(auth, email, password);
             await establishSessionFromCurrentUser();
             beginNavigation(callbackUrl);
             router.push(callbackUrl);
-        } catch {
-            setError("Invalid email or password.");
+        } catch (nextError) {
+            setError(getPasswordAuthErrorMessage(nextError));
         }
     };
 
     const loginWithCode = async () => {
         try {
-            const auth = getFirebaseAuth();
+            const { auth, bootstrap } = await configureAuthTenant(email);
+            const blockedMessage = getEnterpriseMethodMessage(flow, loginMethod, bootstrap);
+            if (blockedMessage) {
+                setError(blockedMessage);
+                return;
+            }
             const res = await fetch("/api/auth/code-login", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -225,33 +540,90 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
             await establishSessionFromCurrentUser();
             beginNavigation(callbackUrl);
             router.push(callbackUrl);
-        } catch {
-            setError("Failed to sign in with verification code.");
+        } catch (nextError) {
+            const message =
+                nextError instanceof Error && nextError.message.trim()
+                    ? nextError.message.trim()
+                    : "Failed to sign in with verification code.";
+            setError(message);
         }
     };
 
-    const loginWithGoogle = async () => {
+    const loginWithFederatedProvider = async () => {
         setError(null);
         setMessage(null);
-        setPendingAction("google");
+        setPendingAction(authBootstrap.mode === "enterprise" ? "enterprise" : "google");
 
         try {
-            const auth = getFirebaseAuth();
-            const provider = new GoogleAuthProvider();
-            provider.setCustomParameters({ prompt: "select_account" });
+            const { auth, bootstrap } = await configureAuthTenant(email);
+            if (!bootstrap.ready) {
+                setError(bootstrap.message || "Enterprise sign-in is not fully configured for this tenant.");
+                return;
+            }
 
-            await signInWithPopup(auth, provider);
-            await establishSessionFromCurrentUser();
+            if (bootstrap.mode === "enterprise") {
+                if (!bootstrap.providerId || !bootstrap.providerType) {
+                    setError("Enterprise sign-in is not fully configured for this tenant.");
+                    return;
+                }
+
+                const provider =
+                    bootstrap.providerType === "saml"
+                        ? new SAMLAuthProvider(bootstrap.providerId)
+                        : bootstrap.providerType === "oidc"
+                        ? new OAuthProvider(bootstrap.providerId)
+                        : new GoogleAuthProvider();
+
+                const customParameters: Record<string, string> = {};
+                if (bootstrap.providerType === "google") {
+                    customParameters.prompt = "select_account";
+                }
+                const loginHint = email.trim() || bootstrap.loginHint || "";
+                if (loginHint) {
+                    customParameters.login_hint = loginHint;
+                }
+                if (Object.keys(customParameters).length > 0) {
+                    provider.setCustomParameters(customParameters);
+                }
+
+                if (bootstrap.providerType === "saml" || bootstrap.providerType === "oidc") {
+                    persistRedirectBootstrap(bootstrap);
+                    await signInWithRedirect(auth, provider);
+                    return;
+                }
+
+                await signInWithPopup(auth, provider);
+            } else {
+                const provider = new GoogleAuthProvider();
+                provider.setCustomParameters({ prompt: "select_account" });
+                await signInWithPopup(auth, provider);
+            }
+
+            try {
+                await establishSessionFromCurrentUser();
+            } catch (sessionError) {
+                await signOut(auth).catch(() => undefined);
+                setError(getSessionEstablishErrorMessage(sessionError));
+                return;
+            }
+
             beginNavigation(callbackUrl);
             router.push(callbackUrl);
         } catch (nextError) {
-            setError(getGoogleAuthErrorMessage(nextError));
+            setError(getFederatedAuthErrorMessage(nextError));
         } finally {
             setPendingAction(null);
         }
     };
 
     const registerWithCode = async () => {
+        const bootstrap = await loadAuthBootstrap(email);
+        const blockedMessage = getEnterpriseMethodMessage(flow, loginMethod, bootstrap);
+        if (blockedMessage) {
+            setError(blockedMessage);
+            return;
+        }
+
         const res = await fetch("/api/auth/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -266,6 +638,13 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
     };
 
     const resetPassword = async () => {
+        const bootstrap = await loadAuthBootstrap(email);
+        const blockedMessage = getEnterpriseMethodMessage(flow, loginMethod, bootstrap);
+        if (blockedMessage) {
+            setError(blockedMessage);
+            return;
+        }
+
         const res = await fetch("/api/auth/reset-password", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -278,13 +657,17 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         }
         setPassword(newPassword);
         try {
-            const auth = getFirebaseAuth();
+            const { auth } = await configureAuthTenant(email);
             await signInWithEmailAndPassword(auth, email, newPassword);
             await establishSessionFromCurrentUser();
             beginNavigation(callbackUrl);
             router.push(callbackUrl);
-        } catch {
-            setError("Password reset succeeded, but auto sign-in failed. Please sign in manually.");
+        } catch (nextError) {
+            const message =
+                nextError instanceof Error && nextError.message.trim()
+                    ? nextError.message.trim()
+                    : "Password reset succeeded, but auto sign-in failed. Please sign in manually.";
+            setError(message);
             beginNavigation(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
             router.push(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
         }
@@ -296,7 +679,7 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
         setPendingAction("dev");
 
         try {
-            const auth = getFirebaseAuth();
+            const { auth } = await configureAuthTenant(email || "dev@local");
             const res = await fetch("/api/auth/dev-login", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -339,6 +722,12 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                 return;
             }
             await resetPassword();
+        } catch (nextError) {
+            const message =
+                nextError instanceof Error && nextError.message.trim()
+                    ? nextError.message.trim()
+                    : "Authentication request failed.";
+            setError(message);
         } finally {
             setPendingAction(null);
         }
@@ -402,33 +791,47 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                     </span>
                 </div>
                 <h1 className="mb-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
-                    {flow === "register" ? "Email + Password + Code" : flow === "forgot" ? "Recover your password" : "Sign in to continue"}
+                    {authBootstrap.mode === "enterprise"
+                        ? flow === "forgot"
+                            ? "Company account recovery"
+                            : "Company sign-in"
+                        : flow === "register"
+                        ? "Email + Password + Code"
+                        : flow === "forgot"
+                        ? "Recover your password"
+                        : "Sign in to continue"}
                 </h1>
                 <p className="mb-6 text-sm text-slate-500 dark:text-slate-300">
-                    {flow === "login"
+                    {authBootstrap.mode === "enterprise"
+                        ? enterpriseBanner
+                        : flow === "login"
                         ? "Use Google, email and password, or switch to email verification code."
                         : flow === "register"
-                            ? "Create your account with Google, or enter email, password, and verification code."
-                            : "Use email verification code to set a new password."}
+                        ? "Create your account with Google, or enter email, password, and verification code."
+                        : "Use email verification code to set a new password."}
                 </p>
 
                 {flow !== "forgot" && (
                     <>
-                        <button
-                            type="button"
-                            onClick={() => void loginWithGoogle()}
-                            disabled={isBusy}
-                            className="fc-button-secondary mb-4 flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                            {pendingAction === "google" ? <Loader2 className="w-4 h-4 animate-spin" /> : <GoogleIcon />}
-                            {flow === "register" ? "Create account with Google" : "Continue with Google"}
-                        </button>
+                        {showFederatedButton && (
+                            <button
+                                type="button"
+                                onClick={() => void loginWithFederatedProvider()}
+                                disabled={isBusy || isAuthBootstrapLoading || (authBootstrap.mode === "enterprise" && !authBootstrap.ready)}
+                                className="fc-button-secondary mb-4 flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {isFederatedActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <GoogleIcon />}
+                                {getFederatedButtonLabel(flow, authBootstrap)}
+                            </button>
+                        )}
 
-                        <div className="mb-4 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
-                            <div className="h-px flex-1 bg-[color:var(--border)]" />
-                            <span>Or continue with email</span>
-                            <div className="h-px flex-1 bg-[color:var(--border)]" />
-                        </div>
+                        {showEmailDivider && (
+                            <div className="mb-4 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">
+                                <div className="h-px flex-1 bg-[color:var(--border)]" />
+                                <span>Or continue with email</span>
+                                <div className="h-px flex-1 bg-[color:var(--border)]" />
+                            </div>
+                        )}
                     </>
                 )}
 
@@ -556,12 +959,15 @@ export default function LoginClient({ initialMode }: { initialMode?: "login" | "
                         </div>
                     )}
 
+                    {!error && emailMethodMessage && (
+                        <div className="text-sm text-amber-600 dark:text-amber-400">{emailMethodMessage}</div>
+                    )}
                     {error && <div className="text-sm text-red-500">{error}</div>}
                     {message && <div className="text-sm text-emerald-600 dark:text-emerald-400">{message}</div>}
 
                     <button
                         type="submit"
-                        disabled={isBusy}
+                        disabled={isBusy || !!emailMethodMessage}
                         className="fc-button-primary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                     >
                         {pendingAction === "form" ? <Loader2 className="w-4 h-4 animate-spin" /> : null}

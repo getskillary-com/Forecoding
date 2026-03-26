@@ -4,6 +4,7 @@ import { findAuthUserByEmail } from "@/lib/firebase-admin";
 import { getUserProfileByUid } from "@/lib/data/users";
 import { getServerUser } from "@/lib/server-auth";
 import { isValidEmail, sanitizeEmail } from "@/lib/security";
+import { resolveEnterpriseAuthContext } from "@/lib/enterprise-auth";
 
 type SendCodePurpose = "register" | "login" | "reset_password" | "change_email";
 
@@ -30,6 +31,37 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid request payload." }, { status: 400 });
         }
 
+        const authContext = await resolveEnterpriseAuthContext({ email });
+        const bootstrap = authContext.bootstrap;
+        const identityPlatformTenantId =
+            bootstrap.mode === "enterprise" ? bootstrap.identityPlatformTenantId : null;
+        if (bootstrap.mode === "enterprise") {
+            if (!bootstrap.ready) {
+                return NextResponse.json(
+                    { error: bootstrap.message || "Enterprise sign-in is not fully configured for this tenant." },
+                    { status: 403 }
+                );
+            }
+            if (purpose === "register" && !bootstrap.allowRegistration) {
+                return NextResponse.json(
+                    { error: "Self-service registration is disabled for this company. Use company SSO instead." },
+                    { status: 403 }
+                );
+            }
+            if (purpose === "login" && !bootstrap.allowCodeLogin) {
+                return NextResponse.json(
+                    { error: "Verification-code sign-in is disabled for this company. Use company SSO instead." },
+                    { status: 403 }
+                );
+            }
+            if (purpose === "reset_password" && !bootstrap.allowPasswordLogin) {
+                return NextResponse.json(
+                    { error: "Password reset is disabled for this company because password sign-in is not enabled." },
+                    { status: 403 }
+                );
+            }
+        }
+
         let sessionUserId: string | null = null;
         let sessionUserEmail: string | null = null;
         if (purpose === "change_email") {
@@ -41,7 +73,7 @@ export async function POST(req: Request) {
             }
         }
 
-        const user = await findAuthUserByEmail(email);
+        const user = await findAuthUserByEmail(email, identityPlatformTenantId);
 
         if (purpose === "register" && user) {
             return NextResponse.json({ error: "This email is already registered." }, { status: 409 });

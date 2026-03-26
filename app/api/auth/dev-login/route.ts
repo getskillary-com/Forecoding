@@ -3,6 +3,7 @@ import { adminAuth, findAuthUserByEmail } from "@/lib/firebase-admin";
 import { sanitizeEmail } from "@/lib/security";
 import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 import { isDevAuthBypassEnabled } from "@/lib/env";
+import { resolveEnterpriseAuthContext } from "@/lib/enterprise-auth";
 
 export const runtime = "nodejs";
 
@@ -14,6 +15,13 @@ export async function POST(req: Request) {
     try {
         const body = (await req.json()) as { email?: string };
         const email = sanitizeEmail(body.email || "dev@local");
+        const authContext = await resolveEnterpriseAuthContext({ email });
+        if (authContext.bootstrap.mode === "enterprise") {
+            return NextResponse.json(
+                { error: "Dev login is disabled for enterprise tenants. Use the configured company sign-in flow instead." },
+                { status: 403 }
+            );
+        }
         let user = await findAuthUserByEmail(email);
         if (!user) {
             user = await adminAuth.createUser({

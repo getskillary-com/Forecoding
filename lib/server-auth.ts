@@ -5,6 +5,7 @@ import { adminAuth } from "@/lib/firebase-admin";
 import { getUserProfileByUid, upsertUserProfile } from "@/lib/data/users";
 import { resolveTenantForUser } from "@/lib/data/tenants";
 import { getAuthSessionCookieName } from "@/lib/env";
+import { resolveEnterpriseAuthContext } from "@/lib/enterprise-auth";
 
 export const AUTH_SESSION_COOKIE_NAME = getAuthSessionCookieName();
 const DEFAULT_SESSION_EXPIRES_MS = 1000 * 60 * 60 * 24 * 5;
@@ -103,7 +104,21 @@ export async function getServerUser(): Promise<ServerUser | null> {
             sessionVersion: 0
         });
     }
-    const tenant = await resolveTenantForUser({
+
+    const identityPlatformTenantId =
+        typeof session.token.firebase?.tenant === "string" && session.token.firebase.tenant.trim()
+            ? session.token.firebase.tenant.trim()
+            : typeof session.token.tenant_id === "string" && session.token.tenant_id.trim()
+            ? session.token.tenant_id.trim()
+            : null;
+
+    const enterpriseAuth = await resolveEnterpriseAuthContext({
+        email: profile?.email || session.email,
+        tenantHint: profile?.tenantId ?? null,
+        identityPlatformTenantId
+    });
+
+    const tenant = enterpriseAuth.tenant ?? await resolveTenantForUser({
         userId: session.uid,
         email: profile?.email || session.email,
         tenantId: profile?.tenantId ?? null

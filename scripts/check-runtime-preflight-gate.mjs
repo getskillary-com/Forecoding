@@ -68,6 +68,11 @@ function runRuntimePreflightGate() {
         { key: "FIREBASE_PROJECT_ID", message: "FIREBASE_PROJECT_ID must be configured for server-side Firebase access." },
         { key: "FIREBASE_CLIENT_EMAIL", message: "FIREBASE_CLIENT_EMAIL must be configured for server-side Firebase access." },
         { key: "FIREBASE_PRIVATE_KEY", message: "FIREBASE_PRIVATE_KEY must be configured for server-side Firebase access." },
+        { key: "NEXT_PUBLIC_FIREBASE_API_KEY", message: "NEXT_PUBLIC_FIREBASE_API_KEY must be configured for browser Firebase authentication." },
+        { key: "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN", message: "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN must be configured for browser Firebase authentication." },
+        { key: "NEXT_PUBLIC_FIREBASE_PROJECT_ID", message: "NEXT_PUBLIC_FIREBASE_PROJECT_ID must be configured for browser Firebase authentication." },
+        { key: "NEXT_PUBLIC_FIREBASE_APP_ID", message: "NEXT_PUBLIC_FIREBASE_APP_ID must be configured for browser Firebase authentication." },
+        { key: "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID", message: "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID must be configured for browser Firebase authentication." },
         { key: "STRIPE_SECRET_KEY", message: "STRIPE_SECRET_KEY must be configured for checkout, refund, and reconciliation flows." },
         { key: "STRIPE_WEBHOOK_SECRET", message: "STRIPE_WEBHOOK_SECRET must be configured for webhook signature verification." }
     ];
