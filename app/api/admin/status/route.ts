@@ -1,19 +1,31 @@
 import { NextResponse } from "next/server";
-import { requireAdminRoute } from "@/lib/admin-api";
+import { getServerSessionIdentity } from "@/lib/server-auth";
+import { getAdminCapabilitiesForRole, hasAdminRole, resolveAdminRole } from "@/lib/admin";
 import { runRuntimePreflightCheck } from "@/lib/runtime-preflight";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-    const admin = await requireAdminRoute();
-    if (admin.error) return admin.error;
+    const user = await getServerSessionIdentity();
+    const role = resolveAdminRole({ email: user?.email });
+    const capabilities = getAdminCapabilitiesForRole(role);
+    const canViewAdminStatus = hasAdminRole({ email: user?.email }, "viewer");
+
+    if (!canViewAdminStatus) {
+        return NextResponse.json({
+            ok: true,
+            isAdmin: false,
+            adminRole: role,
+            capabilities: []
+        });
+    }
 
     const runtimePreflight = runRuntimePreflightCheck();
     return NextResponse.json({
         ok: true,
-        isAdmin: admin.role === "admin",
-        adminRole: admin.role,
-        capabilities: admin.capabilities,
+        isAdmin: role === "admin",
+        adminRole: role,
+        capabilities,
         runtimePreflight
     });
 }
