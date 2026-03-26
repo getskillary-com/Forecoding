@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { AuthCodePurposes, consumeAuthCode } from "@/lib/auth-code";
 import { isValidEmail, isValidPassword, sanitizeEmail } from "@/lib/security";
-import { findAuthUserByEmail, getAuthClientForIdentityTenant } from "@/lib/firebase-admin";
+import { findAuthUserByEmail, getAuthClientForIdentityTenant, revokeAuthRefreshTokens } from "@/lib/firebase-admin";
 import { getUserProfileByUid, invalidateUserSessions, upsertUserProfile } from "@/lib/data/users";
 import { resolveEnterpriseAuthContext } from "@/lib/enterprise-auth";
 
@@ -61,7 +61,11 @@ export async function POST(req: Request) {
             password: newPassword,
             emailVerified: true
         });
-        await authClient.revokeRefreshTokens(authUser.uid);
+        await revokeAuthRefreshTokens({
+            uid: authUser.uid,
+            email,
+            identityPlatformTenantId
+        });
 
         const existing = await getUserProfileByUid(authUser.uid);
         const invalidatedProfile = await invalidateUserSessions(authUser.uid);
@@ -77,7 +81,8 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({ ok: true });
-    } catch {
+    } catch (error) {
+        console.error("[auth/reset-password] failed", error);
         return NextResponse.json({ error: "Failed to reset password." }, { status: 500 });
     }
 }

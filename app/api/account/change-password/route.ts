@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAuthClientForIdentityTenant } from "@/lib/firebase-admin";
+import { getAuthClientForIdentityTenant, revokeAuthRefreshTokens } from "@/lib/firebase-admin";
 import { clearSessionCookie, getServerUser, getIdentityPlatformTenantIdFromToken } from "@/lib/server-auth";
 import { isValidPassword } from "@/lib/security";
 import { getUserProfileByUid, invalidateUserSessions, upsertUserProfile } from "@/lib/data/users";
@@ -38,7 +38,11 @@ export async function POST(req: Request) {
             password: newPassword,
             emailVerified: true
         });
-        await authClient.revokeRefreshTokens(userId);
+        await revokeAuthRefreshTokens({
+            uid: userId,
+            email: authUser.email,
+            identityPlatformTenantId
+        });
 
         const existing = await getUserProfileByUid(userId);
         const invalidatedProfile = await invalidateUserSessions(userId);
@@ -56,7 +60,8 @@ export async function POST(req: Request) {
         const res = NextResponse.json({ ok: true, reauthRequired: true });
         clearSessionCookie(res);
         return res;
-    } catch {
+    } catch (error) {
+        console.error("[account/change-password] failed", error);
         return NextResponse.json({ error: "Failed to change password." }, { status: 500 });
     }
 }

@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { getAuthClientForIdentityTenant } from "@/lib/firebase-admin";
+import { revokeAuthRefreshTokens } from "@/lib/firebase-admin";
 import { getServerUser, clearSessionCookie, getIdentityPlatformTenantIdFromToken } from "@/lib/server-auth";
 import { invalidateUserSessions } from "@/lib/data/users";
+
+export const runtime = "nodejs";
 
 export async function POST() {
     try {
@@ -11,14 +13,18 @@ export async function POST() {
         }
 
         const identityPlatformTenantId = getIdentityPlatformTenantIdFromToken(user.token);
-        const authClient = getAuthClientForIdentityTenant(identityPlatformTenantId);
-        await authClient.revokeRefreshTokens(user.uid);
+        await revokeAuthRefreshTokens({
+            uid: user.uid,
+            email: user.email,
+            identityPlatformTenantId
+        });
         await invalidateUserSessions(user.uid);
 
         const res = NextResponse.json({ ok: true });
         clearSessionCookie(res);
         return res;
-    } catch {
+    } catch (error) {
+        console.error("[account/logout-all] failed to revoke sessions", error);
         return NextResponse.json({ error: "Failed to sign out all devices." }, { status: 500 });
     }
 }
