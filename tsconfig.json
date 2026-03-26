@@ -32,6 +32,7 @@
   ],
   "exclude": [
     "node_modules",
+    "functions/**",
     "__review_scaffold",
     "__release_flash_fix",
     "__release_flash_fix.tar"
